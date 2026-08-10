@@ -1,0 +1,10 @@
+{
+  "projectId": "aol-fms",
+  "appId": "1:53991941843:web:8b9c30eecc6f6cc8e59626",
+  "apiKey": "AIzaSyBMK0YFXAx7TAve7ZANpRjJHRtLQXfRrqg",
+  "authDomain": "aol-fms.firebaseapp.com",
+  "storageBucket": "aol-fms.firebasestorage.app",
+  "messagingSenderId": "53991941843",
+  "measurementId": "",
+  "firestoreDatabaseId": "aol-fms"
+}

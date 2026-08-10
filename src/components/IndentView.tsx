@@ -1,0 +1,1685 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useMemo } from "react";
+import { User, OrderOffer, Role, BillingDetails, EmailTemplate, EmailAutoSelectSettings, Client } from "../types";
+import { canViewOrderOffer } from "../data";
+import { 
+  uploadInvoiceToDrive, 
+  hasDriveConnection, 
+  ensureGoogleDriveAccess, 
+  getSharedDriveSettings, 
+  DriveSettings,
+  openOrDownloadDocument
+} from "../lib/googleDriveService";
+import {
+  getEmailAutoSelectSettings,
+  saveEmailAutoSelectSettings,
+  saveLog,
+} from "../lib/firebaseService";
+import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
+import { formatDate } from "../utils";
+import { 
+  Search, 
+  Check, 
+  Loader2, 
+  Upload, 
+  FileText, 
+  AlertCircle, 
+  Building2, 
+  Calendar, 
+  IndianRupee, 
+  ExternalLink, 
+  ArrowRight,
+  Receipt,
+  FileCheck,
+  ChevronDown,
+  ChevronUp,
+  Mail,
+  Phone,
+  CreditCard,
+  Truck,
+  MapPin,
+  User2,
+  Info,
+  ListOrdered,
+  FileSpreadsheet
+} from "lucide-react";
+import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
+import { PaymentBank } from "../types";
+
+const resolveReportingEmails = (creatorUserId: string, assignedToUserId: string, users: User[]) => {
+  const creatorUser = users.find(u => u.id === creatorUserId);
+  const creatorEmail = creatorUser?.email || "";
+
+  const assignedUser = users.find(u => u.id === assignedToUserId);
+  const assignedToEmail = assignedUser?.email || "";
+
+  let teamLeadEmail = "";
+  let managerEmail = "";
+
+  if (assignedUser) {
+    let current = assignedUser;
+    const visited = new Set<string>();
+    while (current && current.reportsTo && !visited.has(current.id)) {
+      visited.add(current.id);
+      const supervisor = users.find(u => u.id === current.reportsTo);
+      if (!supervisor) break;
+
+      if (supervisor.role === Role.TeamLead) {
+        if (!teamLeadEmail) teamLeadEmail = supervisor.email;
+      } else if (supervisor.role === Role.Manager || supervisor.role === Role.SeniorManager || supervisor.role === Role.Admin) {
+        if (!managerEmail) managerEmail = supervisor.email;
+      }
+
+      current = supervisor;
+    }
+  }
+
+  return {
+    creatorEmail,
+    currentUserEmail: creatorEmail, // Backwards compatibility
+    assignedToEmail,
+    teamLeadEmail,
+    managerEmail,
+  };
+};
+
+const cleanEmailList = (emails?: string) => {
+  if (!emails) return "";
+  return emails
+    .split(",")
+    .map(email => email.trim())
+    .filter(email => email.length > 0)
+    .join(", ");
+};
+
+interface IndentViewProps {
+  activeUserId: string;
+  users: User[];
+  orders: OrderOffer[];
+  clients?: Client[];
+  onEditOrder: (order: OrderOffer) => void;
+  onAddOrder?: (order: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId">) => void;
+  paymentBanks?: PaymentBank[];
+  visibleSubTabs?: { [key: string]: string[] };
+  emailTemplates?: EmailTemplate[];
+  teamPermissions?: { [tabId: string]: { view: boolean; edit: boolean; add: boolean } };
+  levelWiseFilters?: { [tabOrSubTabId: string]: boolean };
+}
+
+export default function IndentView({
+  activeUserId,
+  users,
+  orders = [],
+  clients = [],
+  onEditOrder,
+  onAddOrder,
+  paymentBanks = [],
+  visibleSubTabs,
+  emailTemplates = [],
+  teamPermissions,
+  levelWiseFilters,
+}: IndentViewProps) {
+  const activeUser = users.find((u) => u.id === activeUserId) || {
+    id: activeUserId,
+    name: "User",
+    role: Role.User,
+    teamName: "Sales",
+  };
+
+  const teamCanAdd = activeUser.role === Role.Admin || teamPermissions?.["indent"]?.add !== false;
+  const teamCanEdit = activeUser.role === Role.Admin || teamPermissions?.["indent"]?.edit !== false;
+  const teamCanView = activeUser.role === Role.Admin || teamPermissions?.["indent"]?.view !== false;
+
+  // Sub-tabs config & state
+  const allSubTabs = [
+    { id: "billing", label: "Billing (Invoice Mapping)", icon: FileCheck },
+    { id: "invoice_attached", label: "Invoice Attached", icon: FileText }
+  ];
+
+  const visibleTabsForIndent = visibleSubTabs?.["indent"] || allSubTabs.map(t => t.id);
+  const filteredSubTabs = useMemo(() => {
+    return allSubTabs.filter(t => visibleTabsForIndent.includes(t.id));
+  }, [JSON.stringify(visibleTabsForIndent)]);
+
+  const [activeSubTab, setActiveSubTab] = useState<string>(filteredSubTabs[0]?.id || "billing");
+
+  // Keep activeSubTab in sync if permissions change
+  useEffect(() => {
+    if (filteredSubTabs.length > 0 && !filteredSubTabs.some(t => t.id === activeSubTab)) {
+      setActiveSubTab(filteredSubTabs[0].id);
+    }
+  }, [filteredSubTabs, activeSubTab]);
+
+  // Expanded order card state to view details
+  const [expandedOrderIds, setExpandedOrderIds] = useState<{ [key: string]: boolean }>({});
+
+  // Filter & Search state
+  const [searchTerm, setSearchTerm] = useState("");
+
+  // Import Modal state for Invoice Attached
+  const [isImportOpen, setIsImportOpen] = useState(false);
+
+  const invoiceAttachedImportFields: ImportFieldDefinition[] = [
+    { key: "invoiceNumber", label: "Invoice Number", required: true, sampleValue: "INV-2026-8801", description: "Mapped invoice reference number" },
+    { key: "clientName", label: "Client Full Name", required: true, sampleValue: "Anil Kumar", description: "Primary contact full name" },
+    { key: "companyName", label: "Company Name", required: true, sampleValue: "Tata Steel Ltd", description: "Client company name" },
+    { key: "email", label: "Client Email", sampleValue: "anil@tatasteel.com", description: "Primary client email" },
+    { key: "phone", label: "Client Phone", sampleValue: "+91 9876543210", description: "Client phone number" },
+    { key: "billingAddress", label: "Billing Address", sampleValue: "Plot 10, Industrial Area, Jamshedpur", description: "Client billing address" },
+    { key: "invoiceFileName", label: "Invoice File Name", sampleValue: "INV-2026-8801.pdf", description: "Filename of attached invoice" },
+    { key: "invoiceFileUrl", label: "Invoice File Link / URL", sampleValue: "https://drive.google.com/file/d/...", description: "Accessible link to invoice PDF" },
+    { key: "customerPoNumber", label: "Customer PO Number", sampleValue: "PO-44210", description: "Associated Purchase Order number" },
+    { key: "totalValue", label: "PO / Invoice Total (₹)", sampleValue: "120000", description: "Invoice or order total value" },
+    { key: "productName", label: "Product Name", sampleValue: "Caustic Soda Flakes", description: "Product description" },
+    { key: "quantity", label: "Quantity", sampleValue: "50", description: "Product quantity" },
+    { key: "rate", label: "Rate (₹)", sampleValue: "2400", description: "Unit rate" },
+  ];
+
+  const handleImportAttachedInvoices = async (rows: Record<string, any>[]) => {
+    let successCount = 0;
+    const errors: string[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const invNum = row.invoiceNumber?.trim();
+      const clientName = row.clientName?.trim();
+      const companyName = row.companyName?.trim();
+
+      if (!invNum || !clientName || !companyName) {
+        errors.push(`Row ${i + 1}: Skipped due to missing Invoice Number, Client Name, or Company Name.`);
+        continue;
+      }
+
+      const fileUrl = row.invoiceFileUrl?.trim() || "";
+      const fileName = row.invoiceFileName?.trim() || `${invNum}.pdf`;
+
+      // Check if an existing order matches by invoiceNumber or by companyName (unmapped)
+      const existingOrder = orders.find(o => 
+        (o.billingDetails?.invoiceNumber?.toLowerCase() === invNum.toLowerCase()) ||
+        (o.companyName.toLowerCase() === companyName.toLowerCase() && !o.billingDetails?.invoiceNumber)
+      );
+
+      const qty = parseFloat(row.quantity) || 1;
+      const rateVal = parseFloat(row.rate) || 0;
+      const totalVal = parseFloat(row.totalValue) || (qty * rateVal);
+
+      if (existingOrder) {
+        const updatedOrder: OrderOffer = {
+          ...existingOrder,
+          clientName: clientName || existingOrder.clientName,
+          companyName: companyName || existingOrder.companyName,
+          email: row.email?.trim() || existingOrder.email,
+          phone: row.phone?.trim() || existingOrder.phone,
+          billingAddress: row.billingAddress?.trim() || existingOrder.billingAddress,
+          status: "Closed Won",
+          totalValue: totalVal || existingOrder.totalValue,
+          billingDetails: {
+            invoiceNumber: invNum,
+            invoiceFileName: fileName,
+            invoiceFileUrl: fileUrl,
+            mappedAt: new Date().toISOString(),
+            mappedByUserId: activeUserId,
+          },
+          closedWonDetails: {
+            ...existingOrder.closedWonDetails,
+            customerPoNumber: row.customerPoNumber?.trim() || existingOrder.closedWonDetails?.customerPoNumber || "",
+          }
+        };
+
+        try {
+          await onEditOrder(updatedOrder);
+          successCount++;
+        } catch (err: any) {
+          errors.push(`Row ${i + 1} (${invNum}): ${err.message || err}`);
+        }
+      } else if (onAddOrder) {
+        const itemsList = row.productName ? [{
+          productId: `prod-import-${Date.now()}-${i}`,
+          productName: row.productName.trim(),
+          quantity: qty,
+          rate: rateVal,
+          amount: qty * rateVal
+        }] : [{
+          productId: "proj-1",
+          productName: "Default Product",
+          quantity: 1,
+          rate: totalVal,
+          amount: totalVal
+        }];
+
+        const newOrderData: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId"> = {
+          clientName,
+          companyName,
+          email: row.email?.trim() || "",
+          phone: row.phone?.trim() || "+1 (555) 000-0000",
+          billingAddress: row.billingAddress?.trim() || "",
+          status: "Closed Won",
+          totalValue: totalVal,
+          items: itemsList,
+          payment: "Advance Payment",
+          delivery: "FOB",
+          otherTerms: "",
+          assignedToUserId: activeUserId,
+          notes: "Imported via Invoice Attached Sheets / CSV Wizard",
+          billingDetails: {
+            invoiceNumber: invNum,
+            invoiceFileName: fileName,
+            invoiceFileUrl: fileUrl,
+            mappedAt: new Date().toISOString(),
+            mappedByUserId: activeUserId,
+          },
+          closedWonDetails: {
+            customerPoNumber: row.customerPoNumber?.trim() || "",
+            poDate: new Date().toISOString().split("T")[0],
+            freightTerm: "To Pay",
+            transporterName: "TBD",
+            deliveryTerm: "Standard",
+            destinationAddress: row.billingAddress?.trim() || "",
+            dispatchDate: new Date().toISOString().split("T")[0],
+            dispatchLocation: "Main Plant",
+            warehouseManagedBy: "Self Managed",
+          }
+        };
+
+        try {
+          await onAddOrder(newOrderData);
+          successCount++;
+        } catch (err: any) {
+          errors.push(`Row ${i + 1} (${invNum}): ${err.message || err}`);
+        }
+      } else {
+        errors.push(`Row ${i + 1} (${invNum}): Cannot create new order - onAddOrder handler missing.`);
+      }
+    }
+
+    return { successCount, errors };
+  };
+
+  // Drive integration state
+  const [hasDriveAccess, setHasDriveAccess] = useState(false);
+  const [driveSettings, setDriveSettings] = useState<DriveSettings | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  // Per-order forms state
+  // We use the order.id as the key for storing inputs, selected files, error, success and loading states
+  const [invoiceNumbers, setInvoiceNumbers] = useState<{ [key: string]: string }>({});
+  const [selectedFiles, setSelectedFiles] = useState<{ [key: string]: File | null }>({});
+  const [selectedTemplates, setSelectedTemplates] = useState<{ [key: string]: string }>({});
+  const [sendEmails, setSendEmails] = useState<{ [key: string]: boolean }>({});
+  const [uploadProgress, setUploadProgress] = useState<{ [key: string]: boolean }>({});
+  const [orderErrors, setOrderErrors] = useState<{ [key: string]: string | null }>({});
+  const [orderSuccess, setOrderSuccess] = useState<{ [key: string]: boolean }>({});
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
+  const [confirmEditOrder, setConfirmEditOrder] = useState<OrderOffer | null>(null);
+
+  // Drag and drop highlights
+  const [dragOverOrderId, setDragOverOrderId] = useState<string | null>(null);
+
+  // Email auto select settings
+  const [autoSelectSettings, setAutoSelectSettings] = useState<EmailAutoSelectSettings>({
+    indentAutoSelect: true,
+    ordersAutoSelect: false,
+  });
+
+  // Fetch Google Drive & Email Auto Select Settings on mount
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const settings = await getSharedDriveSettings();
+        if (settings) {
+          setDriveSettings(settings);
+          setHasDriveAccess(hasDriveConnection(settings));
+        } else {
+          setHasDriveAccess(hasDriveConnection(null));
+        }
+      } catch (err) {
+        console.error("Error loading drive settings:", err);
+      }
+
+      try {
+        const emailSet = await getEmailAutoSelectSettings();
+        setAutoSelectSettings(emailSet);
+      } catch (err) {
+        console.error("Error loading email auto select settings:", err);
+      }
+    };
+    fetchSettings();
+  }, []);
+
+  // Handle Google Drive Connection for Admin (if needed)
+  const handleConnectDrive = async () => {
+    setIsConnecting(true);
+    try {
+      await ensureGoogleDriveAccess(true);
+      const settings = await getSharedDriveSettings();
+      if (settings) {
+        setDriveSettings(settings);
+      }
+      setHasDriveAccess(true);
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || "Failed to authorize Google Drive. Make sure pop-ups are allowed.");
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  // Filter only Closed Won orders that the active user can view (respecting level-wise filters)
+  const closedWonOrders = orders.filter((o) => {
+    if (o.status !== "Closed Won") return false;
+    const isLevelFilterEnabled = !!levelWiseFilters?.["indent"];
+    return canViewOrderOffer(activeUserId, o, users, isLevelFilterEnabled);
+  });
+
+  // Separate closedWonOrders into mapped and unmapped lists
+  const unmappedOrders = closedWonOrders.filter((order) => !order.billingDetails?.invoiceNumber);
+  const mappedOrders = closedWonOrders.filter((order) => !!order.billingDetails?.invoiceNumber);
+
+  // Filter based on active sub-tab and search term
+  const displayOrders = activeSubTab === "billing"
+    ? closedWonOrders.filter((order) => !order.billingDetails?.invoiceNumber || order.id === editingOrderId)
+    : mappedOrders;
+
+  const filteredOrders = displayOrders.filter((order) => {
+    const matchCompany = order.companyName?.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchClient = order.clientName?.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchInvoice = order.billingDetails?.invoiceNumber?.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchPo = order.closedWonDetails?.customerPoNumber?.toLowerCase().includes(searchTerm.toLowerCase());
+    return matchCompany || matchClient || matchInvoice || matchPo;
+  });
+
+  // Handle file drop
+  const handleDragOver = (e: React.DragEvent, orderId: string) => {
+    e.preventDefault();
+    setDragOverOrderId(orderId);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverOrderId(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, orderId: string) => {
+    e.preventDefault();
+    setDragOverOrderId(null);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+        setOrderErrors((prev) => ({ ...prev, [orderId]: "Only PDF files are allowed to be uploaded." }));
+        return;
+      }
+      setSelectedFiles((prev) => ({ ...prev, [orderId]: file }));
+      setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, orderId: string) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+        setOrderErrors((prev) => ({ ...prev, [orderId]: "Only PDF files are allowed to be uploaded." }));
+        e.target.value = ""; // clear input
+        return;
+      }
+      setSelectedFiles((prev) => ({ ...prev, [orderId]: file }));
+      setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
+    }
+  };
+
+  const removeSelectedFile = (orderId: string) => {
+    setSelectedFiles((prev) => ({ ...prev, [orderId]: null }));
+  };
+
+  // Submit mapping
+  const handleMapInvoice = async (order: OrderOffer) => {
+    const orderId = order.id;
+    const invNum = invoiceNumbers[orderId]?.trim() || order.billingDetails?.invoiceNumber || "";
+    const file = selectedFiles[orderId];
+    const sendEmail = sendEmails[orderId];
+    const templateId = selectedTemplates[orderId];
+
+    if (!invNum) {
+      setOrderErrors((prev) => ({ ...prev, [orderId]: "Invoice number is required." }));
+      return;
+    }
+    if (sendEmail && !templateId) {
+      setOrderErrors((prev) => ({ ...prev, [orderId]: "Please select an email template." }));
+      return;
+    }
+
+    setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
+    setUploadProgress((prev) => ({ ...prev, [orderId]: true }));
+    setOrderSuccess((prev) => ({ ...prev, [orderId]: false }));
+
+    try {
+      let fileUrl = order.billingDetails?.invoiceFileUrl || "";
+      let fileName = order.billingDetails?.invoiceFileName || "";
+
+      // If a new file is uploaded, upload it to Google Drive
+      if (file) {
+        // Automatically check/verify access
+        await ensureGoogleDriveAccess();
+        const uploadResult = await uploadInvoiceToDrive(file, order.companyName, invNum);
+        fileUrl = uploadResult.webViewLink;
+        fileName = file.name;
+      }
+
+      // Update the order object in Firestore
+      const updatedBilling: BillingDetails = {
+        invoiceNumber: invNum,
+        invoiceFileUrl: fileUrl,
+        invoiceFileName: fileName,
+        mappedAt: new Date().toISOString(),
+      };
+
+      const updatedOrder: OrderOffer = {
+        ...order,
+        billingDetails: updatedBilling,
+      };
+
+      await onEditOrder(updatedOrder);
+
+      // Trigger Email
+      if (sendEmail) {
+        const hierarchy = resolveUserHierarchyInfo(activeUserId, order.assignedToUserId, users);
+        const template = emailTemplates.find(t => t.id === templateId) || 
+          (templateId === "" ? emailTemplates.find(t => t.isDefault && (t.assignedForm === "invoice_issuance" || t.assignedForm === "any" || !t.assignedForm)) : undefined);
+        if (template) {
+          const itemsListString = (order.items || []).map((item, index) =>
+            `Product ${index + 1}: ${item.productName}: Qty ${item.quantity} @ ${item.rate} = ${item.amount}`
+          ).join('\n');
+
+          const applyTemplate = (text: string) => {
+            return replaceTemplateVars(text, {
+              recordId: order.id,
+              clientName: order.clientName,
+              companyName: order.companyName,
+              email: order.email || "",
+              phone: order.phone || "",
+              billingAddress: order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "",
+              status: order.status,
+              totalValue: order.totalValue,
+              itemsList: itemsListString,
+              invoiceNumber: invNum,
+              invoiceFileLink: fileUrl,
+              payment: order.payment || "",
+              paymentTermsOffer: order.paymentTermsOffer || "",
+              paymentCreditPeriod: order.paymentCreditPeriod || "",
+              delivery: order.delivery || "",
+              otherTerms: order.otherTerms || "",
+              notes: order.notes || "",
+              customerPoNumber: order.closedWonDetails?.customerPoNumber || "",
+              poDate: order.closedWonDetails?.poDate || "",
+              freightTerm: order.closedWonDetails?.freightTerm || "",
+              freightChargedInBill: order.closedWonDetails?.freightChargedInBill || "",
+              freightCostToAol: order.closedWonDetails?.freightCostToAol || "",
+              cartageLabourCharges: order.closedWonDetails?.cartageLabourCharges || "",
+              transporterName: order.closedWonDetails?.transporterName || "",
+              deliveryTerm: order.closedWonDetails?.deliveryTerm || "",
+              destinationAddress: order.closedWonDetails?.destinationAddress || "",
+              dispatchDate: order.closedWonDetails?.dispatchDate || "",
+              dispatchLocation: order.closedWonDetails?.dispatchLocation || "",
+              warehouseManagedBy: order.closedWonDetails?.warehouseManagedBy || "",
+              ...hierarchy,
+            });
+          };
+
+          const subject = applyTemplate(template.subject);
+          const body = applyTemplate(template.body);
+
+          const dynamicTo = cleanEmailList(template.to ? applyTemplate(template.to) : (order.email || ""));
+          const dynamicCc = template.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
+          const dynamicBcc = template.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
+
+          await fetch("/api/send-order-email", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              to: dynamicTo,
+              cc: dynamicCc,
+              bcc: dynamicBcc,
+              subject: subject,
+              text: body,
+              senderUserId: activeUser?.id,
+            }),
+          });
+
+          await saveLog({
+            id: `log-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            userId: activeUser.id,
+            userName: activeUser.name,
+            actionType: "Send Email",
+            targetType: "Order",
+            targetId: order.id,
+            targetName: order.companyName,
+            details: `Email sent to ${dynamicTo}${dynamicCc ? ` (CC: ${dynamicCc})` : ""}${dynamicBcc ? ` (BCC: ${dynamicBcc})` : ""} (Template: ${template.name}) containing mapped invoice #${invNum} details for "${order.companyName}"`
+          });
+        }
+      }
+
+      setOrderSuccess((prev) => ({ ...prev, [orderId]: true }));
+      setSelectedFiles((prev) => ({ ...prev, [orderId]: null }));
+      setEditingOrderId(null);
+
+      // Clean success banner after 3 seconds
+      setTimeout(() => {
+        setOrderSuccess((prev) => ({ ...prev, [orderId]: false }));
+      }, 4000);
+
+    } catch (err: any) {
+      console.error(err);
+      setOrderErrors((prev) => ({ 
+        ...prev, 
+        [orderId]: err.message || "An error occurred while uploading or saving details." 
+      }));
+    } finally {
+      setUploadProgress((prev) => ({ ...prev, [orderId]: false }));
+    }
+  };
+
+  if (!teamCanView) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-lg p-8 text-center max-w-2xl mx-auto my-12 shadow-sm">
+        <AlertCircle size={48} className="mx-auto text-rose-500 mb-4" />
+        <h3 className="text-base font-bold text-slate-800">Workspace Access Restricted</h3>
+        <p className="text-sm text-slate-500 mt-2">
+          Your team (<strong>{activeUser.teamName || "No Team Assigned"}</strong>) does not have permission to view the <strong>Indent & Billing</strong> workspace. Please contact a Platform Administrator to request permission.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6" id="indent-view-container">
+      {/* View Header */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-5 border border-slate-200/85 rounded-2xl shadow-xs">
+        <div>
+          <h1 className="text-lg font-extrabold text-slate-800 tracking-tight flex items-center gap-2">
+            <Receipt className="text-emerald-600 h-5 w-5" />
+            Indent & Billing Management
+          </h1>
+          <p className="text-xs text-slate-500 mt-1 max-w-2xl">
+            Map invoices and files to finalized customer purchase orders. All invoice files are securely cataloged in Google Drive central folder, sorted automatically into customer subdirectories.
+          </p>
+        </div>
+
+        {/* Google Drive Status */}
+        <div className="flex items-center gap-2 self-start md:self-center">
+          {hasDriveAccess ? (
+            <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl text-[10px] font-bold">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              Google Drive Active
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-xl text-[10px] font-bold">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                Drive Unlinked
+              </span>
+              {activeUser.role === Role.Admin ? (
+                <button
+                  type="button"
+                  disabled={isConnecting}
+                  onClick={handleConnectDrive}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-1.5 px-3 rounded-xl text-[10px] flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                >
+                  {isConnecting ? (
+                    <Loader2 size={10} className="animate-spin" />
+                  ) : (
+                    <Upload size={10} />
+                  )}
+                  Link Drive
+                </button>
+              ) : null}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {activeUser.role === Role.Admin && (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="flex items-center gap-2">
+            <Mail size={16} className="text-emerald-600" />
+            <div>
+              <span className="font-bold text-slate-800 block">Auto-Select Default Template during Invoice Mapping</span>
+              <span className="text-slate-500 text-[10px]">When checked, "Send Email" will auto-select the template marked as default in Email Templates tab.</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              const newSettings = {
+                ...autoSelectSettings,
+                indentAutoSelect: !autoSelectSettings.indentAutoSelect,
+              };
+              setAutoSelectSettings(newSettings);
+              await saveEmailAutoSelectSettings(newSettings);
+            }}
+            className={`px-4 py-2 rounded-xl text-xs font-bold font-mono uppercase tracking-wider transition-all border shadow-xs ${
+              autoSelectSettings.indentAutoSelect
+                ? "bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700"
+                : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200"
+            }`}
+          >
+            {autoSelectSettings.indentAutoSelect ? "ON (Auto-Select)" : "OFF (Manual Select)"}
+          </button>
+        </div>
+      )}
+
+      {/* Sub-tabs Row */}
+      <div className="flex border-b border-slate-200/85 pb-0.5 overflow-x-auto gap-2 scrollbar-thin whitespace-nowrap">
+        {filteredSubTabs.map((tab) => {
+          const Icon = tab.icon;
+          const isActive = activeSubTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => {
+                setActiveSubTab(tab.id);
+                if (tab.id !== "billing") {
+                  setEditingOrderId(null);
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3 py-2 text-[11px] font-bold font-mono uppercase tracking-wider border-b-2 transition-all whitespace-nowrap cursor-pointer -mb-0.5 ${
+                isActive
+                  ? "border-emerald-600 text-emerald-700"
+                  : "border-transparent text-slate-400 hover:text-slate-600"
+              }`}
+            >
+              <Icon size={13} className={isActive ? "text-emerald-600" : "text-slate-400"} />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {filteredSubTabs.length === 0 ? (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 p-4 rounded-xl text-center font-medium text-xs font-mono mt-3">
+          ⚠️ ACCESS RESTRICTED: No Indent or Billing features are enabled for your team workspace.
+        </div>
+      ) : (
+        <>
+          {/* Filters Bar */}
+      <div className="flex flex-col sm:flex-row items-center gap-3 bg-white p-4 border border-slate-200/85 rounded-xl">
+        <div className="relative flex-1 w-full">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search by client, company, PO number, or invoice number..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
+          />
+        </div>
+
+        {activeSubTab === "invoice_attached" && (
+          <button
+            type="button"
+            onClick={() => setIsImportOpen(true)}
+            className="bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-2 px-3.5 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs transition-all cursor-pointer whitespace-nowrap self-stretch sm:self-auto"
+            id="btn-import-attached-invoices"
+          >
+            <FileSpreadsheet size={15} />
+            <span>Import Attached Invoices (Sheets / CSV)</span>
+          </button>
+        )}
+
+        <div className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
+          Showing <b>{filteredOrders.length}</b> of <b>{activeSubTab === "billing" ? unmappedOrders.length : mappedOrders.length}</b> {activeSubTab === "billing" ? "pending" : "mapped"} orders
+        </div>
+      </div>
+
+      {/* Billing Sub-Tab Content */}
+      {activeSubTab === "billing" && (
+        <div className="space-y-4">
+
+          {/* Orders Listing Grid */}
+          {filteredOrders.length === 0 ? (
+            <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center">
+              <Receipt className="mx-auto h-12 w-12 text-slate-300 mb-3" />
+              <p className="text-sm font-bold text-slate-600">No Closed Won Orders Found</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                Only orders marked as "Closed Won" status can have invoice numbers and files mapped.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {filteredOrders.map((order) => {
+                const isEditing = editingOrderId === order.id;
+                const mappedInv = order.billingDetails?.invoiceNumber;
+                const fileAttached = order.billingDetails?.invoiceFileUrl;
+                const hasDetails = mappedInv || fileAttached;
+                const isDragging = dragOverOrderId === order.id;
+                const localInvVal = invoiceNumbers[order.id] !== undefined ? invoiceNumbers[order.id] : (mappedInv || "");
+                const isExpanded = !!expandedOrderIds[order.id];
+
+                // Lookup mapped bank details
+                const bank = paymentBanks.find((b) => b.id === order.paymentBankId);
+
+                return (
+                  <div 
+                    key={order.id}
+                    className={`bg-white border rounded-2xl p-6 shadow-sm hover:shadow-md transition-all flex flex-col justify-between ${
+                      isDragging ? "border-emerald-500 bg-emerald-50/10 scale-[1.01]" : "border-slate-200"
+                    }`}
+                    onDragOver={(e) => handleDragOver(e, order.id)}
+                    onDragLeave={handleDragLeave}
+                    onDrop={(e) => handleDrop(e, order.id)}
+                  >
+                    <div className="space-y-5">
+                      {/* Order Client Info */}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-md font-mono font-bold mb-1.5 border border-slate-200">
+                            <Building2 size={10} className="text-slate-500" />
+                            {order.companyName}
+                          </span>
+                          <h3 className="text-sm font-black text-slate-800 truncate">
+                            {order.clientName}
+                          </h3>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-sm font-black text-slate-900 block font-mono">
+                            ₹{order.totalValue?.toLocaleString()}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400 block mt-0.5 flex items-center justify-end gap-1">
+                            <Calendar size={10} />
+                            {order.createdAt ? formatDate(order.createdAt) : ""}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Items & PO overview */}
+                      <div className="bg-slate-50 border border-slate-150 rounded-xl p-3.5 text-[10px] space-y-1.5 font-mono">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 font-bold uppercase tracking-tight">Customer PO:</span>
+                          <span className="text-slate-700 font-bold">
+                            {order.closedWonDetails?.customerPoNumber || "N/A"}
+                          </span>
+                        </div>
+                        {order.closedWonDetails?.poDate && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-slate-400 font-bold uppercase tracking-tight">PO Date:</span>
+                            <span className="text-slate-700 font-bold">
+                              {formatDate(order.closedWonDetails.poDate)}
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 font-bold uppercase tracking-tight">Total BOM Items:</span>
+                          <span className="text-slate-700 font-bold bg-slate-200 px-1.5 py-0.5 rounded text-[9px]">
+                            {order.items?.length || 0} unique items
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-start gap-2 border-t border-slate-200/60 pt-1.5 mt-1">
+                          <span className="text-slate-400 font-bold uppercase tracking-tight shrink-0">Billing Address:</span>
+                          <span className="text-slate-700 font-semibold text-[9.5px] text-right line-clamp-2">
+                            {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "N/A"}
+                          </span>
+                        </div>
+                        {order.closedWonDetails?.poAttachmentUrl && (
+                          <div className="flex justify-between items-center border-t border-slate-200/60 pt-1.5 mt-1.5">
+                            <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document:</span>
+                            <a 
+                              href="#"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                openOrDownloadDocument(order.closedWonDetails.poAttachmentUrl, `PO_${order.closedWonDetails.customerPoNumber || "document"}.pdf`);
+                              }}
+                              className="text-indigo-600 hover:text-indigo-800 font-bold underline flex items-center gap-1 text-[9px]"
+                            >
+                              <FileText size={10} /> View Customer PO ↗
+                            </a>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Expanding Toggle for Billing Office details */}
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedOrderIds(prev => ({ ...prev, [order.id]: !prev[order.id] }))}
+                          className="w-full flex items-center justify-between py-2 px-3 bg-indigo-50/45 hover:bg-indigo-50 border border-indigo-100/65 rounded-xl text-[10px] font-bold text-indigo-700 transition-all cursor-pointer"
+                        >
+                          <span className="flex items-center gap-1.5 font-mono uppercase tracking-wider">
+                            <ListOrdered size={12} className="text-indigo-600" />
+                            {isExpanded ? "Hide Details for Billing" : "Show Details for Billing"}
+                          </span>
+                          {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+
+                        {isExpanded && (
+                          <div className="mt-3 border border-slate-100 bg-slate-50/30 rounded-xl p-3 space-y-4 text-[11px] animate-fadeIn">
+                            
+                            {/* Contact & Client Billing Address Details */}
+                            <div className="space-y-2 border-b border-slate-200/60 pb-2.5">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="text-[9px] font-mono text-slate-400 uppercase font-bold block">Email</span>
+                                  <span className="text-slate-700 font-medium break-all flex items-center gap-1">
+                                    <Mail size={10} className="text-slate-400 shrink-0" />
+                                    {order.email || "N/A"}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-[9px] font-mono text-slate-400 uppercase font-bold block">Phone</span>
+                                  <span className="text-slate-700 font-semibold flex items-center gap-1">
+                                    <Phone size={10} className="text-slate-400 shrink-0" />
+                                    {order.phone || "N/A"}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="bg-indigo-50/80 border border-indigo-100 rounded-lg p-2.5 space-y-1">
+                                <span className="text-[9px] font-mono text-indigo-900 uppercase font-extrabold flex items-center gap-1">
+                                  <MapPin size={11} className="text-indigo-600 shrink-0" />
+                                  Client Billing Address (For Bill/Invoice Creation)
+                                </span>
+                                <p className="text-[11px] text-slate-800 font-medium leading-relaxed whitespace-pre-wrap">
+                                  {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "No billing address provided"}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Ordered BOM Details */}
+                            <div>
+                              <p className="text-[9px] font-mono text-slate-400 uppercase font-bold mb-1.5 flex items-center gap-1">
+                                <ListOrdered size={10} className="text-slate-400" />
+                                Invoice Itemization (BOM)
+                              </p>
+                              <div className="border border-slate-200/70 rounded-lg overflow-x-auto scrollbar-thin bg-white">
+                                <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full">
+                                  <thead>
+                                    <tr className="bg-slate-50 text-slate-500 border-b border-slate-200/70 font-mono font-bold uppercase tracking-tight">
+                                      <th className="p-2">Product</th>
+                                      <th className="p-2 text-right">Qty</th>
+                                      <th className="p-2 text-right">Rate</th>
+                                      <th className="p-2 text-right">Amount</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100 text-slate-600">
+                                    {order.items?.map((item, idx) => (
+                                      <tr key={idx} className="hover:bg-slate-50/50">
+                                        <td className="p-2 font-medium text-slate-800">{item.productName}</td>
+                                        <td className="p-2 text-right font-mono font-semibold">{item.quantity}</td>
+                                        <td className="p-2 text-right font-mono text-slate-500">₹{item.rate?.toLocaleString()}</td>
+                                        <td className="p-2 text-right font-mono font-bold text-slate-700">₹{item.amount?.toLocaleString()}</td>
+                                      </tr>
+                                    ))}
+                                    <tr className="bg-slate-50/40 font-bold border-t border-slate-200/70">
+                                      <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
+                                      <td className="p-2 text-right text-slate-900 font-mono text-xs" colSpan={2}>
+                                        ₹{order.totalValue?.toLocaleString()}
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+
+                            {/* Logistic & Dispatch Specifications */}
+                            <div className="bg-white p-3 border border-slate-200/70 rounded-xl space-y-2.5">
+                              <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                <Truck size={10} className="text-slate-400" />
+                                Logistic & Dispatch Details
+                              </p>
+                              <div className="grid grid-cols-2 gap-2.5 text-[10px]">
+                                <div>
+                                  <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Dispatch Date</span>
+                                  <span className="text-slate-700 font-medium">
+                                    {order.closedWonDetails?.dispatchDate ? formatDate(order.closedWonDetails.dispatchDate) : "N/A"}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Dispatch From</span>
+                                  <span className="text-slate-700 font-medium">
+                                    {order.closedWonDetails?.dispatchLocation || "N/A"}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Transporter Name</span>
+                                  <span className="text-slate-700 font-medium">
+                                    {order.closedWonDetails?.transporterName || "N/A"}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Warehouse Manager</span>
+                                  <span className="text-slate-700 font-medium">
+                                    {order.closedWonDetails?.warehouseManagedBy || "N/A"}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Freight Specifications */}
+                            <div className="bg-white p-3 border border-slate-200/70 rounded-xl space-y-2">
+                              <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                <IndianRupee size={10} className="text-slate-400" />
+                                Freight Terms & Surcharges
+                              </p>
+                              <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                                <div className="flex justify-between pr-2 border-r border-slate-100">
+                                  <span className="text-slate-400">Freight Term:</span>
+                                  <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightTerm || "N/A"}</span>
+                                </div>
+                                <div className="flex justify-between pl-1">
+                                  <span className="text-slate-400">Charged in Bill:</span>
+                                  <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightChargedInBill || "N/A"}</span>
+                                </div>
+                                <div className="flex justify-between pr-2 border-r border-slate-100">
+                                  <span className="text-slate-400">Cost to AOL:</span>
+                                  <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightCostToAol || "N/A"}</span>
+                                </div>
+                                <div className="flex justify-between pl-1">
+                                  <span className="text-slate-400">Cartage/Labour:</span>
+                                  <span className="text-slate-700 font-bold">{order.closedWonDetails?.cartageLabourCharges || "N/A"}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Delivery & Destination Address */}
+                            <div className="bg-white p-3 border border-slate-200/70 rounded-xl space-y-2">
+                              <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                <MapPin size={10} className="text-slate-400" />
+                                Delivery & Destination
+                              </p>
+                              <div className="text-[10px] space-y-1.5">
+                                <div className="flex justify-between">
+                                  <span className="text-slate-400 font-bold uppercase font-mono text-[8px]">Delivery Term:</span>
+                                  <span className="text-slate-700 font-semibold">{order.closedWonDetails?.deliveryTerm || "N/A"}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 font-bold block uppercase font-mono text-[8px] mb-0.5">Destination Address:</span>
+                                  <span className="text-slate-700 block bg-slate-50 p-2 rounded border border-slate-100 leading-normal text-[9.5px]">
+                                    {order.closedWonDetails?.destinationAddress || "N/A"}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Bank Details */}
+                            <div className="bg-indigo-50/40 p-3 border border-indigo-100 rounded-xl space-y-2">
+                              <p className="text-[9px] font-mono text-indigo-500 uppercase font-bold border-b border-indigo-150 pb-1 flex items-center gap-1">
+                                <CreditCard size={10} className="text-indigo-400" />
+                                Mapped Deposit Bank Account
+                              </p>
+                              {bank ? (
+                                <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                  <div>
+                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">Bank Name</span>
+                                    <span className="text-indigo-950 font-extrabold">{bank.bankName}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">Branch</span>
+                                    <span className="text-slate-700 font-medium">{bank.branch}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">Account Number</span>
+                                    <span className="text-indigo-950 font-bold font-mono">{bank.accountNumber}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">IFSC Code</span>
+                                    <span className="text-indigo-950 font-bold font-mono">{bank.ifscCode}</span>
+                                  </div>
+                                  <div className="col-span-2">
+                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">Beneficiary Name</span>
+                                    <span className="text-slate-700 font-medium">{bank.accountHolderName}</span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-slate-450 italic text-[10px]">No specific bank account mapped to this offer.</span>
+                              )}
+                              <div className="text-[10px] pt-1 border-t border-indigo-100/50">
+                                <span className="text-slate-400 block text-[8px] font-mono uppercase">Standard Payment Terms:</span>
+                                <span className="text-slate-700 font-medium">{order.payment || "N/A"}</span>
+                              </div>
+                            </div>
+
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Current Status Badge or Information */}
+                      {hasDetails && !isEditing ? (
+                        <div className="bg-emerald-50/50 border border-emerald-150 rounded-xl p-3.5 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="bg-emerald-100 text-emerald-800 p-1 rounded-lg">
+                                <Check size={12} className="stroke-[3]" />
+                              </span>
+                              <div>
+                                <p className="text-[9px] text-emerald-600 font-mono font-bold uppercase tracking-wider">Mapped Invoice</p>
+                                <p className="text-xs font-extrabold text-slate-800 font-mono">{mappedInv}</p>
+                              </div>
+                            </div>
+                            
+                            <button
+                              onClick={() => {
+                                setEditingOrderId(order.id);
+                                if (invoiceNumbers[order.id] === undefined) {
+                                  setInvoiceNumbers(prev => ({ ...prev, [order.id]: mappedInv || "" }));
+                                }
+                              }}
+                              className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 font-mono uppercase cursor-pointer underline decoration-dotted"
+                            >
+                              Update
+                            </button>
+                          </div>
+
+                          {fileAttached ? (
+                            <div className="flex items-center justify-between border-t border-emerald-100/55 pt-2 mt-1">
+                              <span className="text-[10px] text-slate-500 font-medium truncate flex items-center gap-1.5 max-w-xs">
+                                <FileText size={11} className="text-emerald-600 shrink-0" />
+                                <span className="truncate">{order.billingDetails?.invoiceFileName || "invoice_document.pdf"}</span>
+                              </span>
+                              <a
+                                href="#"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  openOrDownloadDocument(order.billingDetails?.invoiceFileUrl, order.billingDetails?.invoiceFileName || "invoice_document.pdf");
+                                }}
+                                className="inline-flex items-center gap-1 bg-white hover:bg-slate-50 border border-emerald-200 text-emerald-700 font-bold py-1 px-2.5 rounded-lg text-[9px] font-mono transition-all shrink-0"
+                              >
+                                View Invoice ↗
+                              </a>
+                            </div>
+                          ) : (
+                            <p className="text-[9px] text-slate-400 italic">No document file uploaded</p>
+                          )}
+                        </div>
+                      ) : (
+                        // Form Block
+                        <div className="space-y-3 pt-1 border-t border-slate-100 pt-3.5">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
+                              Invoice Number *
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. INV-2026-001"
+                              value={localInvVal}
+                              onChange={(e) => setInvoiceNumbers(prev => ({ ...prev, [order.id]: e.target.value }))}
+                              disabled={uploadProgress[order.id]}
+                              className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono font-semibold"
+                            />
+                          </div>
+
+                          {/* Upload Field */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
+                              Invoice File (Google Drive)
+                            </label>
+
+                            {selectedFiles[order.id] ? (
+                              <div className="flex items-center justify-between border border-emerald-200 bg-emerald-50/20 p-2.5 rounded-xl">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <FileText className="text-emerald-600 h-4 w-4 shrink-0" />
+                                  <span className="text-[10px] text-slate-700 font-medium truncate">
+                                    {selectedFiles[order.id]?.name}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => removeSelectedFile(order.id)}
+                                  className="text-slate-400 hover:text-rose-500 text-xs font-bold p-1 cursor-pointer"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ) : (
+                              <div
+                                onDragOver={(e) => handleDragOver(e, order.id)}
+                                className={`border border-dashed rounded-xl p-4 text-center cursor-pointer transition-all ${
+                                  isDragging ? "border-emerald-500 bg-emerald-50/10" : "border-slate-200 hover:border-slate-300"
+                                }`}
+                                onClick={() => document.getElementById(`file-upload-${order.id}`)?.click()}
+                              >
+                                <input
+                                  type="file"
+                                  id={`file-upload-${order.id}`}
+                                  className="hidden"
+                                  accept=".pdf"
+                                  onChange={(e) => handleFileChange(e, order.id)}
+                                  disabled={uploadProgress[order.id]}
+                                />
+                                <Upload className="mx-auto h-5 w-5 text-slate-400 mb-1" />
+                                <p className="text-[10px] font-bold text-slate-600">
+                                  Drag & Drop or Click to Upload PDF
+                                </p>
+                                <p className="text-[8px] text-slate-400 mt-0.5">
+                                  PDF files only up to 10MB
+                                </p>
+                              </div>
+                            )}
+                          </div>
+
+                            {/* Action triggers */}
+                            <div className="space-y-3 pt-2 border-t border-slate-100 mt-2">
+                                <div className="flex items-center gap-2">
+                                    <input 
+                                        type="checkbox" 
+                                        checked={sendEmails[order.id] || false}
+                                        onChange={(e) => {
+                                            const checked = e.target.checked;
+                                            setSendEmails(prev => ({ ...prev, [order.id]: checked }));
+                                            if (checked && autoSelectSettings.indentAutoSelect && !selectedTemplates[order.id]) {
+                                                const defaultTemplate = emailTemplates.find(t => t.isDefault && (t.assignedForm === "invoice_issuance" || t.assignedForm === "any" || !t.assignedForm));
+                                                if (defaultTemplate) {
+                                                    setSelectedTemplates(prev => ({ ...prev, [order.id]: defaultTemplate.id }));
+                                                }
+                                            }
+                                        }}
+                                        className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                    />
+                                    <label className="text-[10px] font-bold text-slate-700 uppercase font-mono">Send Email Invoice?</label>
+                                </div>
+                                {sendEmails[order.id] && (
+                                    <select
+                                        value={selectedTemplates[order.id] || ""}
+                                        onChange={(e) => setSelectedTemplates(prev => ({ ...prev, [order.id]: e.target.value }))}
+                                        className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono"
+                                    >
+                                        <option value="">
+                                            {emailTemplates.some(tmpl => tmpl.isDefault && (tmpl.assignedForm === "invoice_issuance" || tmpl.assignedForm === "any" || !tmpl.assignedForm)) ? "Default Template" : "Select Template"}
+                                        </option>
+                                        {emailTemplates.filter(tmpl => tmpl.assignedForm === "invoice_issuance" || tmpl.assignedForm === "any" || !tmpl.assignedForm).map(tmpl => (
+                                            <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>
+                                        ))}
+                                    </select>
+                                )}
+                            </div>
+
+                            <div className="flex items-center justify-end gap-2 pt-2">
+                              {isEditing && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingOrderId(null);
+                                    setInvoiceNumbers(prev => {
+                                      const copy = { ...prev };
+                                      delete copy[order.id];
+                                      return copy;
+                                    });
+                                    setSelectedFiles(prev => ({ ...prev, [order.id]: null }));
+                                  }}
+                                  className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-1.5 px-3 rounded-lg text-[10px] transition-all cursor-pointer font-mono"
+                                >
+                                  Cancel
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => handleMapInvoice(order)}
+                                disabled={uploadProgress[order.id] || !teamCanEdit}
+                                className={`font-bold py-1.5 px-4 rounded-lg text-[10px] flex items-center justify-center gap-1.5 transition-all shadow-xs font-mono font-extrabold ${
+                                  !teamCanEdit
+                                    ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                                    : "bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                                }`}
+                                title={!teamCanEdit ? "Your team does not have edit permission." : undefined}
+                              >
+                                {uploadProgress[order.id] ? (
+                                  <>
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                    <span>Saving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <FileCheck className="h-3 w-3" />
+                                    <span>{isEditing ? "Save Invoice Update" : "Map Invoice"}</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Form Notifications */}
+                    <div className="mt-2 text-center">
+                      {orderErrors[order.id] && (
+                        <p className="text-[9px] text-rose-500 font-semibold flex items-center justify-center gap-1">
+                          <AlertCircle size={10} /> {orderErrors[order.id]}
+                        </p>
+                      )}
+                      {orderSuccess[order.id] && (
+                        <p className="text-[9px] text-emerald-600 font-bold flex items-center justify-center gap-1 animate-pulse">
+                          <Check size={10} /> Mapped successfully to Google Drive & Firestore!
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Invoice Attached Sub-Tab Content */}
+      {activeSubTab === "invoice_attached" && (
+        <div className="space-y-4 animate-fadeIn" id="invoice-attached-subtab">
+          {filteredOrders.length === 0 ? (
+            <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center" id="no-mapped-invoices">
+              <Receipt className="mx-auto h-12 w-12 text-slate-300 mb-3" />
+              <p className="text-sm font-bold text-slate-600">No Mapped Invoices Found</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                No orders match your search criteria or no invoices have been mapped yet.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-white border border-slate-200/85 rounded-2xl shadow-sm overflow-hidden" id="mapped-invoices-table-container">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse" id="mapped-invoices-table">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-mono font-bold uppercase tracking-wider text-[10px]">
+                      <th className="p-4 text-center w-12"></th>
+                      <th className="p-4">Client / Company</th>
+                      <th className="p-4">Customer PO</th>
+                      <th className="p-4 text-right">PO Amount</th>
+                      <th className="p-4">Invoice Number</th>
+                      <th className="p-4">Invoice Document</th>
+                      <th className="p-4 text-center">Date Mapped</th>
+                      <th className="p-4 text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-600">
+                    {filteredOrders.map((order) => {
+                      const isExpanded = !!expandedOrderIds[order.id];
+                      const bank = paymentBanks.find((b) => b.id === order.paymentBankId);
+
+                      return (
+                        <React.Fragment key={order.id}>
+                          <tr className={`hover:bg-slate-50/55 transition-colors ${isExpanded ? "bg-indigo-50/15" : ""}`} id={`mapped-row-${order.id}`}>
+                            <td className="p-4 text-center">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedOrderIds(prev => ({ ...prev, [order.id]: !prev[order.id] }))}
+                                className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-indigo-600 transition-colors cursor-pointer"
+                                title={isExpanded ? "Hide Details" : "Show Details"}
+                                id={`expand-row-btn-${order.id}`}
+                              >
+                                {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                              </button>
+                            </td>
+                            <td className="p-4">
+                              <div className="font-extrabold text-slate-800">{order.clientName}</div>
+                              <div className="text-[10px] text-slate-500 font-mono mt-0.5">{order.companyName}</div>
+                            </td>
+                            <td className="p-4 font-mono font-bold text-slate-700">
+                              {order.closedWonDetails?.customerPoNumber || "N/A"}
+                              {order.closedWonDetails?.poAttachmentUrl && (
+                                <a
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    openOrDownloadDocument(order.closedWonDetails.poAttachmentUrl, `PO_${order.closedWonDetails.customerPoNumber || "document"}.pdf`);
+                                  }}
+                                  className="text-indigo-600 hover:text-indigo-800 font-medium block text-[9px] underline mt-0.5"
+                                  id={`view-po-${order.id}`}
+                                >
+                                  View PO ↗
+                                </a>
+                              )}
+                            </td>
+                            <td className="p-4 text-right font-mono font-extrabold text-slate-800">
+                              ₹{order.totalValue?.toLocaleString()}
+                            </td>
+                            <td className="p-4">
+                              <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 font-mono font-bold text-[10px] px-2.5 py-1 rounded-lg border border-emerald-150">
+                                <Check size={11} className="stroke-[3]" />
+                                {order.billingDetails?.invoiceNumber}
+                              </span>
+                            </td>
+                            <td className="p-4">
+                              {order.billingDetails?.invoiceFileUrl ? (
+                                <a
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    openOrDownloadDocument(order.billingDetails.invoiceFileUrl, order.billingDetails.invoiceFileName || "invoice.pdf");
+                                  }}
+                                  className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-1 px-2.5 rounded-lg text-[10px] font-mono transition-all border border-indigo-100"
+                                  id={`view-invoice-${order.id}`}
+                                >
+                                  <FileText size={11} />
+                                  <span className="truncate max-w-[120px] inline-block align-bottom">
+                                    {order.billingDetails.invoiceFileName || "invoice.pdf"}
+                                  </span>
+                                  <ExternalLink size={10} />
+                                </a>
+                              ) : (
+                                <span className="text-slate-400 italic text-[11px]">No file attached</span>
+                              )}
+                            </td>
+                            <td className="p-4 text-center font-mono text-[10px] text-slate-400">
+                              {order.billingDetails?.mappedAt
+                                ? formatDate(order.billingDetails.mappedAt)
+                                : "N/A"}
+                            </td>
+                            <td className="p-4 text-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  // Open confirmation modal
+                                  setConfirmEditOrder(order);
+                                }}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:text-indigo-800 font-mono uppercase bg-indigo-50 hover:bg-indigo-100/70 px-2.5 py-1.5 rounded-lg transition-all border border-indigo-100/40 cursor-pointer"
+                                id={`update-invoice-btn-${order.id}`}
+                              >
+                                Update
+                              </button>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="bg-slate-50/50" id={`details-row-${order.id}`}>
+                              <td colSpan={8} className="p-5 border-b border-slate-200">
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 text-[11px] animate-fadeIn">
+                                  {/* Column 1: Client & Bank Info */}
+                                  <div className="space-y-4">
+                                    {/* Contact Details */}
+                                    <div className="bg-white p-4 border border-slate-200/75 rounded-xl space-y-2.5 shadow-xs">
+                                      <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                        <User2 size={10} className="text-slate-400" />
+                                        Client Contact Details
+                                      </p>
+                                      <div className="space-y-2">
+                                        <div>
+                                          <span className="text-[8px] font-mono text-slate-400 uppercase font-bold block">Email</span>
+                                          <span className="text-slate-700 font-medium break-all flex items-center gap-1">
+                                            <Mail size={10} className="text-slate-400 shrink-0" />
+                                            {order.email || "N/A"}
+                                          </span>
+                                        </div>
+                                        <div>
+                                          <span className="text-[8px] font-mono text-slate-400 uppercase font-bold block">Phone</span>
+                                          <span className="text-slate-700 font-semibold flex items-center gap-1">
+                                            <Phone size={10} className="text-slate-400 shrink-0" />
+                                            {order.phone || "N/A"}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Delivery & Destination Address */}
+                                    <div className="bg-white p-4 border border-slate-200/75 rounded-xl space-y-2 shadow-xs">
+                                      <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                        <MapPin size={10} className="text-slate-400" />
+                                        Delivery & Destination
+                                      </p>
+                                      <div className="space-y-1.5">
+                                        <div className="flex justify-between text-[10px]">
+                                          <span className="text-slate-400 font-bold uppercase font-mono text-[8px]">Delivery Term:</span>
+                                          <span className="text-slate-700 font-semibold">{order.closedWonDetails?.deliveryTerm || "N/A"}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-slate-400 font-bold block uppercase font-mono text-[8px] mb-0.5">Destination Address:</span>
+                                          <span className="text-slate-700 block bg-slate-50 p-2 rounded border border-slate-100 leading-normal text-[9.5px]">
+                                            {order.closedWonDetails?.destinationAddress || "N/A"}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Bank Details */}
+                                    <div className="bg-indigo-50/40 p-4 border border-indigo-100 rounded-xl space-y-2 shadow-xs">
+                                      <p className="text-[9px] font-mono text-indigo-500 uppercase font-bold border-b border-indigo-150 pb-1 flex items-center gap-1">
+                                        <CreditCard size={10} className="text-indigo-400" />
+                                        Mapped Deposit Bank
+                                      </p>
+                                      {bank ? (
+                                        <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                          <div>
+                                            <span className="text-slate-400 block text-[8px] font-mono uppercase">Bank Name</span>
+                                            <span className="text-indigo-950 font-extrabold">{bank.bankName}</span>
+                                          </div>
+                                          <div>
+                                            <span className="text-slate-400 block text-[8px] font-mono uppercase">Branch</span>
+                                            <span className="text-slate-700 font-medium">{bank.branch}</span>
+                                          </div>
+                                          <div>
+                                            <span className="text-slate-400 block text-[8px] font-mono uppercase">Account No</span>
+                                            <span className="text-indigo-950 font-bold font-mono">{bank.accountNumber}</span>
+                                          </div>
+                                          <div>
+                                            <span className="text-slate-400 block text-[8px] font-mono uppercase">IFSC Code</span>
+                                            <span className="text-indigo-950 font-bold font-mono">{bank.ifscCode}</span>
+                                          </div>
+                                          <div className="col-span-2">
+                                            <span className="text-slate-400 block text-[8px] font-mono uppercase">Beneficiary Name</span>
+                                            <span className="text-slate-700 font-medium">{bank.accountHolderName}</span>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <span className="text-slate-400 italic text-[10px] block">No bank account mapped.</span>
+                                      )}
+                                      <div className="text-[10px] pt-1 border-t border-indigo-100/50">
+                                        <span className="text-slate-400 block text-[8px] font-mono uppercase">Payment Terms:</span>
+                                        <span className="text-slate-700 font-medium">{order.payment || "N/A"}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Column 2: PO & Logistics */}
+                                  <div className="space-y-4">
+                                    {/* Customer PO Details */}
+                                    <div className="bg-white p-4 border border-slate-200/75 rounded-xl space-y-2 shadow-xs">
+                                      <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                        <FileText size={10} className="text-slate-400" />
+                                        Customer PO Specifications
+                                      </p>
+                                      <div className="space-y-1.5 font-mono text-[10px]">
+                                        <div className="flex justify-between items-center">
+                                          <span className="text-slate-400 font-bold uppercase tracking-tight">Customer PO:</span>
+                                          <span className="text-slate-700 font-bold">{order.closedWonDetails?.customerPoNumber || "N/A"}</span>
+                                        </div>
+                                        {order.closedWonDetails?.poDate && (
+                                          <div className="flex justify-between items-center">
+                                            <span className="text-slate-400 font-bold uppercase tracking-tight">PO Date:</span>
+                                            <span className="text-slate-700 font-bold">
+                                              {formatDate(order.closedWonDetails.poDate)}
+                                            </span>
+                                          </div>
+                                        )}
+                                        <div className="flex justify-between items-center">
+                                          <span className="text-slate-400 font-bold uppercase tracking-tight">Total BOM Items:</span>
+                                          <span className="text-slate-700 font-bold bg-slate-100 px-1.5 py-0.5 rounded text-[9px]">
+                                            {order.items?.length || 0} unique items
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Logistics & Dispatch Specifications */}
+                                    <div className="bg-white p-4 border border-slate-200/75 rounded-xl space-y-2.5 shadow-xs">
+                                      <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                        <Truck size={10} className="text-slate-400" />
+                                        Logistics & Dispatch Details
+                                      </p>
+                                      <div className="grid grid-cols-2 gap-2.5 text-[10px]">
+                                        <div>
+                                          <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Dispatch Date</span>
+                                          <span className="text-slate-700 font-medium">
+                                            {order.closedWonDetails?.dispatchDate ? formatDate(order.closedWonDetails.dispatchDate) : "N/A"}
+                                          </span>
+                                        </div>
+                                        <div>
+                                          <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Dispatch From</span>
+                                          <span className="text-slate-700 font-medium">
+                                            {order.closedWonDetails?.dispatchLocation || "N/A"}
+                                          </span>
+                                        </div>
+                                        <div>
+                                          <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Transporter Name</span>
+                                          <span className="text-slate-700 font-medium">
+                                            {order.closedWonDetails?.transporterName || "N/A"}
+                                          </span>
+                                        </div>
+                                        <div>
+                                          <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Warehouse Mgr</span>
+                                          <span className="text-slate-700 font-medium">
+                                            {order.closedWonDetails?.warehouseManagedBy || "N/A"}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Freight Specifications */}
+                                    <div className="bg-white p-4 border border-slate-200/75 rounded-xl space-y-2 shadow-xs">
+                                      <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                        <IndianRupee size={10} className="text-slate-400" />
+                                        Freight Terms & Surcharges
+                                      </p>
+                                      <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                                        <div className="flex justify-between pr-2 border-r border-slate-100">
+                                          <span className="text-slate-400">Freight Term:</span>
+                                          <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightTerm || "N/A"}</span>
+                                        </div>
+                                        <div className="flex justify-between pl-1">
+                                          <span className="text-slate-400">Charged in Bill:</span>
+                                          <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightChargedInBill || "N/A"}</span>
+                                        </div>
+                                        <div className="flex justify-between pr-2 border-r border-slate-100">
+                                          <span className="text-slate-400">Cost to AOL:</span>
+                                          <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightCostToAol || "N/A"}</span>
+                                        </div>
+                                        <div className="flex justify-between pl-1">
+                                          <span className="text-slate-400">Cartage/Labour:</span>
+                                          <span className="text-slate-700 font-bold">{order.closedWonDetails?.cartageLabourCharges || "N/A"}</span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Column 3: Invoice Itemization (BOM) */}
+                                  <div className="space-y-4">
+                                    <div className="bg-white p-4 border border-slate-200/75 rounded-xl space-y-2 shadow-xs">
+                                      <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
+                                        <ListOrdered size={10} className="text-slate-400" />
+                                        Invoice Itemization (BOM)
+                                      </p>
+                                      <div className="border border-slate-200/70 rounded-lg bg-white max-h-[250px] overflow-y-auto overflow-x-auto scrollbar-thin">
+                                        <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full">
+                                          <thead>
+                                            <tr className="bg-slate-50 text-slate-500 border-b border-slate-200/70 font-mono font-bold uppercase tracking-tight">
+                                              <th className="p-2">Product</th>
+                                              <th className="p-2 text-right">Qty</th>
+                                              <th className="p-2 text-right">Rate</th>
+                                              <th className="p-2 text-right">Amount</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-slate-100 text-slate-600">
+                                            {order.items?.map((item, idx) => (
+                                              <tr key={idx} className="hover:bg-slate-50/55">
+                                                <td className="p-2 font-medium text-slate-800">{item.productName}</td>
+                                                <td className="p-2 text-right font-mono font-semibold">{item.quantity}</td>
+                                                <td className="p-2 text-right font-mono text-slate-500">₹{item.rate?.toLocaleString()}</td>
+                                                <td className="p-2 text-right font-mono font-bold text-slate-700">₹{item.amount?.toLocaleString()}</td>
+                                              </tr>
+                                            ))}
+                                            <tr className="bg-slate-50/40 font-bold border-t border-slate-200/70">
+                                              <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
+                                              <td className="p-2 text-right text-slate-900 font-mono text-xs" colSpan={2}>
+                                                ₹{order.totalValue?.toLocaleString()}
+                                              </td>
+                                            </tr>
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      </>
+      )}
+
+      {/* Confirmation Modal for Edit Invoice */}
+      {confirmEditOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-fadeIn" id="confirm-edit-invoice-modal">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4 animate-scaleUp">
+            <div className="flex items-start gap-3">
+              <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-amber-600 shrink-0">
+                <Info size={20} />
+              </div>
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-800">
+                  Edit Invoice Mapping?
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-normal">
+                  Do you really want to edit the invoice number and invoice file for <strong>{confirmEditOrder.clientName}</strong> ({confirmEditOrder.companyName})?
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-[11px] space-y-1.5 font-mono text-slate-600">
+              <div className="flex justify-between">
+                <span>Customer PO:</span>
+                <span className="font-bold text-slate-800">{confirmEditOrder.closedWonDetails?.customerPoNumber || "N/A"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Current Invoice #:</span>
+                <span className="font-bold text-emerald-700">{confirmEditOrder.billingDetails?.invoiceNumber || "N/A"}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setConfirmEditOrder(null)}
+                className="px-4 py-2 border border-slate-200 hover:border-slate-300 text-slate-600 hover:text-slate-800 text-[11px] font-bold font-mono rounded-xl transition-all cursor-pointer"
+                id="cancel-edit-invoice-btn"
+              >
+                No, Keep It
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const order = confirmEditOrder;
+                  setEditingOrderId(order.id);
+                  setInvoiceNumbers((prev) => ({
+                    ...prev,
+                    [order.id]: order.billingDetails?.invoiceNumber || "",
+                  }));
+                  setActiveSubTab("billing");
+                  setConfirmEditOrder(null);
+                }}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold font-mono rounded-xl transition-all shadow-xs cursor-pointer"
+                id="confirm-edit-invoice-btn"
+              >
+                Yes, Edit Invoice
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Data Import Modal for Invoice Attached Indent Orders */}
+      <DataImportModal
+        isOpen={isImportOpen}
+        onClose={() => setIsImportOpen(false)}
+        title="Import Mapped Invoices & Orders (Invoice Attached)"
+        entityName="Invoice Attached Orders"
+        fields={invoiceAttachedImportFields}
+        onImport={handleImportAttachedInvoices}
+      />
+    </div>
+  );
+}

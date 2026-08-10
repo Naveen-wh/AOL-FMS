@@ -1,0 +1,200 @@
+{
+  "collections": {
+    "users": {
+      "description": "Organizational tree nodes representing team members and reporting structures mapped uniquely by their email address.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "role": "string",
+        "accessLevel": "string",
+        "email": "string",
+        "teamName": "string",
+        "targetQuota": "number",
+        "reportsTo": "string (optional)"
+      }
+    },
+    "leads": {
+      "description": "Sales deal and leads records tracked and checked dynamically against hierarchy trees.",
+      "fields": {
+        "id": "string",
+        "clientName": "string",
+        "companyName": "string",
+        "email": "string",
+        "phone": "string",
+        "status": "string",
+        "value": "number",
+        "quantity": "number",
+        "rate": "number",
+        "amount": "number",
+        "assignedToUserId": "string",
+        "createdByUserId": "string",
+        "projectId": "string",
+        "notes": "string",
+        "createdAt": "string"
+      }
+    },
+    "workflows": {
+      "description": "Organizational project pipelines hosting child deal structures.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "description": "string",
+        "status": "string",
+        "clientName": "string",
+        "leadsCount": "number"
+      }
+    },
+    "tasks": {
+      "description": "Delegated subtask activities mapped to particular projects and individual users.",
+      "fields": {
+        "id": "string",
+        "title": "string",
+        "description": "string",
+        "dueDate": "string",
+        "priority": "string",
+        "status": "string",
+        "assignedToUserId": "string",
+        "createdByUserId": "string",
+        "projectId": "string",
+        "leadId": "string (optional)"
+      }
+    },
+    "logs": {
+      "description": "A comprehensive, high-integrity audit trail recording all structural updates, creations, and edits.",
+      "fields": {
+        "id": "string",
+        "timestamp": "string",
+        "userId": "string",
+        "userName": "string",
+        "actionType": "string",
+        "targetType": "string",
+        "targetId": "string",
+        "targetName": "string",
+        "details": "string"
+      }
+    },
+    "tabSettings": {
+      "description": "Team-level tab visibility permissions managed by administrators.",
+      "fields": {
+        "id": "string",
+        "teamName": "string",
+        "visibleTabs": "array"
+      }
+    },
+    "clients": {
+      "description": "Client details for Client Management and dropdown integration.",
+      "fields": {
+        "id": "string",
+        "fullName": "string",
+        "companyName": "string",
+        "email": "string",
+        "phone": "string",
+        "gst": "string",
+        "city": "string",
+        "pincode": "string",
+        "address": "string",
+        "createdAt": "string",
+        "teamName": "string (optional)"
+      }
+    },
+    "teams": {
+      "description": "Teams definitions containing team names, descriptions, and creation details.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "description": "string (optional)",
+        "createdAt": "string"
+      }
+    },
+    "orders": {
+      "description": "Detailed multi-product sales orders and offers with item-level quantities, rates, and amounts.",
+      "fields": {
+        "id": "string",
+        "clientName": "string",
+        "companyName": "string",
+        "email": "string",
+        "phone": "string",
+        "status": "string",
+        "totalValue": "number",
+        "items": "array (OrderItem)",
+        "payment": "string",
+        "paymentBankId": "string (optional)",
+        "delivery": "string",
+        "otherTerms": "string",
+        "assignedToUserId": "string",
+        "createdByUserId": "string",
+        "notes": "string",
+        "createdAt": "string"
+      }
+    },
+    "payment_banks": {
+      "description": "Payment bank details for orders.",
+      "fields": {
+        "id": "string",
+        "bankName": "string",
+        "accountHolderName": "string",
+        "accountNumber": "string",
+        "ifscCode": "string",
+        "branch": "string",
+        "address": "string",
+        "createdAt": "string"
+      }
+    },
+    "product_categories": {
+      "description": "Product categories.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "createdAt": "string"
+      }
+    },
+    "product_groups": {
+      "description": "Product groups.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "createdAt": "string"
+      }
+    },
+    "manufacturers": {
+      "description": "Product manufacturers.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "createdAt": "string"
+      }
+    },
+    "freight_terms": {
+      "description": "Freight terms for orders.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "createdAt": "string"
+      }
+    },
+    "transporters": {
+      "description": "Transporter names for orders.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "createdAt": "string"
+      }
+    },
+    "warehouses": {
+      "description": "Warehouse managed by choices for orders.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "createdAt": "string"
+      }
+    },
+    "dispatch_locations": {
+      "description": "Dispatch location choices for orders.",
+      "fields": {
+        "id": "string",
+        "name": "string",
+        "createdAt": "string"
+      }
+    }
+  }
+}

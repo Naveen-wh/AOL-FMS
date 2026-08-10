@@ -1,0 +1,6 @@
+{
+  "name": "Sales Management System",
+  "description": "A comprehensive Sales Management System featuring role-based access control (Admin, Senior Manager, Manager, Team Lead, and Sales User) with hierarchical permissions (Editor, Contributor, Manager) for managing leads and workflows.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
