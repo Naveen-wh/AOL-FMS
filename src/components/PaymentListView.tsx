@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { User, OrderOffer, Role, PaymentBank, EmailTemplate, PaymentDetails } from "../types";
 import { saveLog, savePaymentDetails } from "../lib/firebaseService";
+import { auth } from "../firebase";
 import { openOrDownloadDocument } from "../lib/googleDriveService";
 import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
 import { formatDate } from "../utils";
@@ -114,7 +115,7 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
         `<tr style="background-color:#065f46; color:#ffffff; font-weight:bold; font-family:monospace; font-size:11px; text-transform:uppercase;">` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">INVOICE #</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">CUSTOMER PO #</th>` +
-          `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">DISPATCH DATE</th>` +
+          `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">EXPECTED DISPATCH DATE</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">DUE DATE</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:right; color:#ffffff; background-color:#065f46;">INVOICE AMOUNT</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:right; color:#ffffff; background-color:#065f46;">PAYMENT RECEIVED</th>` +
@@ -552,9 +553,13 @@ export default function PaymentListView({
       const ccClean = consolidatedCc ? cleanEmailList(consolidatedCc) : undefined;
       const bccClean = consolidatedBcc ? cleanEmailList(consolidatedBcc) : undefined;
 
-      await fetch("/api/send-order-email", {
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch("/api/send-order-email", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken || ""}`
+        },
         body: JSON.stringify({
           to: toClean,
           cc: ccClean,
@@ -562,8 +567,14 @@ export default function PaymentListView({
           subject: consolidatedSubject,
           text: consolidatedBody,
           senderUserId: activeUser?.id,
+          category: "payment_reminder_consolidated"
         }),
       });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || "Failed to send consolidated payment reminder email.");
+      }
 
       for (let i = 0; i < consolidatedEmailParty.orders.length; i++) {
         const order = consolidatedEmailParty.orders[i];
@@ -779,9 +790,13 @@ export default function PaymentListView({
           continue;
         }
 
-        await fetch("/api/send-order-email", {
+        const idToken = await auth.currentUser?.getIdToken();
+        const res = await fetch("/api/send-order-email", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${idToken || ""}`
+          },
           body: JSON.stringify({
             to: toClean,
             cc: ccClean,
@@ -789,8 +804,14 @@ export default function PaymentListView({
             subject: subject,
             text: body,
             senderUserId: activeUser?.id,
+            category: "payment_reminder_consolidated"
           }),
         });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message || "Failed to send consolidated payment reminder email.");
+        }
 
         for (let j = 0; j < party.orders.length; j++) {
           const order = party.orders[j];
@@ -1010,9 +1031,13 @@ export default function PaymentListView({
           throw new Error(`No recipient email found for client ${order.clientName || order.companyName}`);
         }
 
-        await fetch("/api/send-order-email", {
+        const idToken = await auth.currentUser?.getIdToken();
+        const res = await fetch("/api/send-order-email", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${idToken || ""}`
+          },
           body: JSON.stringify({
             to: dynamicTo,
             cc: dynamicCc,
@@ -1020,8 +1045,14 @@ export default function PaymentListView({
             subject: subject,
             text: body,
             senderUserId: activeUser?.id,
+            category: "payment_reminder"
           }),
         });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message || "Failed to send payment reminder email.");
+        }
 
         await saveLog({
           id: `log-${Date.now()}-${i}`,
@@ -1337,7 +1368,7 @@ export default function PaymentListView({
                                         <tr className="bg-emerald-50/60 text-slate-700 font-mono font-bold text-[10px] uppercase border-b border-emerald-100">
                                           <th className="p-2.5">Invoice #</th>
                                           <th className="p-2.5">PO #</th>
-                                          <th className="p-2.5">Dispatch Date</th>
+                                          <th className="p-2.5">Expected Dispatch Date</th>
                                           <th className="p-2.5">Due Date & Status</th>
                                           <th className="p-2.5 text-right">Invoice Amount</th>
                                           <th className="p-2.5 text-right">Payment Received</th>
@@ -1737,7 +1768,7 @@ export default function PaymentListView({
                                         <tr className="bg-emerald-50/60 text-slate-700 font-mono font-bold text-[10px] uppercase border-b border-emerald-100">
                                           <th className="p-2.5">Invoice #</th>
                                           <th className="p-2.5">PO #</th>
-                                          <th className="p-2.5">Dispatch Date</th>
+                                          <th className="p-2.5">Expected Dispatch Date</th>
                                           <th className="p-2.5">Due Date</th>
                                           <th className="p-2.5 text-right">Invoice Amount</th>
                                           <th className="p-2.5 text-right">Payment Received</th>
@@ -2142,7 +2173,7 @@ export default function PaymentListView({
                 </span>
               </div>
               <div>
-                Calculated Due Date = <strong className="text-slate-700">Dispatch Date + Payment Days</strong>
+                Calculated Due Date = <strong className="text-slate-700">Expected Dispatch Date + Payment Days</strong>
               </div>
             </div>
           </div>
@@ -2181,7 +2212,7 @@ export default function PaymentListView({
                       <th className="p-4 text-right">Order Amount</th>
                       <th className="p-4 text-right">Amount Received</th>
                       <th className="p-4 text-right">Pending Amount</th>
-                      <th className="p-4">Dispatch Date</th>
+                      <th className="p-4">Expected Dispatch Date</th>
                       <th className="p-4">Payment Terms / Days</th>
                       <th className="p-4">Calculated Due Date</th>
                       <th className="p-4 text-center">Due Status</th>
@@ -2636,7 +2667,7 @@ export default function PaymentListView({
                                         <span>Dispatch & Transporter Info</span>
                                       </div>
                                       <div className="text-xs space-y-1 font-mono text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-150">
-                                        <div><strong>Dispatch Date:</strong> {order.closedWonDetails?.dispatchDate || "N/A"}</div>
+                                        <div><strong>Expected Dispatch Date:</strong> {order.closedWonDetails?.dispatchDate || "N/A"}</div>
                                         <div><strong>Transporter:</strong> {order.closedWonDetails?.transporterName || "N/A"}</div>
                                         <div><strong>LR / Bilty #:</strong> {order.closedWonDetails?.lrNumber || "N/A"}</div>
                                         <div><strong>Payment Terms:</strong> {order.payment || "N/A"}</div>

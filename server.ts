@@ -2,12 +2,20 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
-import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, doc, getDoc } from "firebase/firestore";
+import { initializeApp, getApps } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+import { getAuth } from "firebase-admin/auth";
 import firebaseConfig from "./firebase-applet-config.json";
 
-const firebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+if (getApps().length === 0) {
+  initializeApp({
+    projectId: firebaseConfig.projectId,
+  });
+}
+
+const db = firebaseConfig.firestoreDatabaseId 
+  ? getFirestore(firebaseConfig.firestoreDatabaseId)
+  : getFirestore();
 
 async function startServer() {
   const app = express();
@@ -18,7 +26,141 @@ async function startServer() {
 
   // API route to send email
   app.post("/api/send-order-email", async (req, res) => {
-    const { to, cc, bcc, subject, text, senderUserId } = req.body;
+    // 1. Verify Authentication to prevent unauthorized robots or manual abuse
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ status: "error", message: "Unauthorized: Missing authentication token" });
+    }
+    const idToken = authHeader.split("Bearer ")[1];
+    try {
+      await getAuth().verifyIdToken(idToken);
+    } catch (err: any) {
+      return res.status(401).json({ status: "error", message: `Unauthorized: Invalid token: ${err.message}` });
+    }
+
+    let { to, cc, bcc, subject, text, senderUserId, category } = req.body;
+
+    // 2. Normalize category to one of the 5 specific form event types
+    if (!category) {
+      const subLower = (subject || "").toLowerCase();
+      const textLower = (text || "").toLowerCase();
+      if (subLower.includes("payment") || subLower.includes("remind") || subLower.includes("ledger") || subLower.includes("outstanding") || textLower.includes("outstanding")) {
+        if (subLower.includes("consolidat") || textLower.includes("consolidat")) {
+          category = "payment_reminder_consolidated";
+        } else {
+          category = "payment_reminder";
+        }
+      } else if (subLower.includes("offer") || subLower.includes("proposal") || subLower.includes("quotation") || subLower.includes("quote")) {
+        if (subLower.includes("update") || subLower.includes("edit")) {
+          category = "edit_order";
+        } else {
+          category = "create_order";
+        }
+      } else {
+        category = "invoice_issuance";
+      }
+    }
+
+    // Map old legacy categories to new form-event categories
+    if (category === "offer") {
+      category = "create_order";
+    } else if (category === "order") {
+      category = "invoice_issuance";
+    } else if (category === "payment") {
+      category = "payment_reminder";
+    }
+
+    const validCategories = ["create_order", "edit_order", "invoice_issuance", "payment_reminder", "payment_reminder_consolidated"];
+    if (!validCategories.includes(category)) {
+      return res.status(400).json({ status: "error", message: `Invalid category. Must be one of: ${validCategories.join(", ")}` });
+    }
+
+    // 3. Rate Limit Enforcement in an atomic Firestore transaction (IST standard date)
+    const date = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    const todayStr = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+
+    const limitsRef = db.collection("settings").doc("email_limits_config");
+    const countsRef = db.collection("email_daily_counts").doc(todayStr);
+
+    try {
+      await db.runTransaction(async (transaction) => {
+        const limitsSnap = await transaction.get(limitsRef);
+        const countsSnap = await transaction.get(countsRef);
+
+        let create_order_limit = 50;
+        let edit_order_limit = 50;
+        let invoice_issuance_limit = 30;
+        let payment_reminder_limit = 100;
+        let payment_reminder_consolidated_limit = 100;
+
+        if (limitsSnap.exists) {
+          const limitsData = limitsSnap.data();
+          if (limitsData) {
+            if (typeof limitsData.create_order === 'number') create_order_limit = limitsData.create_order;
+            else if (typeof limitsData.offerLimit === 'number') create_order_limit = limitsData.offerLimit;
+
+            if (typeof limitsData.edit_order === 'number') edit_order_limit = limitsData.edit_order;
+            else if (typeof limitsData.offerLimit === 'number') edit_order_limit = limitsData.offerLimit;
+
+            if (typeof limitsData.invoice_issuance === 'number') invoice_issuance_limit = limitsData.invoice_issuance;
+            else if (typeof limitsData.orderLimit === 'number') invoice_issuance_limit = limitsData.orderLimit;
+
+            if (typeof limitsData.payment_reminder === 'number') payment_reminder_limit = limitsData.payment_reminder;
+            else if (typeof limitsData.paymentLimit === 'number') payment_reminder_limit = limitsData.paymentLimit;
+
+            if (typeof limitsData.payment_reminder_consolidated === 'number') payment_reminder_consolidated_limit = limitsData.payment_reminder_consolidated;
+            else if (typeof limitsData.paymentLimit === 'number') payment_reminder_consolidated_limit = limitsData.paymentLimit;
+          }
+        }
+
+        const countsData = countsSnap.exists ? countsSnap.data() || {} : {};
+        const create_order_sent = countsData.create_order || countsData.offerSent || 0;
+        const edit_order_sent = countsData.edit_order || 0;
+        const invoice_issuance_sent = countsData.invoice_issuance || countsData.orderSent || 0;
+        const payment_reminder_sent = countsData.payment_reminder || countsData.paymentSent || 0;
+        const payment_reminder_consolidated_sent = countsData.payment_reminder_consolidated || 0;
+
+        if (category === "create_order" && create_order_sent >= create_order_limit) {
+          throw new Error(`Daily sending limit of ${create_order_limit} emails for Create Order Form has been reached.`);
+        }
+        if (category === "edit_order" && edit_order_sent >= edit_order_limit) {
+          throw new Error(`Daily sending limit of ${edit_order_limit} emails for Edit Order Form has been reached.`);
+        }
+        if (category === "invoice_issuance" && invoice_issuance_sent >= invoice_issuance_limit) {
+          throw new Error(`Daily sending limit of ${invoice_issuance_limit} emails for Invoice Issuance Form has been reached.`);
+        }
+        if (category === "payment_reminder" && payment_reminder_sent >= payment_reminder_limit) {
+          throw new Error(`Daily sending limit of ${payment_reminder_limit} emails for Payment Reminder Form has been reached.`);
+        }
+        if (category === "payment_reminder_consolidated" && payment_reminder_consolidated_sent >= payment_reminder_consolidated_limit) {
+          throw new Error(`Daily sending limit of ${payment_reminder_consolidated_limit} emails for Consolidated Payment Reminder Form has been reached.`);
+        }
+
+        const updateData: any = {};
+        if (category === "create_order") {
+          updateData.create_order = create_order_sent + 1;
+          updateData.offerSent = (countsData.offerSent || 0) + 1; // legacy sync
+        }
+        if (category === "edit_order") {
+          updateData.edit_order = edit_order_sent + 1;
+        }
+        if (category === "invoice_issuance") {
+          updateData.invoice_issuance = invoice_issuance_sent + 1;
+          updateData.orderSent = (countsData.orderSent || 0) + 1; // legacy sync
+        }
+        if (category === "payment_reminder") {
+          updateData.payment_reminder = payment_reminder_sent + 1;
+          updateData.paymentSent = (countsData.paymentSent || 0) + 1; // legacy sync
+        }
+        if (category === "payment_reminder_consolidated") {
+          updateData.payment_reminder_consolidated = payment_reminder_consolidated_sent + 1;
+        }
+
+        transaction.set(countsRef, updateData, { merge: true });
+      });
+    } catch (txError: any) {
+      return res.status(429).json({ status: "error", message: txError.message || "Email sending rate limits exceeded." });
+    }
 
     const isHtml = /<[a-z][\s\S]*>/i.test(text);
     const plainText = isHtml ? text.replace(/<[^>]*>/g, "") : text;
@@ -46,20 +188,23 @@ async function startServer() {
 
     const htmlText = formatEmailHtml(text);
 
-    // Fetch email sending settings from Firestore
+    // Fetch email sending settings from Firestore using Admin SDK
     let sendingMode = "single_setted_id";
     let singleConfig: any = null;
     let userConfig: any = null;
 
     try {
-      const docSnap = await getDoc(doc(db, "settings", "email_sending_config"));
-      if (docSnap.exists()) {
+      const docRef = db.collection("settings").doc("email_sending_config");
+      const docSnap = await docRef.get();
+      if (docSnap.exists) {
         const configData = docSnap.data();
-        sendingMode = configData.mode || "single_setted_id";
-        singleConfig = configData.singleConfig || null;
+        if (configData) {
+          sendingMode = configData.mode || "single_setted_id";
+          singleConfig = configData.singleConfig || null;
 
-        if (sendingMode === "logged_in_user_id" && senderUserId && configData.userConfigs) {
-          userConfig = configData.userConfigs[senderUserId] || null;
+          if (sendingMode === "logged_in_user_id" && senderUserId && configData.userConfigs) {
+            userConfig = configData.userConfigs[senderUserId] || null;
+          }
         }
       }
     } catch (err) {
@@ -150,6 +295,18 @@ async function startServer() {
 
   // API route to test email configuration
   app.post("/api/test-email-config", async (req, res) => {
+    // Verify Authentication to prevent unauthorized test email usage
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ status: "error", message: "Unauthorized: Missing authentication token" });
+    }
+    const idToken = authHeader.split("Bearer ")[1];
+    try {
+      await getAuth().verifyIdToken(idToken);
+    } catch (err: any) {
+      return res.status(401).json({ status: "error", message: `Unauthorized: Invalid token: ${err.message}` });
+    }
+
     const { smtpHost, smtpPort, smtpUser, smtpPass, fromName, secure, testRecipient } = req.body;
 
     if (!smtpHost || !smtpUser || !smtpPass || !testRecipient) {

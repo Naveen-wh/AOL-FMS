@@ -19,6 +19,7 @@ import {
   saveEmailAutoSelectSettings,
   saveLog,
 } from "../lib/firebaseService";
+import { auth } from "../firebase";
 import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
 import { formatDate } from "../utils";
 import { 
@@ -307,6 +308,7 @@ export default function IndentView({
   // Per-order forms state
   // We use the order.id as the key for storing inputs, selected files, error, success and loading states
   const [invoiceNumbers, setInvoiceNumbers] = useState<{ [key: string]: string }>({});
+  const [actualDispatchDates, setActualDispatchDates] = useState<{ [key: string]: string }>({});
   const [selectedFiles, setSelectedFiles] = useState<{ [key: string]: File | null }>({});
   const [selectedTemplates, setSelectedTemplates] = useState<{ [key: string]: string }>({});
   const [sendEmails, setSendEmails] = useState<{ [key: string]: boolean }>({});
@@ -437,6 +439,7 @@ export default function IndentView({
   const handleMapInvoice = async (order: OrderOffer) => {
     const orderId = order.id;
     const invNum = invoiceNumbers[orderId]?.trim() || order.billingDetails?.invoiceNumber || "";
+    const actDispatchDate = actualDispatchDates[orderId]?.trim() || order.billingDetails?.actualDispatchDate || "";
     const file = selectedFiles[orderId];
     const sendEmail = sendEmails[orderId];
     const templateId = selectedTemplates[orderId];
@@ -473,6 +476,7 @@ export default function IndentView({
         invoiceFileUrl: fileUrl,
         invoiceFileName: fileName,
         mappedAt: new Date().toISOString(),
+        actualDispatchDate: actDispatchDate,
       };
 
       const updatedOrder: OrderOffer = {
@@ -534,9 +538,13 @@ export default function IndentView({
           const dynamicCc = template.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
           const dynamicBcc = template.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-          await fetch("/api/send-order-email", {
+          const idToken = await auth.currentUser?.getIdToken();
+          const res = await fetch("/api/send-order-email", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${idToken || ""}`
+            },
             body: JSON.stringify({
               to: dynamicTo,
               cc: dynamicCc,
@@ -544,8 +552,14 @@ export default function IndentView({
               subject: subject,
               text: body,
               senderUserId: activeUser?.id,
+              category: "invoice_issuance"
             }),
           });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.message || "Failed to send invoice notification email.");
+          }
 
           await saveLog({
             id: `log-${Date.now()}`,
@@ -752,9 +766,11 @@ export default function IndentView({
                 const isEditing = editingOrderId === order.id;
                 const mappedInv = order.billingDetails?.invoiceNumber;
                 const fileAttached = order.billingDetails?.invoiceFileUrl;
+                const mappedActualDispatchDate = order.billingDetails?.actualDispatchDate;
                 const hasDetails = mappedInv || fileAttached;
                 const isDragging = dragOverOrderId === order.id;
                 const localInvVal = invoiceNumbers[order.id] !== undefined ? invoiceNumbers[order.id] : (mappedInv || "");
+                const localActualDispatchDateVal = actualDispatchDates[order.id] !== undefined ? actualDispatchDates[order.id] : (mappedActualDispatchDate || "");
                 const isExpanded = !!expandedOrderIds[order.id];
 
                 // Lookup mapped bank details
@@ -853,48 +869,160 @@ export default function IndentView({
                         </button>
 
                         {isExpanded && (
-                          <div className="mt-3 border border-slate-100 bg-slate-50/30 rounded-xl p-3 space-y-4 text-[11px] animate-fadeIn">
+                          <div className="mt-4 space-y-4 text-[11px] animate-fadeIn">
                             
-                            {/* Contact & Client Billing Address Details */}
-                            <div className="space-y-2 border-b border-slate-200/60 pb-2.5">
-                              <div className="grid grid-cols-2 gap-2">
-                                <div>
-                                  <span className="text-[9px] font-mono text-slate-400 uppercase font-bold block">Email</span>
-                                  <span className="text-slate-700 font-medium break-all flex items-center gap-1">
-                                    <Mail size={10} className="text-slate-400 shrink-0" />
-                                    {order.email || "N/A"}
-                                  </span>
+                            {/* Box 1: Customer PO & Terms */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">1</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Customer PO & Terms</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-[10.5px]">
+                                <div className="space-y-1.5 font-mono">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Customer PO:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.customerPoNumber || "N/A"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">PO Date:</span>
+                                    <span className="text-slate-700 font-bold">
+                                      {order.closedWonDetails?.poDate ? formatDate(order.closedWonDetails.poDate) : "N/A"}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Total Items:</span>
+                                    <span className="text-slate-700 font-bold bg-slate-100 px-1.5 py-0.5 rounded text-[9.5px]">
+                                      {order.items?.length || 0} unique items
+                                    </span>
+                                  </div>
                                 </div>
-                                <div>
-                                  <span className="text-[9px] font-mono text-slate-400 uppercase font-bold block">Phone</span>
-                                  <span className="text-slate-700 font-semibold flex items-center gap-1">
-                                    <Phone size={10} className="text-slate-400 shrink-0" />
-                                    {order.phone || "N/A"}
-                                  </span>
+                                <div className="space-y-1.5 font-mono border-t sm:border-t-0 sm:border-l border-slate-100 pt-2 sm:pt-0 sm:pl-6">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Salesperson Name:</span>
+                                    <span className="text-slate-700 font-bold">
+                                      {users.find(u => u.id === order.assignedToUserId)?.name || "N/A"}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Payment Terms:</span>
+                                    <span className="text-slate-700 font-bold">{order.payment || "N/A"}</span>
+                                  </div>
+                                  {order.closedWonDetails?.poAttachmentUrl && (
+                                    <div className="flex justify-between items-center pt-1 border-t border-slate-100/50">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document:</span>
+                                      <a 
+                                        href="#"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          openOrDownloadDocument(order.closedWonDetails.poAttachmentUrl, `PO_${order.closedWonDetails.customerPoNumber || "document"}.pdf`);
+                                        }}
+                                        className="text-indigo-600 hover:text-indigo-800 font-black underline flex items-center gap-1 text-[9.5px]"
+                                      >
+                                        <FileText size={10} /> View Customer PO ↗
+                                      </a>
+                                    </div>
+                                  )}
                                 </div>
                               </div>
 
-                              <div className="bg-indigo-50/80 border border-indigo-100 rounded-lg p-2.5 space-y-1">
-                                <span className="text-[9px] font-mono text-indigo-900 uppercase font-extrabold flex items-center gap-1">
-                                  <MapPin size={11} className="text-indigo-600 shrink-0" />
-                                  Client Billing Address (For Bill/Invoice Creation)
-                                </span>
-                                <p className="text-[11px] text-slate-800 font-medium leading-relaxed whitespace-pre-wrap">
-                                  {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "No billing address provided"}
-                                </p>
+                              {bank && (
+                                <div className="mt-2.5 p-2.5 bg-indigo-50/40 rounded-lg border border-indigo-100/60 text-[9.5px] font-mono grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <div>
+                                    <span className="text-indigo-900 font-black uppercase block text-[8px] tracking-wider mb-0.5">Deposit Bank Account</span>
+                                    <span className="text-slate-800 font-extrabold">{bank.bankName} ({bank.branch})</span>
+                                  </div>
+                                  <div className="sm:text-right">
+                                    <span className="text-slate-400 font-black uppercase block text-[8px] tracking-wider mb-0.5">A/C & IFSC</span>
+                                    <span className="text-slate-800 font-bold">No. {bank.accountNumber} | IFSC: {bank.ifscCode}</span>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Box 2: Logistics Details */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">2</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Logistics Details</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-[10.5px]">
+                                <div className="space-y-1.5 font-mono">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Expected Dispatch Date:</span>
+                                    <span className="text-slate-700 font-bold">
+                                      {order.closedWonDetails?.dispatchDate ? formatDate(order.closedWonDetails.dispatchDate) : "N/A"}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Dispatch From:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.dispatchLocation || "N/A"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Warehouse Managed:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.warehouseManagedBy || "N/A"}</span>
+                                  </div>
+                                </div>
+                                <div className="space-y-1.5 font-mono border-t sm:border-t-0 sm:border-l border-slate-100 pt-2 sm:pt-0 sm:pl-6">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Transporter Name:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.transporterName || "N/A"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Vehicle NO.:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.vehicleNo || "N/A"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Freight Terms:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightTerm || "N/A"}</span>
+                                  </div>
+                                </div>
                               </div>
                             </div>
 
-                            {/* Ordered BOM Details */}
-                            <div>
-                              <p className="text-[9px] font-mono text-slate-400 uppercase font-bold mb-1.5 flex items-center gap-1">
-                                <ListOrdered size={10} className="text-slate-400" />
-                                Invoice Itemization (BOM)
-                              </p>
-                              <div className="border border-slate-200/70 rounded-lg overflow-x-auto scrollbar-thin bg-white">
-                                <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full">
+                            {/* Box 3: Address & Contact Details */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">3</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Address & Contact Details</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-[10.5px]">
+                                <div className="space-y-2 font-mono">
+                                  <div>
+                                    <span className="text-slate-400 font-bold block text-[8px] uppercase tracking-tight mb-0.5">Billing Address:</span>
+                                    <p className="text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-2 rounded text-[10px]">
+                                      {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "No billing address provided"}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 font-bold block text-[8px] uppercase tracking-tight mb-0.5">Destination Address:</span>
+                                    <p className="text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-2 rounded text-[10px]">
+                                      {order.closedWonDetails?.destinationAddress || "N/A"}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="space-y-1.5 font-mono border-t sm:border-t-0 sm:border-l border-slate-100 pt-2 sm:pt-0 sm:pl-6 flex flex-col justify-center">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Email:</span>
+                                    <span className="text-slate-700 font-semibold break-all text-right">{order.email || "N/A"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center mt-1">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Contact:</span>
+                                    <span className="text-slate-700 font-bold">{order.phone || "N/A"}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Box 4: Product Details */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">4</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Product Details</span>
+                              </div>
+                              <div className="border border-slate-200 rounded-lg overflow-x-auto scrollbar-thin bg-white">
+                                <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full font-mono">
                                   <thead>
-                                    <tr className="bg-slate-50 text-slate-500 border-b border-slate-200/70 font-mono font-bold uppercase tracking-tight">
+                                    <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 font-mono font-bold uppercase tracking-tight">
                                       <th className="p-2">Product</th>
                                       <th className="p-2 text-right">Qty</th>
                                       <th className="p-2 text-right">Rate</th>
@@ -904,15 +1032,15 @@ export default function IndentView({
                                   <tbody className="divide-y divide-slate-100 text-slate-600">
                                     {order.items?.map((item, idx) => (
                                       <tr key={idx} className="hover:bg-slate-50/50">
-                                        <td className="p-2 font-medium text-slate-800">{item.productName}</td>
-                                        <td className="p-2 text-right font-mono font-semibold">{item.quantity}</td>
-                                        <td className="p-2 text-right font-mono text-slate-500">₹{item.rate?.toLocaleString()}</td>
-                                        <td className="p-2 text-right font-mono font-bold text-slate-700">₹{item.amount?.toLocaleString()}</td>
+                                        <td className="p-2 font-semibold text-slate-800">{item.productName}</td>
+                                        <td className="p-2 text-right font-bold">{item.quantity}</td>
+                                        <td className="p-2 text-right text-slate-500">₹{item.rate?.toLocaleString()}</td>
+                                        <td className="p-2 text-right font-black text-slate-700">₹{item.amount?.toLocaleString()}</td>
                                       </tr>
                                     ))}
-                                    <tr className="bg-slate-50/40 font-bold border-t border-slate-200/70">
+                                    <tr className="bg-slate-50/50 font-black border-t border-slate-200">
                                       <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
-                                      <td className="p-2 text-right text-slate-900 font-mono text-xs" colSpan={2}>
+                                      <td className="p-2 text-right text-slate-900 text-xs font-mono" colSpan={2}>
                                         ₹{order.totalValue?.toLocaleString()}
                                       </td>
                                     </tr>
@@ -921,122 +1049,45 @@ export default function IndentView({
                               </div>
                             </div>
 
-                            {/* Logistic & Dispatch Specifications */}
-                            <div className="bg-white p-3 border border-slate-200/70 rounded-xl space-y-2.5">
-                              <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
-                                <Truck size={10} className="text-slate-400" />
-                                Logistic & Dispatch Details
-                              </p>
-                              <div className="grid grid-cols-2 gap-2.5 text-[10px]">
-                                <div>
-                                  <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Dispatch Date</span>
-                                  <span className="text-slate-700 font-medium">
-                                    {order.closedWonDetails?.dispatchDate ? formatDate(order.closedWonDetails.dispatchDate) : "N/A"}
-                                  </span>
+                            {/* Box 5: Delivery Terms */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">5</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Delivery Terms</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-[10.5px]">
+                                <div className="space-y-1.5 font-mono">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Delivery Terms:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.deliveryTerm || "N/A"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Cartage / Labour:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.cartageLabourCharges || "N/A"}</span>
+                                  </div>
                                 </div>
-                                <div>
-                                  <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Dispatch From</span>
-                                  <span className="text-slate-700 font-medium">
-                                    {order.closedWonDetails?.dispatchLocation || "N/A"}
-                                  </span>
-                                </div>
-                                <div>
-                                  <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Transporter Name</span>
-                                  <span className="text-slate-700 font-medium">
-                                    {order.closedWonDetails?.transporterName || "N/A"}
-                                  </span>
-                                </div>
-                                <div>
-                                  <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Warehouse Manager</span>
-                                  <span className="text-slate-700 font-medium">
-                                    {order.closedWonDetails?.warehouseManagedBy || "N/A"}
-                                  </span>
+                                <div className="space-y-1.5 font-mono border-t sm:border-t-0 sm:border-l border-slate-100 pt-2 sm:pt-0 sm:pl-6">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Charged in Bill:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightChargedInBill || "N/A"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Cost to AOL:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightCostToAol || "N/A"}</span>
+                                  </div>
                                 </div>
                               </div>
                             </div>
 
-                            {/* Freight Specifications */}
-                            <div className="bg-white p-3 border border-slate-200/70 rounded-xl space-y-2">
-                              <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
-                                <IndianRupee size={10} className="text-slate-400" />
-                                Freight Terms & Surcharges
-                              </p>
-                              <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
-                                <div className="flex justify-between pr-2 border-r border-slate-100">
-                                  <span className="text-slate-400">Freight Term:</span>
-                                  <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightTerm || "N/A"}</span>
-                                </div>
-                                <div className="flex justify-between pl-1">
-                                  <span className="text-slate-400">Charged in Bill:</span>
-                                  <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightChargedInBill || "N/A"}</span>
-                                </div>
-                                <div className="flex justify-between pr-2 border-r border-slate-100">
-                                  <span className="text-slate-400">Cost to AOL:</span>
-                                  <span className="text-slate-700 font-bold">{order.closedWonDetails?.freightCostToAol || "N/A"}</span>
-                                </div>
-                                <div className="flex justify-between pl-1">
-                                  <span className="text-slate-400">Cartage/Labour:</span>
-                                  <span className="text-slate-700 font-bold">{order.closedWonDetails?.cartageLabourCharges || "N/A"}</span>
-                                </div>
+                            {/* Box 6: Special Instructions / Remarks */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">6</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Special Instructions / Remarks</span>
                               </div>
-                            </div>
-
-                            {/* Delivery & Destination Address */}
-                            <div className="bg-white p-3 border border-slate-200/70 rounded-xl space-y-2">
-                              <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
-                                <MapPin size={10} className="text-slate-400" />
-                                Delivery & Destination
+                              <p className="text-[10.5px] text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-3 rounded-lg whitespace-pre-wrap">
+                                {order.notes || "No special instructions/remarks provided."}
                               </p>
-                              <div className="text-[10px] space-y-1.5">
-                                <div className="flex justify-between">
-                                  <span className="text-slate-400 font-bold uppercase font-mono text-[8px]">Delivery Term:</span>
-                                  <span className="text-slate-700 font-semibold">{order.closedWonDetails?.deliveryTerm || "N/A"}</span>
-                                </div>
-                                <div>
-                                  <span className="text-slate-400 font-bold block uppercase font-mono text-[8px] mb-0.5">Destination Address:</span>
-                                  <span className="text-slate-700 block bg-slate-50 p-2 rounded border border-slate-100 leading-normal text-[9.5px]">
-                                    {order.closedWonDetails?.destinationAddress || "N/A"}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Bank Details */}
-                            <div className="bg-indigo-50/40 p-3 border border-indigo-100 rounded-xl space-y-2">
-                              <p className="text-[9px] font-mono text-indigo-500 uppercase font-bold border-b border-indigo-150 pb-1 flex items-center gap-1">
-                                <CreditCard size={10} className="text-indigo-400" />
-                                Mapped Deposit Bank Account
-                              </p>
-                              {bank ? (
-                                <div className="grid grid-cols-2 gap-2 text-[10px]">
-                                  <div>
-                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">Bank Name</span>
-                                    <span className="text-indigo-950 font-extrabold">{bank.bankName}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">Branch</span>
-                                    <span className="text-slate-700 font-medium">{bank.branch}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">Account Number</span>
-                                    <span className="text-indigo-950 font-bold font-mono">{bank.accountNumber}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">IFSC Code</span>
-                                    <span className="text-indigo-950 font-bold font-mono">{bank.ifscCode}</span>
-                                  </div>
-                                  <div className="col-span-2">
-                                    <span className="text-slate-400 block text-[8px] font-mono uppercase">Beneficiary Name</span>
-                                    <span className="text-slate-700 font-medium">{bank.accountHolderName}</span>
-                                  </div>
-                                </div>
-                              ) : (
-                                <span className="text-slate-450 italic text-[10px]">No specific bank account mapped to this offer.</span>
-                              )}
-                              <div className="text-[10px] pt-1 border-t border-indigo-100/50">
-                                <span className="text-slate-400 block text-[8px] font-mono uppercase">Standard Payment Terms:</span>
-                                <span className="text-slate-700 font-medium">{order.payment || "N/A"}</span>
-                              </div>
                             </div>
 
                           </div>
@@ -1047,14 +1098,28 @@ export default function IndentView({
                       {hasDetails && !isEditing ? (
                         <div className="bg-emerald-50/50 border border-emerald-150 rounded-xl p-3.5 space-y-2">
                           <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <span className="bg-emerald-100 text-emerald-800 p-1 rounded-lg">
-                                <Check size={12} className="stroke-[3]" />
-                              </span>
-                              <div>
-                                <p className="text-[9px] text-emerald-600 font-mono font-bold uppercase tracking-wider">Mapped Invoice</p>
-                                <p className="text-xs font-extrabold text-slate-800 font-mono">{mappedInv}</p>
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                              <div className="flex items-center gap-2">
+                                <span className="bg-emerald-100 text-emerald-800 p-1 rounded-lg">
+                                  <Check size={12} className="stroke-[3]" />
+                                </span>
+                                <div>
+                                  <p className="text-[9px] text-emerald-600 font-mono font-bold uppercase tracking-wider">Mapped Invoice</p>
+                                  <p className="text-xs font-extrabold text-slate-800 font-mono">{mappedInv}</p>
+                                </div>
                               </div>
+
+                              {mappedActualDispatchDate && (
+                                <div className="flex items-center gap-2">
+                                  <span className="bg-teal-100 text-teal-850 p-1 rounded-lg">
+                                    <Calendar size={12} className="stroke-[3]" />
+                                  </span>
+                                  <div>
+                                    <p className="text-[9px] text-teal-700 font-mono font-bold uppercase tracking-wider">Actual Dispatch Date</p>
+                                    <p className="text-xs font-extrabold text-slate-800 font-mono">{formatDate(mappedActualDispatchDate)}</p>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                             
                             <button
@@ -1062,6 +1127,9 @@ export default function IndentView({
                                 setEditingOrderId(order.id);
                                 if (invoiceNumbers[order.id] === undefined) {
                                   setInvoiceNumbers(prev => ({ ...prev, [order.id]: mappedInv || "" }));
+                                }
+                                if (actualDispatchDates[order.id] === undefined) {
+                                  setActualDispatchDates(prev => ({ ...prev, [order.id]: mappedActualDispatchDate || "" }));
                                 }
                               }}
                               className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 font-mono uppercase cursor-pointer underline decoration-dotted"
@@ -1094,6 +1162,19 @@ export default function IndentView({
                       ) : (
                         // Form Block
                         <div className="space-y-3 pt-1 border-t border-slate-100 pt-3.5">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
+                              Actual Dispatch Date
+                            </label>
+                            <input
+                              type="date"
+                              value={localActualDispatchDateVal}
+                              onChange={(e) => setActualDispatchDates(prev => ({ ...prev, [order.id]: e.target.value }))}
+                              disabled={uploadProgress[order.id]}
+                              className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono font-semibold"
+                            />
+                          </div>
+
                           <div className="space-y-1">
                             <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
                               Invoice Number *
@@ -1200,6 +1281,11 @@ export default function IndentView({
                                   onClick={() => {
                                     setEditingOrderId(null);
                                     setInvoiceNumbers(prev => {
+                                      const copy = { ...prev };
+                                      delete copy[order.id];
+                                      return copy;
+                                    });
+                                    setActualDispatchDates(prev => {
                                       const copy = { ...prev };
                                       delete copy[order.id];
                                       return copy;
@@ -1503,7 +1589,7 @@ export default function IndentView({
                                       </p>
                                       <div className="grid grid-cols-2 gap-2.5 text-[10px]">
                                         <div>
-                                          <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Dispatch Date</span>
+                                          <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Expected Dispatch Date</span>
                                           <span className="text-slate-700 font-medium">
                                             {order.closedWonDetails?.dispatchDate ? formatDate(order.closedWonDetails.dispatchDate) : "N/A"}
                                           </span>
@@ -1657,6 +1743,10 @@ export default function IndentView({
                   setInvoiceNumbers((prev) => ({
                     ...prev,
                     [order.id]: order.billingDetails?.invoiceNumber || "",
+                  }));
+                  setActualDispatchDates((prev) => ({
+                    ...prev,
+                    [order.id]: order.billingDetails?.actualDispatchDate || "",
                   }));
                   setActiveSubTab("billing");
                   setConfirmEditOrder(null);

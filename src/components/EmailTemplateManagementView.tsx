@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { EmailTemplate, Role, User, EmailSendingConfig, EmailSendingMode, SmtpCredentials } from "../types";
-import { saveEmailTemplate, deleteEmailTemplateDoc, saveLog, getEmailSendingConfig, saveEmailSendingConfig } from "../lib/firebaseService";
+import { EmailTemplate, Role, User, EmailSendingConfig, EmailSendingMode, SmtpCredentials, EmailLimitsConfig, EmailDailyCounts } from "../types";
+import { saveEmailTemplate, deleteEmailTemplateDoc, saveLog, getEmailSendingConfig, saveEmailSendingConfig, getEmailLimitsConfig, saveEmailLimitsConfig, getEmailDailyCounts } from "../lib/firebaseService";
+import { auth } from "../firebase";
 import { TEMPLATE_VARIABLE_GROUPS } from "../lib/templateUtils";
-import { Plus, Trash2, Edit2, Copy, Check, Info, Tag, Mail, Server, UserCheck, ShieldCheck, Send, AlertCircle, RefreshCw, Key, Settings, X, CheckCircle2, Lock, Eye, EyeOff } from "lucide-react";
+import { Plus, Trash2, Edit2, Copy, Check, Info, Tag, Mail, Server, UserCheck, ShieldCheck, Send, AlertCircle, RefreshCw, Key, Settings, X, CheckCircle2, Lock, Eye, EyeOff, Loader2 } from "lucide-react";
 import InlineDeleteConfirm from "./InlineDeleteConfirm";
 import RichTextEditor from "./RichTextEditor";
 
@@ -65,6 +66,74 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
 
   // User table search filter
   const [userSearchTerm, setUserSearchTerm] = useState("");
+
+  // Email limits states
+  const [limitsConfig, setLimitsConfig] = useState<EmailLimitsConfig>({
+    create_order: 50,
+    edit_order: 50,
+    invoice_issuance: 30,
+    payment_reminder: 100,
+    payment_reminder_consolidated: 100,
+  });
+  const [dailyCounts, setDailyCounts] = useState<EmailDailyCounts>({
+    create_order: 0,
+    edit_order: 0,
+    invoice_issuance: 0,
+    payment_reminder: 0,
+    payment_reminder_consolidated: 0,
+  });
+  const [isSavingLimits, setIsSavingLimits] = useState(false);
+  const [isLoadingLimits, setIsLoadingLimits] = useState(false);
+
+  useEffect(() => {
+    if (isAdmin && mainTab === "sending_settings") {
+      setIsLoadingLimits(true);
+      
+      // Fetch limits config
+      getEmailLimitsConfig()
+        .then((cfg) => {
+          setLimitsConfig(cfg);
+        })
+        .catch(console.error);
+
+      // Fetch today's counts (Asia/Kolkata timezone)
+      const date = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+      const todayStr = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+      getEmailDailyCounts(todayStr)
+        .then((counts) => {
+          setDailyCounts(counts);
+        })
+        .catch(console.error)
+        .finally(() => setIsLoadingLimits(false));
+    }
+  }, [isAdmin, mainTab]);
+
+  const handleSaveLimits = async () => {
+    setIsSavingLimits(true);
+    try {
+      await saveEmailLimitsConfig(limitsConfig);
+      await saveLog({
+        id: `log-limits-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Update Email Sending Mode",
+        targetType: "Settings",
+        targetId: "email_limits_config",
+        targetName: "Daily Email Sending Limits",
+        details: `Updated daily event email limits - Create Order: ${limitsConfig.create_order}, Edit Order: ${limitsConfig.edit_order}, Invoice Issuance: ${limitsConfig.invoice_issuance}, Payment Reminder: ${limitsConfig.payment_reminder}, Consolidated Payment: ${limitsConfig.payment_reminder_consolidated}`
+      });
+      setStatusMessage({ type: "success", text: "Daily email sending limits successfully updated in the system!" });
+      
+      // Clear status after 3 seconds
+      setTimeout(() => setStatusMessage(null), 3000);
+    } catch (err: any) {
+      console.error(err);
+      setStatusMessage({ type: "error", text: `Failed to save daily limits: ${err.message}` });
+    } finally {
+      setIsSavingLimits(false);
+    }
+  };
 
   useEffect(() => {
     if (isAdmin) {
@@ -312,9 +381,13 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
     setTestResult(null);
 
     try {
+      const idToken = await auth.currentUser?.getIdToken();
       const res = await fetch("/api/test-email-config", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken || ""}`
+        },
         body: JSON.stringify({
           smtpHost: testTargetConfig.credentials.smtpHost,
           smtpPort: testTargetConfig.credentials.smtpPort,
@@ -1064,6 +1137,247 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          {/* Daily Email Limits & Abuse Control Panel */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <ShieldCheck size={18} className="text-indigo-600" /> Daily Email Limits & Abuse Control
+                </h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  Configure real-time backend safety constraints to restrict bulk sending, avoid spam-triggering, and guard your company domain's sender reputation.
+                </p>
+              </div>
+              <button
+                onClick={handleSaveLimits}
+                disabled={isSavingLimits}
+                className="inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-medium text-xs px-4 py-2.5 rounded-lg transition-colors cursor-pointer"
+              >
+                {isSavingLimits ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" /> Saving...
+                  </>
+                ) : (
+                  <>
+                    <Settings size={14} /> Update Limits
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+              {/* Event 1: Create Order & Offer */}
+              <div className="bg-slate-50/50 border border-slate-100 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Create Order / Offer</span>
+                    <span className="text-[10px] font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
+                      {dailyCounts.create_order} / {limitsConfig.create_order} Sent
+                    </span>
+                  </div>
+                  
+                  {/* Progress bar */}
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full bg-slate-200/70 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-indigo-600 transition-all duration-500" 
+                        style={{ width: `${Math.min(100, (dailyCounts.create_order / (limitsConfig.create_order || 1)) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-slate-400 font-medium">
+                      <span>Today's usage</span>
+                      <span>{Math.round((dailyCounts.create_order / (limitsConfig.create_order || 1)) * 100)}%</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                  <label className="block text-[10px] font-bold text-slate-600">Daily Limit</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      max={1000}
+                      value={limitsConfig.create_order}
+                      onChange={(e) => setLimitsConfig(prev => ({ ...prev, create_order: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-medium font-mono text-slate-800 focus:outline-none focus:border-indigo-500"
+                    />
+                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">/ day</span>
+                  </div>
+                  <p className="text-[9px] leading-tight text-slate-400">Restricts automated loop creation on new entries.</p>
+                </div>
+              </div>
+
+              {/* Event 2: Edit Order & Offer */}
+              <div className="bg-slate-50/50 border border-slate-100 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Edit Order / Offer</span>
+                    <span className="text-[10px] font-mono font-bold text-violet-600 bg-violet-50 px-2 py-0.5 rounded-full">
+                      {dailyCounts.edit_order} / {limitsConfig.edit_order} Sent
+                    </span>
+                  </div>
+                  
+                  {/* Progress bar */}
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full bg-slate-200/70 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-violet-600 transition-all duration-500" 
+                        style={{ width: `${Math.min(100, (dailyCounts.edit_order / (limitsConfig.edit_order || 1)) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-slate-400 font-medium">
+                      <span>Today's usage</span>
+                      <span>{Math.round((dailyCounts.edit_order / (limitsConfig.edit_order || 1)) * 100)}%</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                  <label className="block text-[10px] font-bold text-slate-600">Daily Limit</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      max={1000}
+                      value={limitsConfig.edit_order}
+                      onChange={(e) => setLimitsConfig(prev => ({ ...prev, edit_order: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-medium font-mono text-slate-800 focus:outline-none focus:border-violet-500"
+                    />
+                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">/ day</span>
+                  </div>
+                  <p className="text-[9px] leading-tight text-slate-400">Throttles emails generated on rapid order updates.</p>
+                </div>
+              </div>
+
+              {/* Event 3: Invoice Issuance */}
+              <div className="bg-slate-50/50 border border-slate-100 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Invoice Issuance</span>
+                    <span className="text-[10px] font-mono font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                      {dailyCounts.invoice_issuance} / {limitsConfig.invoice_issuance} Sent
+                    </span>
+                  </div>
+                  
+                  {/* Progress bar */}
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full bg-slate-200/70 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-emerald-600 transition-all duration-500" 
+                        style={{ width: `${Math.min(100, (dailyCounts.invoice_issuance / (limitsConfig.invoice_issuance || 1)) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-slate-400 font-medium">
+                      <span>Today's usage</span>
+                      <span>{Math.round((dailyCounts.invoice_issuance / (limitsConfig.invoice_issuance || 1)) * 100)}%</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                  <label className="block text-[10px] font-bold text-slate-600">Daily Limit</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      max={1000}
+                      value={limitsConfig.invoice_issuance}
+                      onChange={(e) => setLimitsConfig(prev => ({ ...prev, invoice_issuance: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-medium font-mono text-slate-800 focus:outline-none focus:border-emerald-500"
+                    />
+                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">/ day</span>
+                  </div>
+                  <p className="text-[9px] leading-tight text-slate-400">Regulates billing, dispatch notes, & formal invoice dispatches.</p>
+                </div>
+              </div>
+
+              {/* Event 4: Payment Reminder */}
+              <div className="bg-slate-50/50 border border-slate-100 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Payment Reminder</span>
+                    <span className="text-[10px] font-mono font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full">
+                      {dailyCounts.payment_reminder} / {limitsConfig.payment_reminder} Sent
+                    </span>
+                  </div>
+                  
+                  {/* Progress bar */}
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full bg-slate-200/70 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-rose-600 transition-all duration-500" 
+                        style={{ width: `${Math.min(100, (dailyCounts.payment_reminder / (limitsConfig.payment_reminder || 1)) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-slate-400 font-medium">
+                      <span>Today's usage</span>
+                      <span>{Math.round((dailyCounts.payment_reminder / (limitsConfig.payment_reminder || 1)) * 100)}%</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                  <label className="block text-[10px] font-bold text-slate-600">Daily Limit</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      max={10000}
+                      value={limitsConfig.payment_reminder}
+                      onChange={(e) => setLimitsConfig(prev => ({ ...prev, payment_reminder: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-medium font-mono text-slate-800 focus:outline-none focus:border-rose-500"
+                    />
+                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">/ day</span>
+                  </div>
+                  <p className="text-[9px] leading-tight text-slate-400">Guards single-invoice reminders against spamming recipients.</p>
+                </div>
+              </div>
+
+              {/* Event 5: Consolidated Payment Reminder */}
+              <div className="bg-slate-50/50 border border-slate-100 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Consolidated Remind</span>
+                    <span className="text-[10px] font-mono font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
+                      {dailyCounts.payment_reminder_consolidated} / {limitsConfig.payment_reminder_consolidated} Sent
+                    </span>
+                  </div>
+                  
+                  {/* Progress bar */}
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full bg-slate-200/70 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-amber-600 transition-all duration-500" 
+                        style={{ width: `${Math.min(100, (dailyCounts.payment_reminder_consolidated / (limitsConfig.payment_reminder_consolidated || 1)) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-slate-400 font-medium">
+                      <span>Today's usage</span>
+                      <span>{Math.round((dailyCounts.payment_reminder_consolidated / (limitsConfig.payment_reminder_consolidated || 1)) * 100)}%</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                  <label className="block text-[10px] font-bold text-slate-600">Daily Limit</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      max={5000}
+                      value={limitsConfig.payment_reminder_consolidated}
+                      onChange={(e) => setLimitsConfig(prev => ({ ...prev, payment_reminder_consolidated: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-medium font-mono text-slate-800 focus:outline-none focus:border-amber-500"
+                    />
+                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">/ day</span>
+                  </div>
+                  <p className="text-[9px] leading-tight text-slate-400">Enforces bulk outstanding overview limits for company accounts.</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>

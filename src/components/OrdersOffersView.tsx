@@ -11,6 +11,7 @@ import {
   getEmailAutoSelectSettings,
   saveEmailAutoSelectSettings,
 } from "../lib/firebaseService";
+import { auth } from "../firebase";
 import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
 import { Plus, Search, Edit2, Trash2, ShieldAlert, Lock, Unlock, Filter, IndianRupee, Calendar, X, Check, HelpCircle, Building2, ShoppingCart, Percent, ShoppingBag, Upload, FileText, Loader2, Mail, FileSpreadsheet, Eye, Phone } from "lucide-react";
 import InlineDeleteConfirm from "./InlineDeleteConfirm";
@@ -770,17 +771,30 @@ export default function OrdersOffersView({
       const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
       const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-      fetch("/api/send-order-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          subject: subject,
-          text: body,
-          senderUserId: activeUser?.id,
+      auth.currentUser?.getIdToken().then((idToken) => {
+        fetch("/api/send-order-email", {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${idToken}`
+          },
+          body: JSON.stringify({
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            subject: subject,
+            text: body,
+            senderUserId: activeUser?.id,
+            category: "create_order"
+          })
         })
+        .then(async (res) => {
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            console.error("Email sending failed:", errData.message || res.statusText);
+          }
+        })
+        .catch(console.error);
       }).catch(console.error);
     }
 
@@ -995,17 +1009,30 @@ export default function OrdersOffersView({
       const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
       const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-      fetch("/api/send-order-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          subject: subject,
-          text: body,
-          senderUserId: activeUser?.id,
+      auth.currentUser?.getIdToken().then((idToken) => {
+        fetch("/api/send-order-email", {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${idToken}`
+          },
+          body: JSON.stringify({
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            subject: subject,
+            text: body,
+            senderUserId: activeUser?.id,
+            category: "edit_order"
+          })
         })
+        .then(async (res) => {
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            console.error("Email sending failed:", errData.message || res.statusText);
+          }
+        })
+        .catch(console.error);
       }).catch(console.error);
     }
 
@@ -2236,7 +2263,7 @@ export default function OrdersOffersView({
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Dispatch Date</label>
+                      <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Expected Dispatch Date</label>
                       <input
                         type="date"
                         value={newDispatchDate}
@@ -2926,7 +2953,7 @@ export default function OrdersOffersView({
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Dispatch Date</label>
+                      <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Expected Dispatch Date</label>
                       <input
                         type="date"
                         value={editDispatchDate}

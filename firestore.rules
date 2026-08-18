@@ -1,8 +1,412 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    // 1. Global Safety Net (Default Deny)
     match /{document=**} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false;
+    }
+
+    // --- REUSABLE GLOBAL HELPERS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email != null;
+    }
+
+    // Path Variable Hardening (ID Poisoning Guard)
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdminUser() {
+      return isEmailVerified() && (
+        request.auth.token.email == "whirlpoolveen@gmail.com" ||
+        request.auth.token.email == "velu@aromaorganic.in" ||
+        request.auth.token.email == "robert.sterling@apex.com"
+      );
+    }
+
+    // --- VALIDATION BLUEPRINTS ---
+    function isValidUser(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.role is string && data.role.size() <= 64
+        && data.accessLevel is string && data.accessLevel.size() <= 64
+        && data.email is string && data.email.size() <= 128
+        && data.teamName is string && data.teamName.size() <= 128
+        && data.targetQuota is number
+        && (!('reportsTo' in data) || data.reportsTo is string && data.reportsTo.size() <= 128);
+    }
+
+    function isValidLead(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.clientName is string && data.clientName.size() <= 128
+        && data.companyName is string && data.companyName.size() <= 128
+        && data.email is string && data.email.size() <= 128
+        && data.phone is string && data.phone.size() <= 32
+        && data.status is string && data.status.size() <= 64
+        && data.value is number
+        && data.quantity is number
+        && data.rate is number
+        && data.amount is number
+        && data.assignedToUserId is string && data.assignedToUserId.size() <= 128
+        && data.createdByUserId is string && data.createdByUserId.size() <= 128
+        && data.projectId is string && data.projectId.size() <= 128
+        && data.notes is string && data.notes.size() <= 2000
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidWorkflow(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.description is string && data.description.size() <= 1000
+        && data.status is string && data.status.size() <= 64
+        && data.clientName is string && data.clientName.size() <= 128
+        && data.leadsCount is number;
+    }
+
+    function isValidTask(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() <= 256
+        && data.description is string && data.description.size() <= 2000
+        && data.dueDate is string && data.dueDate.size() <= 64
+        && data.priority is string && data.priority.size() <= 32
+        && data.status is string && data.status.size() <= 64
+        && data.assignedToUserId is string && data.assignedToUserId.size() <= 128
+        && data.createdByUserId is string && data.createdByUserId.size() <= 128
+        && data.projectId is string && data.projectId.size() <= 128
+        && (!('leadId' in data) || data.leadId is string && data.leadId.size() <= 128);
+    }
+
+    function isValidLog(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.timestamp is string && data.timestamp.size() <= 64
+        && data.userId is string && data.userId.size() <= 128
+        && data.userName is string && data.userName.size() <= 128
+        && data.actionType is string && data.actionType.size() <= 64
+        && data.targetType is string && data.targetType.size() <= 64
+        && data.targetId is string && data.targetId.size() <= 128
+        && data.targetName is string && data.targetName.size() <= 256
+        && data.details is string && data.details.size() <= 2000;
+    }
+
+    function isValidTabSetting(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.teamName is string && data.teamName.size() <= 128
+        && data.visibleTabs is list && data.visibleTabs.size() <= 50;
+    }
+
+    function isValidClient(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.fullName is string && data.fullName.size() <= 128
+        && data.companyName is string && data.companyName.size() <= 128
+        && data.email is string && data.email.size() <= 128
+        && data.phone is string && data.phone.size() <= 32
+        && data.gst is string && data.gst.size() <= 32
+        && data.city is string && data.city.size() <= 128
+        && data.pincode is string && data.pincode.size() <= 16
+        && data.address is string && data.address.size() <= 1000
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('teamName' in data) || data.teamName is string && data.teamName.size() <= 128);
+    }
+
+    function isValidTeam(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && (!('description' in data) || data.description is string && data.description.size() <= 1000)
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidOrder(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.clientName is string && data.clientName.size() <= 128
+        && data.companyName is string && data.companyName.size() <= 128
+        && data.email is string && data.email.size() <= 128
+        && data.phone is string && data.phone.size() <= 32
+        && data.status is string && data.status.size() <= 64
+        && data.totalValue is number
+        && data.items is list && data.items.size() <= 100
+        && data.payment is string && data.payment.size() <= 256
+        && (!('paymentBankId' in data) || data.paymentBankId is string && data.paymentBankId.size() <= 128)
+        && data.delivery is string && data.delivery.size() <= 256
+        && data.otherTerms is string && data.otherTerms.size() <= 1000
+        && data.assignedToUserId is string && data.assignedToUserId.size() <= 128
+        && data.createdByUserId is string && data.createdByUserId.size() <= 128
+        && data.notes is string && data.notes.size() <= 2000
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidPaymentBank(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.bankName is string && data.bankName.size() <= 256
+        && data.accountHolderName is string && data.accountHolderName.size() <= 256
+        && data.accountNumber is string && data.accountNumber.size() <= 64
+        && data.ifscCode is string && data.ifscCode.size() <= 32
+        && data.branch is string && data.branch.size() <= 256
+        && data.address is string && data.address.size() <= 1000
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidProduct(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 256
+        && data.category is string && data.category.size() <= 128
+        && data.group is string && data.group.size() <= 128
+        && data.manufacturer is string && data.manufacturer.size() <= 128
+        && (!('teamName' in data) || data.teamName is string && data.teamName.size() <= 128)
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('createdByUserId' in data) || data.createdByUserId is string && data.createdByUserId.size() <= 128)
+        && (!('hsnCode' in data) || data.hsnCode is string && data.hsnCode.size() <= 64);
+    }
+
+    function isValidEmailTemplate(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.subject is string && data.subject.size() <= 256
+        && data.body is string && data.body.size() <= 10000
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('isDefault' in data) || data.isDefault is bool)
+        && (!('to' in data) || data.to is string && data.to.size() <= 256)
+        && (!('cc' in data) || data.cc is string && data.cc.size() <= 256)
+        && (!('bcc' in data) || data.bcc is string && data.bcc.size() <= 256)
+        && (!('assignedForm' in data) || data.assignedForm is string && data.assignedForm.size() <= 64);
+    }
+
+    function isValidPaymentDetails(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.orderId is string && data.orderId.size() <= 128
+        && data.amountReceived is number
+        && data.pendingAmount is number
+        && data.paymentStatus is string && data.paymentStatus.size() <= 64
+        && (!('paymentReceivedDate' in data) || data.paymentReceivedDate is string && data.paymentReceivedDate.size() <= 64)
+        && (!('utrId' in data) || data.utrId is string && data.utrId.size() <= 128)
+        && (!('comments' in data) || data.comments is string && data.comments.size() <= 2000)
+        && (!('updatedAt' in data) || data.updatedAt is string && data.updatedAt.size() <= 64)
+        && (!('updatedByUserId' in data) || data.updatedByUserId is string && data.updatedByUserId.size() <= 128)
+        && (!('updatedByUserName' in data) || data.updatedByUserName is string && data.updatedByUserName.size() <= 128);
+    }
+
+    function isValidFAQItem(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.question is string && data.question.size() <= 1000
+        && data.answer is string && data.answer.size() <= 10000
+        && (!('category' in data) || data.category is string && data.category.size() <= 128)
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('createdByUserId' in data) || data.createdByUserId is string && data.createdByUserId.size() <= 128)
+        && (!('createdByUserName' in data) || data.createdByUserName is string && data.createdByUserName.size() <= 128);
+    }
+
+    function isValidBugRequest(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() <= 256
+        && data.description is string && data.description.size() <= 10000
+        && data.type is string && data.type.size() <= 64
+        && data.priority is string && data.priority.size() <= 32
+        && data.status is string && data.status.size() <= 32
+        && data.isCompleted is bool
+        && (!('screenshotUrl' in data) || data.screenshotUrl is string && data.screenshotUrl.size() <= 1000)
+        && (!('screenshotName' in data) || data.screenshotName is string && data.screenshotName.size() <= 256)
+        && data.createdByUserId is string && data.createdByUserId.size() <= 128
+        && data.createdByUserName is string && data.createdByUserName.size() <= 128
+        && (!('createdByEmail' in data) || data.createdByEmail is string && data.createdByEmail.size() <= 128)
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('updatedAt' in data) || data.updatedAt is string && data.updatedAt.size() <= 64)
+        && (!('resolvedAt' in data) || data.resolvedAt is string && data.resolvedAt.size() <= 64)
+        && (!('resolvedByUserName' in data) || data.resolvedByUserName is string && data.resolvedByUserName.size() <= 128)
+        && (!('adminNotes' in data) || data.adminNotes is string && data.adminNotes.size() <= 5000);
+    }
+
+    function isValidMasterItem(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 256
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidSettingsDoc(data) {
+      return (!('mode' in data) || data.mode is string && data.mode.size() <= 64)
+        && (!('singleConfig' in data) || data.singleConfig is map)
+        && (!('userConfigs' in data) || data.userConfigs is map)
+        && (!('updatedAt' in data) || data.updatedAt is string && data.updatedAt.size() <= 64)
+        && (!('updatedBy' in data) || data.updatedBy is string && data.updatedBy.size() <= 128);
+    }
+
+
+    // --- COLLECTIONS RULES ---
+
+    // 1. Users Collection
+    match /users/{userId} {
+      allow read: if isEmailVerified();
+      allow create: if isEmailVerified() && isValidId(userId) && isValidUser(incoming())
+        && (incoming().role != 'Admin' || isAdminUser());
+      allow update: if isEmailVerified() && isValidId(userId) && isValidUser(incoming())
+        && (incoming().role == existing().role || isAdminUser());
+      allow delete: if isAdminUser();
+    }
+
+    // 2. Leads Collection
+    match /leads/{leadId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(leadId) && isValidLead(incoming());
+      allow delete: if isEmailVerified() && isValidId(leadId);
+    }
+
+    // 3. Workflows Collection
+    match /workflows/{workflowId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(workflowId) && isValidWorkflow(incoming());
+      allow delete: if isEmailVerified() && isValidId(workflowId);
+    }
+
+    // 4. Products Collection
+    match /products/{productId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(productId) && isValidProduct(incoming());
+      allow delete: if isEmailVerified() && isValidId(productId);
+    }
+
+    // 5. Tasks Collection
+    match /tasks/{taskId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(taskId) && isValidTask(incoming());
+      allow delete: if isEmailVerified() && isValidId(taskId);
+    }
+
+    // 6. Logs Collection
+    match /logs/{logId} {
+      allow read: if isEmailVerified();
+      allow create: if isEmailVerified() && isValidId(logId) && isValidLog(incoming());
+      allow update, delete: if isAdminUser();
+    }
+
+    // 7. TabSettings Collection
+    match /tabSettings/{settingId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(settingId) && isValidTabSetting(incoming());
+      allow delete: if isAdminUser();
+    }
+
+    // 8. Clients Collection
+    match /clients/{clientId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(clientId) && isValidClient(incoming());
+      allow delete: if isEmailVerified() && isValidId(clientId);
+    }
+
+    // 9. Teams Collection
+    match /teams/{teamId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(teamId) && isValidTeam(incoming());
+      allow delete: if isAdminUser();
+    }
+
+    // 10. Orders Collection
+    match /orders/{orderId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(orderId) && isValidOrder(incoming());
+      allow delete: if isEmailVerified() && isValidId(orderId);
+    }
+
+    // 11. Payment Banks Collection
+    match /payment_banks/{bankId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(bankId) && isValidPaymentBank(incoming());
+      allow delete: if isAdminUser();
+    }
+
+    // 12. Payment Details Collection
+    match /payment_details/{detailId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(detailId) && isValidPaymentDetails(incoming());
+      allow delete: if isEmailVerified() && isValidId(detailId);
+    }
+
+    // 13. FAQs Collection
+    match /faqs/{faqId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(faqId) && isValidFAQItem(incoming());
+      allow delete: if isAdminUser();
+    }
+
+    // 14. Bug Requests Collection
+    match /bug_requests/{bugId} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(bugId) && isValidBugRequest(incoming());
+      allow delete: if isEmailVerified() && isValidId(bugId);
+    }
+
+    // 15. Settings Collection
+    match /settings/{docId} {
+      allow read: if isEmailVerified();
+      allow write: if isAdminUser() && isValidSettingsDoc(incoming());
+    }
+
+    // 15b. Email Daily Counts Collection
+    match /email_daily_counts/{dateId} {
+      allow read: if isEmailVerified();
+      allow write: if isAdminUser();
+    }
+
+    // 16. Generic Master Database Lists
+    match /product_categories/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /product_groups/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /manufacturers/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /freight_terms/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /transporters/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /warehouses/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /dispatch_locations/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /email_templates/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidEmailTemplate(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /payment_terms/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
+    }
+    match /payment_credit_periods/{id} {
+      allow read: if isEmailVerified();
+      allow create, update: if isEmailVerified() && isValidId(id) && isValidMasterItem(incoming());
+      allow delete: if isAdminUser();
     }
   }
 }

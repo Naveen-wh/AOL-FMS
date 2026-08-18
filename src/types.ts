@@ -96,6 +96,7 @@ export interface BillingDetails {
   invoiceFileName?: string;
   mappedAt?: string;
   mappedByUserId?: string;
+  actualDispatchDate?: string;
 }
 
 export interface OrderOffer {
@@ -355,5 +356,32 @@ export interface BugRequest {
   resolvedByUserName?: string;
   adminNotes?: string;
 }
+
+export interface EmailLimitsConfig {
+  offerLimit?: number; // legacy
+  orderLimit?: number; // legacy
+  paymentLimit?: number; // legacy
+
+  // Event-specific limits
+  create_order: number;
+  edit_order: number;
+  invoice_issuance: number;
+  payment_reminder: number;
+  payment_reminder_consolidated: number;
+}
+
+export interface EmailDailyCounts {
+  offerSent?: number; // legacy
+  orderSent?: number; // legacy
+  paymentSent?: number; // legacy
+
+  // Event-specific counts
+  create_order: number;
+  edit_order: number;
+  invoice_issuance: number;
+  payment_reminder: number;
+  payment_reminder_consolidated: number;
+}
+
 
 

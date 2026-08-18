@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { User, Role, AccessLevel, SalesLead, ProjectWorkflow, SalesTask, ActionLog, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, EmailSendingConfig, PaymentDetails, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest } from "../types";
+import { User, Role, AccessLevel, SalesLead, ProjectWorkflow, SalesTask, ActionLog, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, EmailSendingConfig, PaymentDetails, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, EmailLimitsConfig, EmailDailyCounts } from "../types";
 import {
   auth,
   db,
@@ -1006,5 +1006,99 @@ export async function deleteBugRequestDoc(id: string): Promise<void> {
     handleFirestoreError(err, OperationType.DELETE, `bug_requests/${id}`);
   }
 }
+
+export async function getEmailLimitsConfig(): Promise<EmailLimitsConfig> {
+  try {
+    const docSnap = await getDoc(doc(db, "settings", "email_limits_config"));
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      return {
+        offerLimit: typeof data.offerLimit === 'number' ? data.offerLimit : 50,
+        orderLimit: typeof data.orderLimit === 'number' ? data.orderLimit : 30,
+        paymentLimit: typeof data.paymentLimit === 'number' ? data.paymentLimit : 200,
+        
+        // Event specific fallback
+        create_order: typeof data.create_order === 'number' ? data.create_order : 50,
+        edit_order: typeof data.edit_order === 'number' ? data.edit_order : 50,
+        invoice_issuance: typeof data.invoice_issuance === 'number' ? data.invoice_issuance : 30,
+        payment_reminder: typeof data.payment_reminder === 'number' ? data.payment_reminder : 100,
+        payment_reminder_consolidated: typeof data.payment_reminder_consolidated === 'number' ? data.payment_reminder_consolidated : 100,
+      };
+    }
+    return {
+      offerLimit: 50,
+      orderLimit: 30,
+      paymentLimit: 200,
+      create_order: 50,
+      edit_order: 50,
+      invoice_issuance: 30,
+      payment_reminder: 100,
+      payment_reminder_consolidated: 100
+    };
+  } catch (err) {
+    console.error("Error getting email_limits_config:", err);
+    return {
+      offerLimit: 50,
+      orderLimit: 30,
+      paymentLimit: 200,
+      create_order: 50,
+      edit_order: 50,
+      invoice_issuance: 30,
+      payment_reminder: 100,
+      payment_reminder_consolidated: 100
+    };
+  }
+}
+
+export async function saveEmailLimitsConfig(config: EmailLimitsConfig): Promise<void> {
+  try {
+    await setDoc(doc(db, "settings", "email_limits_config"), config);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, "settings/email_limits_config");
+  }
+}
+
+export async function getEmailDailyCounts(dateStr: string): Promise<EmailDailyCounts> {
+  try {
+    const docSnap = await getDoc(doc(db, "email_daily_counts", dateStr));
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      return {
+        offerSent: data.offerSent || 0,
+        orderSent: data.orderSent || 0,
+        paymentSent: data.paymentSent || 0,
+
+        create_order: data.create_order || 0,
+        edit_order: data.edit_order || 0,
+        invoice_issuance: data.invoice_issuance || 0,
+        payment_reminder: data.payment_reminder || 0,
+        payment_reminder_consolidated: data.payment_reminder_consolidated || 0,
+      };
+    }
+    return {
+      offerSent: 0,
+      orderSent: 0,
+      paymentSent: 0,
+      create_order: 0,
+      edit_order: 0,
+      invoice_issuance: 0,
+      payment_reminder: 0,
+      payment_reminder_consolidated: 0,
+    };
+  } catch (err) {
+    console.error("Error getting email_daily_counts:", err);
+    return {
+      offerSent: 0,
+      orderSent: 0,
+      paymentSent: 0,
+      create_order: 0,
+      edit_order: 0,
+      invoice_issuance: 0,
+      payment_reminder: 0,
+      payment_reminder_consolidated: 0,
+    };
+  }
+}
+
 
 
