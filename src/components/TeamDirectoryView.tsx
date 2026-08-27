@@ -176,7 +176,7 @@ export default function TeamDirectoryView({
   const activeUserRecord = users.find((u) => u.id === activeUserId);
   const isAdmin = activeUserRecord?.role === Role.Admin;
   const isSeniorManager = activeUserRecord?.role === Role.SeniorManager;
-  const canManageUsers = isAdmin || isSeniorManager;
+  const canManageUsers = isAdmin;
 
   // Local state for Admin edit forms
   const [editName, setEditName] = useState(selectedUser.name);
@@ -206,7 +206,7 @@ export default function TeamDirectoryView({
   ]);
 
   const handleSaveUser = async () => {
-    if (!onUpdateUser || !selectedUser.id) return;
+    if (!isAdmin || !onUpdateUser || !selectedUser.id) return;
     setIsSaving(true);
     try {
       await onUpdateUser(selectedUser.id, {
@@ -265,7 +265,8 @@ export default function TeamDirectoryView({
       id: "indent",
       label: "Indent & Billing",
       subTabs: [
-        { id: "billing", label: "Billing (Invoice Mapping)" },
+        { id: "logistics", label: "Logistic" },
+        { id: "billing", label: "Billing" },
         { id: "invoice_attached", label: "Invoice Attached" }
       ]
     },
@@ -795,162 +796,66 @@ export default function TeamDirectoryView({
           </h4>
 
           {/* Graphical Hierarchy Tree */}
-          <div className="space-y-2">
-            {/* Level 1: Admin */}
-            {users.filter((u) => u.role === Role.Admin).map((admin) => (
-              <div key={admin.id} className="space-y-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedUserId(admin.id)}
-                  className={`w-full flex items-center justify-between p-2 rounded-md border transition-all text-left cursor-pointer ${
-                    selectedUserId === admin.id
-                      ? "bg-purple-950/5 border-purple-500"
-                      : "bg-slate-50 border-slate-200 hover:bg-slate-100/50"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <img
-                      src={admin.avatarUrl || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120"}
-                      alt={admin.name}
-                      className="w-8 h-8 rounded border border-purple-200 object-cover shrink-0"
-                      referrerPolicy="no-referrer"
-                    />
-                    <div>
-                      <span className="font-extrabold text-slate-950 block text-[11.5px] leading-none">{admin.name}</span>
-                      <span className="text-[8.5px] uppercase font-bold text-purple-700 tracking-wider block mt-0.5 font-mono">
-                        Level 1 • Platform Administrator
-                      </span>
-                    </div>
-                  </div>
-                  <span className="text-[9px] bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-200 font-bold font-mono">
-                    Super Manager View
-                  </span>
-                </button>
+          <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+            {(() => {
+              const rootUsers = users.filter((u) => !u.reportsTo || !users.some((mgr) => mgr.id === u.reportsTo));
+              const displayRootUsers = rootUsers.length > 0 ? rootUsers : users.filter((u) => u.role === Role.Admin);
+              const finalRootUsers = displayRootUsers.length > 0 ? displayRootUsers : users;
 
-                {/* Level 2: Senior Manager */}
-                <div className="pl-4 border-l border-slate-200 space-y-2">
-                  {users.filter((u) => u.role === Role.SeniorManager && u.reportsTo === admin.id).map((srMgr) => (
-                    <div key={srMgr.id} className="space-y-2">
-                      <div className="flex items-start gap-1">
-                        <CornerDownRight size={12} className="text-slate-300 mt-2 shrink-0" />
-                        <button
-                          type="button"
-                          onClick={() => setSelectedUserId(srMgr.id)}
-                          className={`w-full flex items-center justify-between p-1.5 rounded-md border transition-all text-left cursor-pointer ${
-                            selectedUserId === srMgr.id
-                              ? "bg-emerald-950/5 border-emerald-500"
-                              : "bg-slate-50/40 border-slate-200 hover:bg-slate-100/30"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <img
-                              src={srMgr.avatarUrl || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120"}
-                              alt={srMgr.name}
-                              className="w-6.5 h-6.5 rounded border border-emerald-250 object-cover shrink-0"
-                              referrerPolicy="no-referrer"
-                            />
-                            <div>
-                              <span className="font-extrabold text-slate-800 text-[11px] block leading-none">{srMgr.name}</span>
-                              <span className="text-[8.5px] uppercase font-bold text-emerald-700 tracking-wider block mt-0.5">
-                                Level 2 • Senior Manager ({srMgr.teamName})
-                              </span>
-                            </div>
-                          </div>
-                          <span className="text-[9px] bg-emerald-50 text-emerald-800 px-1.5 py-0.2 rounded border border-emerald-200 font-bold font-mono">
-                            Contributor
+              const renderUserNode = (user: User, depth: number = 0) => {
+                const reports = users.filter((u) => u.reportsTo === user.id);
+                const isSelected = selectedUserId === user.id;
+
+                let roleBadgeColor = "bg-blue-50 text-blue-700 border-blue-200";
+                if (user.role === Role.Admin) roleBadgeColor = "bg-purple-50 text-purple-700 border-purple-200";
+                else if (user.role === Role.SeniorManager) roleBadgeColor = "bg-emerald-50 text-emerald-800 border-emerald-200";
+                else if (user.role === Role.Manager) roleBadgeColor = "bg-teal-50 text-teal-800 border-teal-200";
+                else if (user.role === Role.TeamLead) roleBadgeColor = "bg-cyan-50 text-cyan-800 border-cyan-200";
+
+                return (
+                  <div key={user.id} className="space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedUserId(user.id)}
+                      className={`w-full flex items-center justify-between p-2 rounded-md border transition-all text-left cursor-pointer ${
+                        isSelected
+                          ? "bg-slate-900 text-white border-slate-900 shadow-xs"
+                          : "bg-slate-50/60 border-slate-200 hover:bg-slate-100"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {depth > 0 && <CornerDownRight size={12} className="text-slate-400 shrink-0" />}
+                        <img
+                          src={user.avatarUrl || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120"}
+                          alt={user.name}
+                          className="w-7 h-7 rounded-full border border-slate-300 object-cover shrink-0"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="min-w-0">
+                          <span className={`font-extrabold truncate block text-xs leading-none ${isSelected ? "text-white" : "text-slate-900"}`}>
+                            {user.name}
                           </span>
-                        </button>
+                          <span className={`text-[9px] truncate block mt-0.5 font-mono uppercase ${isSelected ? "text-emerald-300" : "text-slate-500"}`}>
+                            {user.role} {user.teamName ? `• ${user.teamName}` : ""}
+                          </span>
+                        </div>
                       </div>
+                      <span className={`text-[9px] px-2 py-0.5 rounded border font-bold font-mono shrink-0 ${isSelected ? "bg-slate-800 text-emerald-400 border-slate-700" : roleBadgeColor}`}>
+                        {user.role}
+                      </span>
+                    </button>
 
-                      {/* Level 3: Managers (report to srMgr) */}
-                      <div className="pl-6 border-l border-dashed border-slate-250 space-y-2">
-                        {users.filter((u) => u.role === Role.Manager && u.reportsTo === srMgr.id).map((mgr) => (
-                          <div key={mgr.id} className="space-y-2">
-                            <div className="flex items-start gap-1">
-                              <CornerDownRight size={11} className="text-slate-300 mt-1.5 shrink-0" />
-                              <button
-                                type="button"
-                                onClick={() => setSelectedUserId(mgr.id)}
-                                className={`w-full flex items-center justify-between p-1.5 rounded-md border transition-all text-left cursor-pointer ${
-                                  selectedUserId === mgr.id
-                                    ? "bg-teal-950/5 border-teal-500"
-                                    : "bg-white border-slate-200 hover:bg-slate-50"
-                                }`}
-                              >
-                                <div className="flex items-center gap-1.5">
-                                  <img
-                                    src={mgr.avatarUrl || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120"}
-                                    alt={mgr.name}
-                                    className="w-6 h-6 rounded border border-teal-200 object-cover shrink-0"
-                                    referrerPolicy="no-referrer"
-                                  />
-                                  <div>
-                                    <span className="font-bold text-slate-850 text-[11px] block leading-none">{mgr.name}</span>
-                                    <span className="text-[8.5px] text-teal-600 block mt-0.5 font-mono">
-                                      Level 3 • {mgr.teamName}
-                                    </span>
-                                  </div>
-                                </div>
-                              </button>
-                            </div>
-
-                            {/* Level 4: Team Leads (report to managers) */}
-                            <div className="pl-5 border-l border-dotted border-slate-250 space-y-1.5">
-                              {users.filter((u) => u.role === Role.TeamLead && u.reportsTo === mgr.id).map((tl) => (
-                                <div key={tl.id} className="space-y-1.5">
-                                  <div className="flex items-start gap-1">
-                                    <CornerDownRight size={10} className="text-slate-300 mt-1.5 shrink-0" />
-                                    <button
-                                      type="button"
-                                      onClick={() => setSelectedUserId(tl.id)}
-                                      className={`w-full flex items-center justify-between p-1.5 rounded border transition-all text-left cursor-pointer ${
-                                        selectedUserId === tl.id
-                                          ? "bg-cyan-950/5 border-cyan-500"
-                                          : "bg-white border-slate-200 hover:bg-slate-50"
-                                      }`}
-                                    >
-                                      <div className="flex items-center gap-1">
-                                        <span className="w-4.5 h-4.5 rounded bg-cyan-100 border border-cyan-300 flex items-center justify-center text-[8px] font-bold text-cyan-800 font-mono shrink-0">
-                                          TL
-                                        </span>
-                                        <div>
-                                          <span className="font-bold text-slate-800 text-[10.5px] block leading-none">{tl.name}</span>
-                                          <span className="text-[8px] text-slate-400 block mt-0.5">{tl.teamName}</span>
-                                        </div>
-                                      </div>
-                                    </button>
-                                  </div>
-
-                                  {/* Level 5: Users (report to active team leads) */}
-                                  <div className="pl-5 space-y-1">
-                                    {users.filter((u) => u.role === Role.User && u.reportsTo === tl.id).map((rep) => (
-                                      <div key={rep.id} className="flex items-center gap-1">
-                                        <CornerDownRight size={9} className="text-slate-300 shrink-0" />
-                                        <button
-                                          type="button"
-                                          onClick={() => setSelectedUserId(rep.id)}
-                                          className={`w-full text-left px-1.5 py-1 rounded text-[10.5px] font-medium border cursor-pointer ${
-                                            selectedUserId === rep.id
-                                              ? "bg-blue-50 border-blue-450 text-blue-700 font-bold"
-                                              : "bg-slate-50/50 border-slate-100 hover:bg-slate-50 text-slate-600"
-                                          }`}
-                                        >
-                                          {rep.name} <span className="text-[8px] text-slate-400 font-mono font-normal">(Editor)</span>
-                                        </button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
+                    {reports.length > 0 && (
+                      <div className="pl-5 border-l-2 border-slate-200/80 space-y-1.5 mt-1.5">
+                        {reports.map((report) => renderUserNode(report, depth + 1))}
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
+                    )}
+                  </div>
+                );
+              };
+
+              return finalRootUsers.map((u) => renderUserNode(u, 0));
+            })()}
           </div>
         </div>
 

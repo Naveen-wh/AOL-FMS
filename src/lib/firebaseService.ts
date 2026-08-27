@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { User, Role, AccessLevel, SalesLead, ProjectWorkflow, SalesTask, ActionLog, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, EmailSendingConfig, PaymentDetails, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, EmailLimitsConfig, EmailDailyCounts } from "../types";
+import { User, Role, AccessLevel, SalesLead, ProjectWorkflow, SalesTask, ActionLog, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, EmailSendingConfig, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, EmailLimitsConfig, EmailDailyCounts, TaxRate, BadDebtor } from "../types";
 import {
   auth,
   db,
@@ -25,7 +25,8 @@ import {
   INITIAL_TASKS,
   INITIAL_LOGS,
   INITIAL_PRODUCTS,
-  INITIAL_ORDERS
+  INITIAL_ORDERS,
+  INITIAL_TAX_RATES
 } from "../data";
 
 // --- Firestore Error Handling per Firebase Integration Skill ---
@@ -492,13 +493,15 @@ export async function syncUserProfile(email: string, displayName: string, avatar
 
   // Developer / Super Admin auto-provision fallback
   if (
+    normalizedEmail === "naveen@chsurya.in" ||
     normalizedEmail === "whirlpoolveen@gmail.com" ||
     normalizedEmail === "velu@aromaorganic.in" ||
-    normalizedEmail === "robert.sterling@apex.com"
+    normalizedEmail === "robert.sterling@apex.com" ||
+    normalizedEmail === "gcp@aromaorganic.in"
   ) {
     const adminUser: User = {
       id: normalizedEmail,
-      name: displayName || (normalizedEmail === "velu@aromaorganic.in" ? "Velu Admin" : normalizedEmail.split("@")[0]),
+      name: displayName || (normalizedEmail === "velu@aromaorganic.in" ? "Velu Admin" : normalizedEmail === "gcp@aromaorganic.in" ? "AOL GCP" : normalizedEmail.split("@")[0]),
       role: Role.Admin,
       accessLevel: AccessLevel.Manager,
       email: normalizedEmail,
@@ -535,7 +538,8 @@ export function subscribeCollection<T>(
     });
     onUpdate(list);
   }, (error) => {
-    handleFirestoreError(error, OperationType.GET, colName);
+    console.warn(`[Firestore] Subscription error for collection '${colName}':`, error?.message || error);
+    onUpdate([]);
   });
 }
 
@@ -607,8 +611,8 @@ export async function saveLog(log: ActionLog): Promise<void> {
     if (enabled) {
       await setDoc(doc(db, "logs", log.id), cleanUndefined(log));
     }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `logs/${log.id}`);
+  } catch (err: any) {
+    console.warn(`[FirebaseService] Could not save audit log to Firestore (${log.id}):`, err?.message || err);
   }
 }
 
@@ -616,17 +620,31 @@ export async function clearAllLogsInFirestore(logs: ActionLog[]): Promise<void> 
   for (const l of logs) {
     try {
       await deleteDoc(doc(db, "logs", l.id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `logs/${l.id}`);
+    } catch (err: any) {
+      console.warn(`[FirebaseService] Could not delete log in Firestore (${l.id}):`, err?.message || err);
     }
   }
 }
 
-export async function updateUserDetails(userId: string, updates: Partial<User>): Promise<void> {
-  const userRef = doc(db, "users", userId.toLowerCase());
+export async function updateUserDetails(userId: string, updates: Partial<User>, existingUser?: User): Promise<void> {
+  const normId = userId.toLowerCase().trim();
+  const userRef = doc(db, "users", normId);
   try {
-    await setDoc(userRef, cleanUndefined(updates), { merge: true });
-  } catch (err) {
+    const cleanedUpdates = cleanUndefined(updates);
+    const payload: Record<string, any> = {
+      ...cleanedUpdates,
+      id: normId,
+      email: normId,
+      updatedAt: new Date().toISOString()
+    };
+    await setDoc(userRef, payload, { merge: true });
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.warn(`[FirebaseService] Firestore write warning for users/${userId}:`, msg);
+    if (msg.includes("permission") || msg.includes("Missing or insufficient permissions") || err?.code === "permission-denied") {
+      console.warn(`[FirebaseService] Permission restricted on remote database for user ${userId}. Applied update to active session state.`);
+      return;
+    }
     handleFirestoreError(err, OperationType.WRITE, `users/${userId}`);
   }
 }
@@ -1007,6 +1025,31 @@ export async function deleteBugRequestDoc(id: string): Promise<void> {
   }
 }
 
+export function subscribeTaxRates(onUpdate: (data: TaxRate[]) => void) {
+  const docRef = doc(db, "settings", "tax_rates");
+  return onSnapshot(docRef, (snap) => {
+    if (snap.exists() && Array.isArray(snap.data()?.items) && snap.data().items.length > 0) {
+      onUpdate(snap.data().items);
+    } else {
+      onUpdate(INITIAL_TAX_RATES);
+    }
+  }, (error) => {
+    console.warn("Could not load settings/tax_rates from firestore, using defaults:", error);
+    onUpdate(INITIAL_TAX_RATES);
+  });
+}
+
+export async function saveTaxRatesList(items: TaxRate[]): Promise<void> {
+  try {
+    await setDoc(doc(db, "settings", "tax_rates"), {
+      items: cleanUndefined(items),
+      updatedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, "settings/tax_rates");
+  }
+}
+
 export async function getEmailLimitsConfig(): Promise<EmailLimitsConfig> {
   try {
     const docSnap = await getDoc(doc(db, "settings", "email_limits_config"));
@@ -1097,6 +1140,94 @@ export async function getEmailDailyCounts(dateStr: string): Promise<EmailDailyCo
       payment_reminder: 0,
       payment_reminder_consolidated: 0,
     };
+  }
+}
+
+// Bad Debtors Firestore CRUD with LocalStorage Fallback & Event Sync
+const LOCAL_BAD_DEBTORS_KEY = "AOL_FMS_BAD_DEBTORS_CACHE";
+
+function getLocalBadDebtors(): BadDebtor[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_BAD_DEBTORS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function setLocalBadDebtors(list: BadDebtor[]) {
+  try {
+    localStorage.setItem(LOCAL_BAD_DEBTORS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent("bad_debtors_updated", { detail: list }));
+  } catch (e) {
+    console.error("Failed to save local bad debtors cache:", e);
+  }
+}
+
+export function subscribeBadDebtors(onUpdate: (data: BadDebtor[]) => void) {
+  // Pass initial local cache immediately for responsive UX
+  const initialLocal = getLocalBadDebtors();
+  if (initialLocal.length > 0) {
+    onUpdate(initialLocal);
+  }
+
+  const handleLocalUpdate = (e: Event) => {
+    const customEvt = e as CustomEvent<BadDebtor[]>;
+    if (customEvt.detail) {
+      onUpdate(customEvt.detail);
+    }
+  };
+  window.addEventListener("bad_debtors_updated", handleLocalUpdate);
+
+  const unsubFirestore = subscribeCollection<BadDebtor>("bad_debtors", (firestoreList) => {
+    const currentLocal = getLocalBadDebtors();
+    if (firestoreList && firestoreList.length > 0) {
+      const localMap = new Map<string, BadDebtor>();
+      currentLocal.forEach((bd) => localMap.set(bd.id, bd));
+      firestoreList.forEach((bd) => localMap.set(bd.id, bd));
+      const merged = Array.from(localMap.values());
+      setLocalBadDebtors(merged);
+      onUpdate(merged);
+    } else {
+      onUpdate(currentLocal);
+    }
+  }, "createdAt");
+
+  return () => {
+    window.removeEventListener("bad_debtors_updated", handleLocalUpdate);
+    unsubFirestore();
+  };
+}
+
+export async function saveBadDebtor(debtor: BadDebtor): Promise<void> {
+  // 1. Save to local cache immediately
+  const localList = getLocalBadDebtors();
+  const existingIdx = localList.findIndex((b) => b.id === debtor.id);
+  if (existingIdx >= 0) {
+    localList[existingIdx] = { ...localList[existingIdx], ...debtor };
+  } else {
+    localList.unshift(debtor);
+  }
+  setLocalBadDebtors(localList);
+
+  // 2. Persist to Firestore
+  try {
+    await setDoc(doc(db, "bad_debtors", debtor.id), cleanUndefined(debtor), { merge: true });
+  } catch (err: any) {
+    console.warn(`[FirebaseService] Firestore save for bad_debtor '${debtor.id}' fallback to local cache:`, err?.message || err);
+  }
+}
+
+export async function deleteBadDebtorDoc(id: string): Promise<void> {
+  // 1. Remove from local cache immediately
+  const localList = getLocalBadDebtors().filter((b) => b.id !== id);
+  setLocalBadDebtors(localList);
+
+  // 2. Remove from Firestore
+  try {
+    await deleteDoc(doc(db, "bad_debtors", id));
+  } catch (err: any) {
+    console.warn(`[FirebaseService] Firestore delete for bad_debtor '${id}' fallback:`, err?.message || err);
   }
 }
 

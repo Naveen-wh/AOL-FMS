@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo } from "react";
-import { User, SalesLead, ProjectWorkflow, SalesTask, Role, AccessLevel, Product, OrderOffer } from "../types";
+import { User, SalesLead, ProjectWorkflow, SalesTask, Role, AccessLevel, Product, OrderOffer, Team } from "../types";
 import { canViewLead, canViewTask, canViewOrderOffer, getReportingTreeUsers } from "../data";
 import { IndianRupee, CheckCircle, TrendingUp, Target, Package, Building2, Users, BarChart3, Search, Filter, Settings, Save, X, Loader2, Eye, EyeOff, ChevronDown, ChevronUp, Calendar, FileText, ShoppingCart, Percent } from "lucide-react";
 import AdminDriveSettings from "./AdminDriveSettings";
@@ -19,6 +19,7 @@ interface DashboardViewProps {
   tasks: SalesTask[];
   orders?: OrderOffer[];
   clients?: any[];
+  teams?: Team[];
   visibleSubTabs?: { [key: string]: string[] };
   levelWiseFilters?: { [tabOrSubTabId: string]: boolean };
 }
@@ -32,6 +33,7 @@ export default function DashboardView({
   tasks,
   orders = [],
   clients = [],
+  teams = [],
   visibleSubTabs,
   levelWiseFilters,
 }: DashboardViewProps) {
@@ -81,6 +83,7 @@ export default function DashboardView({
     avatarUrl: ""
   };
 
+  const isAdmin = activeUser.role === Role.Admin;
   const isUserAdmin = activeUser.role === Role.Admin || activeUser.role === Role.SeniorManager;
   const isUserManager = activeUser.accessLevel === AccessLevel.Manager || activeUser.role === Role.Manager;
 
@@ -335,8 +338,9 @@ export default function DashboardView({
     return Array.from(set);
   }, [users]);
 
-  // Helper to open modal and prepare state
+  // Helper to open modal and prepare state (Admin only)
   const openVisibilityModal = () => {
+    if (!isAdmin) return;
     const initial: Record<string, boolean> = {};
     users.forEach((u) => {
       initial[u.id] = u.showOnDashboard !== false;
@@ -345,8 +349,9 @@ export default function DashboardView({
     setIsVisibilityModalOpen(true);
   };
 
-  // Helper to save visibility to database
+  // Helper to save visibility to database (Admin only)
   const handleSaveVisibility = async () => {
+    if (!isAdmin) return;
     setIsSavingVisibility(true);
     try {
       const promises = (Object.entries(tempVisibility) as [string, boolean][]).map(async ([userId, isVisible]) => {
@@ -1103,8 +1108,8 @@ export default function DashboardView({
             </div>
 
             <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-              {/* Adjust Visibility button for admins */}
-              {isUserAdmin && (
+              {/* Adjust Visibility button for admin only */}
+              {isAdmin && (
                 <button
                   onClick={openVisibilityModal}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs shrink-0"
@@ -1375,8 +1380,8 @@ export default function DashboardView({
         </div>
       )}
 
-      {/* CARD VISIBILITY ADJUSTMENT MODAL FOR ADMINS */}
-      {isVisibilityModalOpen && (
+      {/* CARD VISIBILITY ADJUSTMENT MODAL FOR ADMIN ONLY */}
+      {isVisibilityModalOpen && isAdmin && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full overflow-hidden flex flex-col border border-slate-200 max-h-[85vh] animate-scale-up">
             {/* Modal Header */}
@@ -1539,7 +1544,13 @@ export default function DashboardView({
       )}
 
       {/* Admin Drive Settings if Admin */}
-      {activeUser.role === Role.Admin && <AdminDriveSettings activeUser={activeUser} />}
+      {activeUser.role === Role.Admin && (
+        <AdminDriveSettings
+          activeUser={activeUser}
+          teams={teams}
+          users={users}
+        />
+      )}
     </div>
   );
 }

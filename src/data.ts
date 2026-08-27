@@ -3,7 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { User, Role, AccessLevel, SalesLead, ProjectWorkflow, SalesTask, ActionLog, Client, Product, OrderOffer, OrderItem } from "./types";
+import { User, Role, AccessLevel, SalesLead, ProjectWorkflow, SalesTask, ActionLog, Client, Product, OrderOffer, OrderItem, TaxRate } from "./types";
+
+export const INITIAL_TAX_RATES: TaxRate[] = [
+  { id: "tax-0", name: "0%", createdAt: "2026-06-01T00:00:00-07:00" },
+  { id: "tax-3", name: "3%", createdAt: "2026-06-01T00:00:00-07:00" },
+  { id: "tax-5", name: "5%", createdAt: "2026-06-01T00:00:00-07:00" },
+  { id: "tax-12", name: "12%", createdAt: "2026-06-01T00:00:00-07:00" },
+  { id: "tax-18", name: "18%", createdAt: "2026-06-01T00:00:00-07:00" },
+];
 
 export const INITIAL_PRODUCTS: Product[] = [
   {
@@ -36,6 +44,16 @@ export const INITIAL_PRODUCTS: Product[] = [
 ];
 
 export const INITIAL_USERS: User[] = [
+  {
+    id: "admin-gcp",
+    name: "AOL GCP",
+    role: Role.Admin,
+    accessLevel: AccessLevel.Manager,
+    teamName: "Executive",
+    email: "gcp@aromaorganic.in",
+    avatarUrl: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120",
+    targetQuota: 250000,
+  },
   {
     id: "admin-velu",
     name: "Velu Admin",
@@ -439,14 +457,12 @@ export function getReportingTreeUsers(userId: string, users: User[] = INITIAL_US
 export function canViewLead(userId: string, lead: SalesLead, users: User[] = INITIAL_USERS, levelFilterEnabled: boolean = false): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
-
-  // If level-wise filtering is not enabled, they can view everything
-  if (!levelFilterEnabled) {
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
     return true;
   }
 
-  // If level-wise filtering is active, only Admin can bypass it
-  if (activeUser.role === Role.Admin) {
+  // If level-wise filtering is not enabled, they can view everything
+  if (!levelFilterEnabled) {
     return true;
   }
 
@@ -466,6 +482,9 @@ export function canViewLead(userId: string, lead: SalesLead, users: User[] = INI
 export function canEditLead(userId: string, lead: SalesLead, users: User[] = INITIAL_USERS): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
+    return true;
+  }
 
   // Manager: View, Edit, Delete (for all)
   if (activeUser.accessLevel === AccessLevel.Manager) {
@@ -495,8 +514,11 @@ export function canEditLead(userId: string, lead: SalesLead, users: User[] = INI
 export function canDeleteLead(userId: string, lead: SalesLead, users: User[] = INITIAL_USERS): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
+    return true;
+  }
 
-  if (activeUser.role === Role.Admin || activeUser.role === Role.SeniorManager || activeUser.role === Role.Manager || activeUser.accessLevel === AccessLevel.Manager) {
+  if (activeUser.role === Role.SeniorManager || activeUser.role === Role.Manager || activeUser.accessLevel === AccessLevel.Manager) {
     return true;
   }
   return lead.createdByUserId === userId || lead.assignedToUserId === userId;
@@ -506,6 +528,9 @@ export function canDeleteLead(userId: string, lead: SalesLead, users: User[] = I
 export function canViewTask(userId: string, task: SalesTask, users: User[] = INITIAL_USERS): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
+    return true;
+  }
 
   if (activeUser.accessLevel === AccessLevel.Manager) {
     return true;
@@ -529,6 +554,9 @@ export function canViewTask(userId: string, task: SalesTask, users: User[] = INI
 export function canEditTask(userId: string, task: SalesTask, users: User[] = INITIAL_USERS): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
+    return true;
+  }
 
   if (activeUser.accessLevel === AccessLevel.Manager) {
     return true;
@@ -550,8 +578,11 @@ export function canEditTask(userId: string, task: SalesTask, users: User[] = INI
 export function canDeleteTask(userId: string, task: SalesTask, users: User[] = INITIAL_USERS): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
+    return true;
+  }
 
-  if (activeUser.role === Role.Admin || activeUser.role === Role.SeniorManager || activeUser.role === Role.Manager || activeUser.accessLevel === AccessLevel.Manager) {
+  if (activeUser.role === Role.SeniorManager || activeUser.role === Role.Manager || activeUser.accessLevel === AccessLevel.Manager) {
     return true;
   }
   return task.createdByUserId === userId || task.assignedToUserId === userId;
@@ -560,14 +591,12 @@ export function canDeleteTask(userId: string, task: SalesTask, users: User[] = I
 export function canViewClient(userId: string, client: Client, users: User[] = INITIAL_USERS, levelFilterEnabled: boolean = false): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
-
-  // If level-wise filtering is not enabled, they can view everything
-  if (!levelFilterEnabled) {
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
     return true;
   }
 
-  // If level-wise filtering is active, only Admin can bypass it
-  if (activeUser.role === Role.Admin) {
+  // If level-wise filtering is not enabled, they can view everything
+  if (!levelFilterEnabled) {
     return true;
   }
 
@@ -587,6 +616,9 @@ export function canViewClient(userId: string, client: Client, users: User[] = IN
 export function canEditClient(userId: string, client: Client, users: User[] = INITIAL_USERS): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
+    return true;
+  }
 
   // Must be able to view the client to edit them
   if (!canViewClient(userId, client, users)) {
@@ -599,8 +631,11 @@ export function canEditClient(userId: string, client: Client, users: User[] = IN
 export function canDeleteClient(userId: string, client: Client, users: User[] = INITIAL_USERS): boolean {
   const activeUser = users.find((u) => u.id === userId);
   if (!activeUser) return false;
+  if (activeUser.role === Role.Admin || activeUser.email === "gcp@aromaorganic.in" || activeUser.email === "naveen@chsurya.in") {
+    return true;
+  }
 
-  if (activeUser.role === Role.Admin || activeUser.role === Role.SeniorManager || activeUser.role === Role.Manager || activeUser.accessLevel === AccessLevel.Manager) {
+  if (activeUser.role === Role.SeniorManager || activeUser.role === Role.Manager || activeUser.accessLevel === AccessLevel.Manager) {
     return true;
   }
   return client.createdByUserId === userId;

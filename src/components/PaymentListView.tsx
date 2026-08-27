@@ -4,13 +4,14 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { User, OrderOffer, Role, PaymentBank, EmailTemplate, PaymentDetails } from "../types";
-import { saveLog, savePaymentDetails } from "../lib/firebaseService";
+import { User, OrderOffer, Role, PaymentBank, EmailTemplate, PaymentDetails, PaymentReceiptRecord, BadDebtor } from "../types";
+import { saveLog, savePaymentDetails, saveBadDebtor, deleteBadDebtorDoc } from "../lib/firebaseService";
 import { auth } from "../firebase";
 import { openOrDownloadDocument } from "../lib/googleDriveService";
 import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
 import { formatDate } from "../utils";
 import { canViewOrderOffer } from "../data";
+import Papa from "papaparse";
 import {
   Search,
   Check,
@@ -48,7 +49,15 @@ import {
   Layers,
   Eye,
   FileSpreadsheet,
-  Code
+  Code,
+  Plus,
+  Trash2,
+  History,
+  Upload,
+  Download,
+  Clipboard,
+  AlertCircle,
+  FileUp
 } from "lucide-react";
 
 /**
@@ -239,6 +248,7 @@ interface PaymentListViewProps {
   activeUserId: string;
   users: User[];
   orders: OrderOffer[];
+  badDebtors?: BadDebtor[];
   onEditOrder: (order: OrderOffer) => void;
   paymentBanks?: PaymentBank[];
   visibleSubTabs?: { [key: string]: string[] };
@@ -253,6 +263,7 @@ export default function PaymentListView({
   activeUserId,
   users,
   orders = [],
+  badDebtors = [],
   onEditOrder,
   paymentBanks = [],
   visibleSubTabs,
@@ -274,6 +285,26 @@ export default function PaymentListView({
   const teamCanEdit = activeUser.role === Role.Admin || teamPermissions?.["payment_list"]?.edit !== false;
   const teamCanView = activeUser.role === Role.Admin || teamPermissions?.["payment_list"]?.view !== false;
 
+  // Helper function to resolve sales person (assigned user name)
+  const getAssignedUserName = (userId?: string) => {
+    if (!userId) return "Unassigned";
+    const user = users.find((u) => u.id === userId);
+    return user?.name || user?.email || "Unassigned";
+  };
+
+  // Helper function to resolve sales persons for a party with multiple orders
+  const getPartySalesPersons = (partyOrders: OrderOffer[]) => {
+    const names = Array.from(
+      new Set(
+        partyOrders
+          .map((o) => getAssignedUserName(o.assignedToUserId))
+          .filter(Boolean)
+      )
+    );
+    if (names.length === 0) return "Unassigned";
+    return names.join(", ");
+  };
+
   // Debtors & Fully Paid tab states
   const [expandedOrderIds, setExpandedOrderIds] = useState<{ [key: string]: boolean }>({});
   const [expandedDebtorPartyKeys, setExpandedDebtorPartyKeys] = useState<Record<string, boolean>>({});
@@ -283,8 +314,10 @@ export default function PaymentListView({
 
   // Payment Details Modal state
   const [editingPaymentOrder, setEditingPaymentOrder] = useState<OrderOffer | null>(null);
+  const [previousAmountReceived, setPreviousAmountReceived] = useState<number>(0);
   const [paymentForm, setPaymentForm] = useState<{
     amountReceived: string;
+    lastEnteredAmount: string;
     pendingAmount: string;
     paymentStatus: "Unpaid" | "Partial paid" | "Fully paid";
     paymentReceivedDate: string;
@@ -292,6 +325,7 @@ export default function PaymentListView({
     comments: string;
   }>({
     amountReceived: "0",
+    lastEnteredAmount: "0",
     pendingAmount: "0",
     paymentStatus: "Unpaid",
     paymentReceivedDate: new Date().toISOString().split("T")[0],
@@ -300,6 +334,352 @@ export default function PaymentListView({
   });
   const [isSavingPayment, setIsSavingPayment] = useState(false);
   const [paymentSaveSuccess, setPaymentSaveSuccess] = useState<string | null>(null);
+
+  // Bulk Receipts Import state
+  const [showBulkImportModal, setShowBulkImportModal] = useState(false);
+  const [bulkInputText, setBulkInputText] = useState("");
+  const [bulkFileName, setBulkFileName] = useState("");
+  const [isSavingBulkImport, setIsSavingBulkImport] = useState(false);
+
+  // Bad Debtors tab states & modals
+  const [badDebtorsSearchTerm, setBadDebtorsSearchTerm] = useState("");
+  const [showBadDebtorModal, setShowBadDebtorModal] = useState(false);
+  const [editingBadDebtor, setEditingBadDebtor] = useState<BadDebtor | null>(null);
+  const [isSavingBadDebtor, setIsSavingBadDebtor] = useState(false);
+  const [badDebtorForm, setBadDebtorForm] = useState<{
+    companyName: string;
+    clientName: string;
+    email: string;
+    phone: string;
+    customerPo: string;
+    invoiceNumber: string;
+    invoiceDate: string;
+    invoiceAmount: string;
+    dueDate: string;
+    overdueDays: string;
+    comments: string;
+    status: "Bad Debt" | "Written Off" | "In Recovery" | "Paid";
+  }>({
+    companyName: "",
+    clientName: "",
+    email: "",
+    phone: "",
+    customerPo: "",
+    invoiceNumber: "",
+    invoiceDate: new Date().toISOString().split("T")[0],
+    invoiceAmount: "",
+    dueDate: new Date().toISOString().split("T")[0],
+    overdueDays: "0",
+    comments: "",
+    status: "Bad Debt",
+  });
+
+  // Bulk Import Bad Debtors state
+  const [showBadDebtorsImportModal, setShowBadDebtorsImportModal] = useState(false);
+  const [badDebtorsImportText, setBadDebtorsImportText] = useState("");
+  const [badDebtorsImportFileName, setBadDebtorsImportFileName] = useState("");
+  const [isSavingBadDebtorsImport, setIsSavingBadDebtorsImport] = useState(false);
+
+  // Parsed and validated bulk rows mapped against invoice numbers
+  const parsedBulkRows = useMemo(() => {
+    if (!bulkInputText.trim()) return [];
+
+    const parseResult = Papa.parse<Record<string, string>>(bulkInputText.trim(), {
+      header: true,
+      skipEmptyLines: "greedy",
+    });
+
+    let rowsData = parseResult.data || [];
+    if (rowsData.length === 0) return [];
+
+    return rowsData.map((row, index) => {
+      const getVal = (keys: string[]) => {
+        const normKeys = keys.map((k) => k.toLowerCase().replace(/[^a-z0-9]/g, ""));
+        for (const [k, v] of Object.entries(row)) {
+          const normKey = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (normKeys.includes(normKey) && v !== undefined && v !== null) {
+            return String(v).trim();
+          }
+        }
+        return "";
+      };
+
+      const rawInvoiceNo = getVal([
+        "Invoice Number",
+        "Invoice #",
+        "InvoiceNo",
+        "Invoice",
+        "Inv No",
+        "Invoice_Number",
+        "Bill No",
+        "Bill Number",
+        "Order ID",
+        "PO Number",
+      ]);
+
+      const rawAmountStr = getVal([
+        "Amount Received",
+        "Amount",
+        "Payment Amount",
+        "Amt",
+        "Received Amount",
+        "Received",
+        "Value",
+        "Total",
+      ]);
+
+      const rawDateStr = getVal([
+        "Payment Date",
+        "Date",
+        "Received Date",
+        "Payment Received Date",
+        "Txn Date",
+      ]);
+
+      const rawUtr = getVal([
+        "UTR",
+        "UTR ID",
+        "UTR Number",
+        "Ref",
+        "Reference Number",
+        "Txn ID",
+        "UTR/Ref",
+      ]);
+
+      const rawComments = getVal([
+        "Comments",
+        "Notes",
+        "Remarks",
+        "Description",
+        "Remark",
+      ]);
+
+      const cleanAmountStr = rawAmountStr.replace(/[^0-9.-]/g, "");
+      const amount = parseFloat(cleanAmountStr);
+
+      let formattedDate = new Date().toISOString().split("T")[0];
+      if (rawDateStr) {
+        const d = new Date(rawDateStr);
+        if (!isNaN(d.getTime())) {
+          formattedDate = d.toISOString().split("T")[0];
+        }
+      }
+
+      if (!rawInvoiceNo) {
+        return {
+          rowIndex: index + 1,
+          rawInvoiceNo: "(Empty)",
+          rawAmount: amount || 0,
+          rawDate: formattedDate,
+          rawUtr,
+          rawComments,
+          isValid: false,
+          validationError: "Missing invoice number",
+        };
+      }
+
+      if (isNaN(amount) || amount <= 0) {
+        return {
+          rowIndex: index + 1,
+          rawInvoiceNo,
+          rawAmount: 0,
+          rawDate: formattedDate,
+          rawUtr,
+          rawComments,
+          isValid: false,
+          validationError: "Invalid or zero payment amount",
+        };
+      }
+
+      const normInv = rawInvoiceNo.toLowerCase().trim();
+      const matchedOrder = orders.find((o) => {
+        const invNum = (o.billingDetails?.invoiceNumber || "").toLowerCase().trim();
+        const orderId = o.id.toLowerCase().trim();
+        const poNum = (o.closedWonDetails?.customerPoNumber || "").toLowerCase().trim();
+        const piNum = (o.closedWonDetails?.piNumber || "").toLowerCase().trim();
+        return (
+          invNum === normInv ||
+          orderId === normInv ||
+          (poNum && poNum === normInv) ||
+          (piNum && piNum === normInv)
+        );
+      });
+
+      if (!matchedOrder) {
+        return {
+          rowIndex: index + 1,
+          rawInvoiceNo,
+          rawAmount: amount,
+          rawDate: formattedDate,
+          rawUtr,
+          rawComments,
+          isValid: false,
+          validationError: `Invoice #${rawInvoiceNo} not found in system`,
+        };
+      }
+
+      const orderTotal = matchedOrder.totalValue || 0;
+      const existingP = paymentDetailsList.find((p) => p.orderId === matchedOrder.id);
+      const existingReceiptsSum = (existingP?.receipts || []).reduce((sum, r) => sum + (r.amount || 0), 0);
+      const currentReceived = (existingP?.receipts && existingP.receipts.length > 0)
+        ? existingReceiptsSum
+        : (existingP?.amountReceived || 0);
+
+      const newTotalReceived = currentReceived + amount;
+      const newPendingAmount = Math.max(0, orderTotal - newTotalReceived);
+      let newStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
+      if (newTotalReceived >= orderTotal && orderTotal > 0) newStatus = "Fully paid";
+      else if (newTotalReceived > 0) newStatus = "Partial paid";
+
+      return {
+        rowIndex: index + 1,
+        rawInvoiceNo,
+        rawAmount: amount,
+        rawDate: formattedDate,
+        rawUtr,
+        rawComments,
+        isValid: true,
+        matchedOrder,
+        matchedClientName: matchedOrder.clientName,
+        matchedCompanyName: matchedOrder.companyName,
+        orderTotal,
+        currentReceived,
+        newTotalReceived,
+        newPendingAmount,
+        newStatus,
+      };
+    });
+  }, [bulkInputText, orders, paymentDetailsList]);
+
+  // Handle CSV/TSV File Upload
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBulkFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const text = evt.target?.result as string;
+      if (text) {
+        setBulkInputText(text);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // Download Sample CSV Template
+  const handleDownloadSampleCSV = () => {
+    const sampleData = `Invoice Number,Amount Received,Payment Date,UTR Number,Comments\nINV-2026-001,25000,2026-08-25,UTR987654321,Partial payment received via HDFC\nINV-2026-002,150000,2026-08-26,UTR123456789,Full settlement cleared`;
+    const blob = new Blob([sampleData], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "payment_receipts_sample.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Copy Sample Header
+  const handleCopySampleTemplate = () => {
+    const sampleData = `Invoice Number\tAmount Received\tPayment Date\tUTR Number\tComments\nINV-2026-001\t25000\t2026-08-25\tUTR987654321\tPartial payment received via HDFC`;
+    navigator.clipboard.writeText(sampleData);
+    alert("Sample CSV header copied to clipboard! You can paste it directly into Excel, Google Sheets, or the text area.");
+  };
+
+  // Execute Batch Bulk Import
+  const handleExecuteBulkImport = async () => {
+    const validRows = parsedBulkRows.filter((r) => r.isValid && r.matchedOrder);
+    if (validRows.length === 0) {
+      alert("No valid rows available to import.");
+      return;
+    }
+
+    setIsSavingBulkImport(true);
+    try {
+      // Group valid rows by orderId
+      const orderGroupMap = new Map<string, { order: OrderOffer; rows: typeof validRows }>();
+      for (const row of validRows) {
+        const o = row.matchedOrder!;
+        if (!orderGroupMap.has(o.id)) {
+          orderGroupMap.set(o.id, { order: o, rows: [] });
+        }
+        orderGroupMap.get(o.id)!.rows.push(row);
+      }
+
+      let importedCount = 0;
+      for (const [orderId, { order, rows }] of orderGroupMap.entries()) {
+        const existingP = paymentDetailsList.find((p) => p.orderId === orderId);
+        const existingReceipts = existingP?.receipts || [];
+        const invoiceNo = order.billingDetails?.invoiceNumber || orderId;
+
+        const newReceipts: PaymentReceiptRecord[] = rows.map((r, i) => ({
+          id: `receipt-${Date.now()}-${Math.random().toString(36).substr(2, 5)}-${i}`,
+          orderId: orderId,
+          invoiceNumber: invoiceNo,
+          amount: r.rawAmount,
+          paymentReceivedDate: r.rawDate,
+          utrId: r.rawUtr,
+          comments: r.rawComments || "Bulk Imported",
+          createdAt: new Date().toISOString(),
+          createdBy: activeUser.name || activeUser.email || "System (Bulk Import)",
+        }));
+
+        const updatedReceipts = [...existingReceipts, ...newReceipts];
+        const totalReceived = updatedReceipts.reduce((sum, rec) => sum + (rec.amount || 0), 0);
+        const orderTotal = order.totalValue || 0;
+        const pendAmt = Math.max(0, orderTotal - totalReceived);
+
+        let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
+        if (totalReceived >= orderTotal && orderTotal > 0) autoStatus = "Fully paid";
+        else if (totalReceived > 0) autoStatus = "Partial paid";
+
+        const record: PaymentDetails = {
+          id: orderId,
+          orderId: orderId,
+          invoiceNumber: invoiceNo,
+          amountReceived: totalReceived,
+          lastEnteredAmount: rows[rows.length - 1].rawAmount,
+          pendingAmount: pendAmt,
+          paymentStatus: autoStatus,
+          paymentReceivedDate: rows[rows.length - 1].rawDate,
+          utrId: rows[rows.length - 1].rawUtr,
+          comments: rows[rows.length - 1].rawComments || "Bulk Imported Payment Receipts",
+          receipts: updatedReceipts,
+          updatedAt: new Date().toISOString(),
+          updatedByUserId: activeUser.id,
+          updatedByUserName: activeUser.name,
+        };
+
+        await savePaymentDetails(record);
+
+        await saveLog({
+          id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          timestamp: new Date().toISOString(),
+          userId: activeUser.id,
+          userName: activeUser.name,
+          actionType: "Add Payment Receipt",
+          targetType: "Order",
+          targetId: orderId,
+          targetName: order.companyName || order.clientName || "Order",
+          details: `Bulk imported ${rows.length} receipt(s) for Invoice #${invoiceNo}. Total Received updated to ₹${totalReceived.toLocaleString()}, Pending=₹${pendAmt.toLocaleString()}`,
+        });
+
+        importedCount += rows.length;
+      }
+
+      setPaymentSaveSuccess(`Successfully imported ${importedCount} payment receipt(s) across ${orderGroupMap.size} invoice(s)! Pending amounts automatically updated.`);
+      setTimeout(() => setPaymentSaveSuccess(null), 6000);
+
+      setBulkInputText("");
+      setBulkFileName("");
+      setShowBulkImportModal(false);
+    } catch (err: any) {
+      console.error("Bulk import error:", err);
+      alert(`Bulk import failed: ${err.message || "Please check CSV data format."}`);
+    } finally {
+      setIsSavingBulkImport(false);
+    }
+  };
 
   // Payment Reminder tab states
   const [reminderSearchTerm, setReminderSearchTerm] = useState("");
@@ -353,12 +733,22 @@ export default function PaymentListView({
     return isOrderFullyPaid(order, pDetails);
   };
 
+  // Helper to check if an order's payment due status is today or overdue (1 or more days)
+  const isOrderDueTodayOrOverdue = (order: OrderOffer) => {
+    const dueInfo = calculateDueDate(order.closedWonDetails?.dispatchDate, order.payment);
+    // daysRemaining is <= 0 when due today (0) or overdue (< 0, i.e. 1+ days overdue)
+    return dueInfo.daysRemaining !== null && dueInfo.daysRemaining <= 0;
+  };
+
   const debtorsBase = useMemo(() => mappedOrders.filter((o) => !checkFullyPaid(o)), [mappedOrders, paymentDetailsList]);
-  const reminderBase = useMemo(() => mappedOrders.filter((o) => !checkFullyPaid(o)), [mappedOrders, paymentDetailsList]);
+  const reminderBase = useMemo(
+    () => mappedOrders.filter((o) => !checkFullyPaid(o) && isOrderDueTodayOrOverdue(o)),
+    [mappedOrders, paymentDetailsList]
+  );
   const fullyPaidBase = useMemo(() => mappedOrders.filter((o) => checkFullyPaid(o)), [mappedOrders, paymentDetailsList]);
 
-  // Party-wise Consolidated Calculation
-  const consolidatedParties = useMemo(() => {
+  // Helper to build party-wise consolidated structures
+  const buildPartyMap = (ordersList: OrderOffer[]) => {
     const map = new Map<string, {
       partyKey: string;
       companyName: string;
@@ -375,7 +765,7 @@ export default function PaymentListView({
       maxDaysOverdue: number;
     }>();
 
-    reminderBase.forEach((order) => {
+    ordersList.forEach((order) => {
       const company = (order.companyName || "").trim();
       const client = (order.clientName || "").trim();
       const key = (company || client || "Unspecified Party").toLowerCase();
@@ -384,7 +774,15 @@ export default function PaymentListView({
       const totalAmt = order.totalValue || 0;
       const receivedAmt = pDetails ? pDetails.amountReceived : 0;
       const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt - receivedAmt);
-      const dueInfo = calculateDueDate(order.closedWonDetails?.dispatchDate, order.payment);
+      const dueInfo = order.isBadDebtor && order.badDebtorRecord
+        ? {
+            dueDateFormatted: formatDate(order.badDebtorRecord.dueDate),
+            dueDateObj: new Date(order.badDebtorRecord.dueDate),
+            daysRemaining: -order.badDebtorRecord.overdueDays,
+            isOverdue: true,
+            statusLabel: `${order.badDebtorRecord.overdueDays} Days Overdue (Bad Debt)`
+          }
+        : calculateDueDate(order.closedWonDetails?.dispatchDate, order.payment);
 
       if (!map.has(key)) {
         map.set(key, {
@@ -423,20 +821,102 @@ export default function PaymentListView({
     });
 
     return Array.from(map.values()).sort((a, b) => b.totalPendingAmount - a.totalPendingAmount);
-  }, [reminderBase, paymentDetailsList]);
+  };
+
+  // Debtors party-wise consolidation (all unpaid invoices)
+  const consolidatedDebtorParties = useMemo(
+    () => buildPartyMap(debtorsBase),
+    [debtorsBase, paymentDetailsList]
+  );
+
+  // Helper: Convert Bad Debtors to OrderOffer compatible format for Reminder subtabs
+  const badDebtorsReminderOrders: OrderOffer[] = useMemo(() => {
+    return (badDebtors || [])
+      .filter((bd) => bd.status !== "Paid" && bd.invoiceAmount > 0)
+      .map((bd) => {
+        const id = bd.id.startsWith("bd-") ? bd.id : `bd-${bd.id}`;
+        return {
+          id,
+          clientName: bd.clientName || bd.companyName,
+          companyName: bd.companyName,
+          email: bd.email || "",
+          phone: bd.phone || "",
+          billingAddress: "",
+          status: "Closed Won" as const,
+          totalValue: bd.invoiceAmount,
+          items: [{
+            id: `item-${bd.id}`,
+            productName: `Bad Debt Invoice #${bd.invoiceNumber}`,
+            quantity: 1,
+            rate: bd.invoiceAmount,
+            amount: bd.invoiceAmount,
+          }],
+          payment: `Due Date: ${bd.dueDate}`,
+          delivery: "",
+          otherTerms: bd.comments || "Bad Debt Account",
+          assignedToUserId: bd.createdByUserId || activeUserId,
+          createdByUserId: bd.createdByUserId || activeUserId,
+          notes: `[BAD DEBT] ${bd.comments || ""}`,
+          createdAt: bd.createdAt || new Date().toISOString(),
+          billingDetails: {
+            invoiceNumber: bd.invoiceNumber,
+            invoiceDate: bd.invoiceDate,
+            dispatchDate: bd.invoiceDate,
+          },
+          closedWonDetails: {
+            customerPoNumber: bd.customerPo || "",
+            poDate: bd.invoiceDate,
+            dispatchDate: bd.invoiceDate,
+            piNumber: "",
+            freightTerm: "",
+            freightChargedInBill: "No",
+          },
+          isBadDebtor: true,
+          badDebtorRecord: bd,
+        };
+      });
+  }, [badDebtors, activeUserId]);
+
+  const reminderBaseWithBadDebtors = useMemo(
+    () => [...reminderBase, ...badDebtorsReminderOrders],
+    [reminderBase, badDebtorsReminderOrders]
+  );
+
+  const filteredBadDebtors = useMemo(() => {
+    if (!badDebtorsSearchTerm.trim()) return badDebtors;
+    const term = badDebtorsSearchTerm.toLowerCase().trim();
+    return badDebtors.filter((bd) => {
+      return (
+        (bd.companyName || "").toLowerCase().includes(term) ||
+        (bd.clientName || "").toLowerCase().includes(term) ||
+        (bd.email || "").toLowerCase().includes(term) ||
+        (bd.customerPo || "").toLowerCase().includes(term) ||
+        (bd.invoiceNumber || "").toLowerCase().includes(term) ||
+        (bd.status || "").toLowerCase().includes(term) ||
+        (bd.comments || "").toLowerCase().includes(term)
+      );
+    });
+  }, [badDebtors, badDebtorsSearchTerm]);
+
+  // Payment Reminder party-wise consolidation (only due today or overdue invoices, including bad debtors)
+  const consolidatedReminderParties = useMemo(
+    () => buildPartyMap(reminderBaseWithBadDebtors),
+    [reminderBaseWithBadDebtors, paymentDetailsList]
+  );
 
   // Sub-tabs config & state
   const allSubTabs = [
-    { id: "debtors", label: "Debtors", icon: FileText, count: consolidatedParties.length },
-    { id: "payment_reminder", label: "Payment Reminder", icon: BellRing, count: reminderBase.length },
-    { id: "payment_reminder_consolidated", label: "Payment Reminder Consolidated", icon: Layers, count: consolidatedParties.length },
+    { id: "debtors", label: "Debtors", icon: FileText, count: consolidatedDebtorParties.length },
+    { id: "bad_debtors", label: "Bad Debtors", icon: AlertTriangle, count: (badDebtors || []).length },
+    { id: "payment_reminder", label: "Payment Reminder", icon: BellRing, count: reminderBaseWithBadDebtors.length },
+    { id: "payment_reminder_consolidated", label: "Payment Reminder Consolidated", icon: Layers, count: consolidatedReminderParties.length },
     { id: "fully_paid", label: "Fully Paid", icon: CheckCircle2, count: fullyPaidBase.length },
   ];
 
   const visibleTabsForPayment = visibleSubTabs?.["payment_list"] || allSubTabs.map((t) => t.id);
   const filteredSubTabs = useMemo(() => {
     return allSubTabs.filter((t) => visibleTabsForPayment.includes(t.id));
-  }, [JSON.stringify(visibleTabsForPayment), reminderBase.length, consolidatedParties.length, fullyPaidBase.length]);
+  }, [JSON.stringify(visibleTabsForPayment), reminderBaseWithBadDebtors.length, badDebtors.length, consolidatedDebtorParties.length, consolidatedReminderParties.length, fullyPaidBase.length]);
 
   const [activeSubTab, setActiveSubTab] = useState<string>(filteredSubTabs[0]?.id || "debtors");
 
@@ -458,7 +938,7 @@ export default function PaymentListView({
   }, [emailTemplates, selectedTemplateId]);
 
   // Handlers for Consolidated Payment Reminder Email Modal
-  const openConsolidatedEmailModal = (party: typeof consolidatedParties[0]) => {
+  const openConsolidatedEmailModal = (party: typeof consolidatedReminderParties[0]) => {
     const matchedTmpl =
       emailTemplates.find((t) => t.assignedForm === "payment_reminder_consolidated") ||
       emailTemplates.find((t) => t.assignedForm === "payment_reminder") ||
@@ -586,7 +1066,7 @@ export default function PaymentListView({
           actionType: "Send Email",
           targetType: "Order",
           targetId: order.id,
-          targetName: order.companyName,
+          targetName: order.companyName || order.clientName || "Order",
           details: `Sent Consolidated Payment Reminder email to ${consolidatedEmailParty.companyName} (${toClean}) covering ${consolidatedEmailParty.invoiceCount} invoices for total pending ₹${consolidatedEmailParty.totalPendingAmount.toLocaleString()}`,
         });
       }
@@ -595,9 +1075,9 @@ export default function PaymentListView({
         `Successfully sent consolidated payment reminder email to ${consolidatedEmailParty.companyName} (${toClean})!`
       );
       setConsolidatedEmailParty(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error sending consolidated payment reminder:", err);
-      alert("Failed to send consolidated payment reminder email. Please try again.");
+      alert(`Failed to send consolidated payment reminder email: ${err.message || "Please check configuration and try again."}`);
     } finally {
       setIsSendingConsolidatedEmail(false);
     }
@@ -608,9 +1088,11 @@ export default function PaymentListView({
     if (!searchTerm.trim()) return true;
     const term = searchTerm.toLowerCase();
     const pDetails = paymentDetailsList.find((p) => p.orderId === order.id);
+    const assignedName = getAssignedUserName(order.assignedToUserId).toLowerCase();
     return (
       order.clientName?.toLowerCase().includes(term) ||
       order.companyName?.toLowerCase().includes(term) ||
+      assignedName.includes(term) ||
       order.billingDetails?.invoiceNumber?.toLowerCase().includes(term) ||
       order.closedWonDetails?.customerPoNumber?.toLowerCase().includes(term) ||
       pDetails?.utrId?.toLowerCase().includes(term) ||
@@ -618,21 +1100,24 @@ export default function PaymentListView({
     );
   });
 
-  // Filter for Debtors Consolidated Party-wise
+  // Filter for Debtors Consolidated Party-wise (All Unpaid Invoices)
   const filteredConsolidatedDebtors = useMemo(() => {
-    if (!searchTerm.trim()) return consolidatedParties;
+    if (!searchTerm.trim()) return consolidatedDebtorParties;
     const term = searchTerm.toLowerCase();
-    return consolidatedParties.filter((p) => {
+    return consolidatedDebtorParties.filter((p) => {
       const matchParty =
         p.companyName.toLowerCase().includes(term) ||
         p.clientName.toLowerCase().includes(term) ||
         p.email.toLowerCase().includes(term) ||
-        p.phone.toLowerCase().includes(term);
+        p.phone.toLowerCase().includes(term) ||
+        getPartySalesPersons(p.orders).toLowerCase().includes(term);
 
       const matchInvoice = p.orders.some(
         (o) => {
           const pDetails = paymentDetailsList.find((pay) => pay.orderId === o.id);
+          const assignedName = getAssignedUserName(o.assignedToUserId).toLowerCase();
           return (
+            assignedName.includes(term) ||
             o.billingDetails?.invoiceNumber?.toLowerCase().includes(term) ||
             o.closedWonDetails?.customerPoNumber?.toLowerCase().includes(term) ||
             pDetails?.utrId?.toLowerCase().includes(term) ||
@@ -643,15 +1128,17 @@ export default function PaymentListView({
 
       return matchParty || matchInvoice;
     });
-  }, [consolidatedParties, searchTerm, paymentDetailsList]);
+  }, [consolidatedDebtorParties, searchTerm, paymentDetailsList]);
 
-  // Filter for Payment Reminder (Excludes Fully Paid)
-  const reminderOrders = reminderBase.filter((order) => {
+  // Filter for Payment Reminder (Only Due Today or Overdue by 1+ days, including bad debtors)
+  const reminderOrders = reminderBaseWithBadDebtors.filter((order) => {
     if (!reminderSearchTerm.trim()) return true;
     const term = reminderSearchTerm.toLowerCase();
+    const assignedName = getAssignedUserName(order.assignedToUserId).toLowerCase();
     return (
       order.clientName?.toLowerCase().includes(term) ||
       order.companyName?.toLowerCase().includes(term) ||
+      assignedName.includes(term) ||
       order.billingDetails?.invoiceNumber?.toLowerCase().includes(term) ||
       order.closedWonDetails?.customerPoNumber?.toLowerCase().includes(term)
     );
@@ -662,9 +1149,11 @@ export default function PaymentListView({
     if (!fullyPaidSearchTerm.trim()) return true;
     const term = fullyPaidSearchTerm.toLowerCase();
     const pDetails = paymentDetailsList.find((p) => p.orderId === order.id);
+    const assignedName = getAssignedUserName(order.assignedToUserId).toLowerCase();
     return (
       order.clientName?.toLowerCase().includes(term) ||
       order.companyName?.toLowerCase().includes(term) ||
+      assignedName.includes(term) ||
       order.billingDetails?.invoiceNumber?.toLowerCase().includes(term) ||
       order.closedWonDetails?.customerPoNumber?.toLowerCase().includes(term) ||
       pDetails?.utrId?.toLowerCase().includes(term) ||
@@ -672,26 +1161,28 @@ export default function PaymentListView({
     );
   });
 
-  // Filter for Consolidated Payment Reminders
+  // Filter for Consolidated Payment Reminders (Only Due Today or Overdue by 1+ days)
   const filteredConsolidatedParties = useMemo(() => {
-    if (!consolidatedSearchTerm.trim()) return consolidatedParties;
+    if (!consolidatedSearchTerm.trim()) return consolidatedReminderParties;
     const term = consolidatedSearchTerm.toLowerCase();
-    return consolidatedParties.filter((p) => {
+    return consolidatedReminderParties.filter((p) => {
       const matchParty =
         p.companyName.toLowerCase().includes(term) ||
         p.clientName.toLowerCase().includes(term) ||
         p.email.toLowerCase().includes(term) ||
-        p.phone.toLowerCase().includes(term);
+        p.phone.toLowerCase().includes(term) ||
+        getPartySalesPersons(p.orders).toLowerCase().includes(term);
 
       const matchInvoice = p.orders.some(
         (o) =>
+          getAssignedUserName(o.assignedToUserId).toLowerCase().includes(term) ||
           o.billingDetails?.invoiceNumber?.toLowerCase().includes(term) ||
           o.closedWonDetails?.customerPoNumber?.toLowerCase().includes(term)
       );
 
       return matchParty || matchInvoice;
     });
-  }, [consolidatedParties, consolidatedSearchTerm]);
+  }, [consolidatedReminderParties, consolidatedSearchTerm]);
 
   // Consolidated Email Template Auto-Selection Effect
   useEffect(() => {
@@ -823,7 +1314,7 @@ export default function PaymentListView({
             actionType: "Send Email",
             targetType: "Order",
             targetId: order.id,
-            targetName: order.companyName,
+            targetName: order.companyName || order.clientName || "Order",
             details: `Sent Bulk Consolidated Payment Reminder email using template "${tmplName}" to ${party.companyName} (${toClean}) covering ${party.invoiceCount} invoices for total pending ₹${party.totalPendingAmount.toLocaleString()}`,
           });
         }
@@ -838,21 +1329,38 @@ export default function PaymentListView({
         } (Total Pending: ₹${totalPendingSent.toLocaleString()}) using template "${tmplName}"!`
       );
       setSelectedConsolidatedPartyKeys({});
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error sending bulk consolidated payment reminders:", err);
-      alert("Failed to send bulk consolidated payment reminders. Please try again.");
+      alert(`Failed to send bulk consolidated payment reminders: ${err.message || "Please check configuration and try again."}`);
     } finally {
       setIsSendingConsolidatedBulkEmail(false);
     }
   };
 
+  const currentPaymentDetails = useMemo(() => {
+    if (!editingPaymentOrder) return null;
+    return paymentDetailsList.find((p) => p.orderId === editingPaymentOrder.id) || null;
+  }, [paymentDetailsList, editingPaymentOrder]);
+
+  const orderReceipts = useMemo(() => {
+    if (!currentPaymentDetails?.receipts) return [];
+    return [...currentPaymentDetails.receipts].sort((a, b) =>
+      (b.paymentReceivedDate || b.createdAt || "").localeCompare(a.paymentReceivedDate || a.createdAt || "")
+    );
+  }, [currentPaymentDetails]);
+
   // Open Payment Details Update Modal
   const openPaymentModal = (order: OrderOffer) => {
     const existingP = paymentDetailsList.find((p) => p.orderId === order.id);
     const orderTotal = order.totalValue || 0;
-    const initialReceived = existingP ? existingP.amountReceived : 0;
-    const initialPending = existingP ? existingP.pendingAmount : Math.max(0, orderTotal - initialReceived);
-    
+    const receipts = existingP?.receipts || [];
+    const receiptsSum = receipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+
+    const initialReceived = receipts.length > 0 ? receiptsSum : (existingP ? existingP.amountReceived : 0);
+    const initialPending = Math.max(0, orderTotal - initialReceived);
+
+    setPreviousAmountReceived(initialReceived);
+
     let initialStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
     if (existingP?.paymentStatus) {
       const s = existingP.paymentStatus.toLowerCase();
@@ -867,34 +1375,68 @@ export default function PaymentListView({
 
     setPaymentForm({
       amountReceived: initialReceived.toString(),
+      lastEnteredAmount: "0",
       pendingAmount: initialPending.toString(),
       paymentStatus: initialStatus,
-      paymentReceivedDate: existingP?.paymentReceivedDate || new Date().toISOString().split("T")[0],
-      utrId: existingP?.utrId || "",
+      paymentReceivedDate: new Date().toISOString().split("T")[0],
+      utrId: "",
       comments: existingP?.comments || "",
     });
     setEditingPaymentOrder(order);
   };
 
-  // Save Payment Details to Firestore "payment_details" collection
-  const handleSavePaymentDetails = async () => {
+  // Add a new individual payment receipt record directly to paymentDetails.receipts
+  const handleAddPaymentReceipt = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!editingPaymentOrder) return;
-    setIsSavingPayment(true);
-    setPaymentSaveSuccess(null);
 
+    const entryAmt = parseFloat(paymentForm.lastEnteredAmount) || 0;
+    if (entryAmt <= 0) {
+      alert("Please enter a valid payment amount greater than 0.");
+      return;
+    }
+
+    setIsSavingPayment(true);
     try {
-      const amtRec = parseFloat(paymentForm.amountReceived) || 0;
-      const pendAmt = parseFloat(paymentForm.pendingAmount) || 0;
+      const existingP = paymentDetailsList.find((p) => p.orderId === editingPaymentOrder.id);
+      const existingReceipts = existingP?.receipts || [];
+
+      const currentInvoiceNum = editingPaymentOrder.billingDetails?.invoiceNumber || editingPaymentOrder.id;
+
+      const newReceipt: PaymentReceiptRecord = {
+        id: `receipt-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+        orderId: editingPaymentOrder.id,
+        invoiceNumber: currentInvoiceNum,
+        amount: entryAmt,
+        paymentReceivedDate: paymentForm.paymentReceivedDate || new Date().toISOString().split("T")[0],
+        utrId: paymentForm.utrId.trim(),
+        comments: paymentForm.comments.trim(),
+        createdAt: new Date().toISOString(),
+        createdBy: activeUser.name || activeUser.email || "System",
+      };
+
+      const updatedReceipts = [...existingReceipts, newReceipt];
+      const totalReceived = updatedReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+
+      const orderTotal = editingPaymentOrder.totalValue || 0;
+      const pendAmt = Math.max(0, orderTotal - totalReceived);
+
+      let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
+      if (totalReceived >= orderTotal && orderTotal > 0) autoStatus = "Fully paid";
+      else if (totalReceived > 0) autoStatus = "Partial paid";
 
       const record: PaymentDetails = {
         id: editingPaymentOrder.id,
         orderId: editingPaymentOrder.id,
-        amountReceived: amtRec,
+        invoiceNumber: currentInvoiceNum,
+        amountReceived: totalReceived,
+        lastEnteredAmount: entryAmt,
         pendingAmount: pendAmt,
-        paymentStatus: paymentForm.paymentStatus,
+        paymentStatus: autoStatus,
         paymentReceivedDate: paymentForm.paymentReceivedDate,
         utrId: paymentForm.utrId.trim(),
         comments: paymentForm.comments.trim(),
+        receipts: updatedReceipts,
         updatedAt: new Date().toISOString(),
         updatedByUserId: activeUser.id,
         updatedByUserName: activeUser.name,
@@ -907,11 +1449,151 @@ export default function PaymentListView({
         timestamp: new Date().toISOString(),
         userId: activeUser.id,
         userName: activeUser.name,
-        actionType: "Update Payment",
+        actionType: "Add Payment Receipt",
         targetType: "Order",
         targetId: editingPaymentOrder.id,
-        targetName: editingPaymentOrder.companyName,
-        details: `Updated Payment Details for Invoice #${editingPaymentOrder.billingDetails?.invoiceNumber}: Status=${paymentForm.paymentStatus}, Received=₹${amtRec.toLocaleString()}, Pending=₹${pendAmt.toLocaleString()}, UTR=${paymentForm.utrId || "N/A"}`,
+        targetName: editingPaymentOrder.companyName || editingPaymentOrder.clientName || "Order",
+        details: `Saved Payment Receipt for Invoice #${editingPaymentOrder.billingDetails?.invoiceNumber}: Amount=₹${entryAmt.toLocaleString()}, Date=${paymentForm.paymentReceivedDate}, UTR=${paymentForm.utrId || "N/A"}. Total Received=₹${totalReceived.toLocaleString()}`,
+      });
+
+      setPaymentSaveSuccess(`Payment record of ₹${entryAmt.toLocaleString()} added successfully!`);
+      setTimeout(() => setPaymentSaveSuccess(null), 4000);
+
+      setPaymentForm((prev) => ({
+        ...prev,
+        lastEnteredAmount: "0",
+        amountReceived: totalReceived.toString(),
+        pendingAmount: pendAmt.toString(),
+        paymentStatus: autoStatus,
+        utrId: "",
+        comments: "",
+      }));
+      setPreviousAmountReceived(totalReceived);
+    } catch (err: any) {
+      console.error("Error saving payment receipt record:", err);
+      alert(`Failed to save payment receipt: ${err.message || "Please check connection."}`);
+    } finally {
+      setIsSavingPayment(false);
+    }
+  };
+
+  // Delete a payment receipt record from paymentDetails.receipts
+  const handleDeletePaymentReceipt = async (receiptId: string) => {
+    if (!editingPaymentOrder) return;
+    if (!window.confirm("Are you sure you want to delete this payment receipt record?")) return;
+
+    setIsSavingPayment(true);
+    try {
+      const existingP = paymentDetailsList.find((p) => p.orderId === editingPaymentOrder.id);
+      const existingReceipts = existingP?.receipts || [];
+      const recToDelete = existingReceipts.find((r) => r.id === receiptId);
+
+      const remainingReceipts = existingReceipts.filter((r) => r.id !== receiptId);
+      const newTotalReceived = remainingReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+      const orderTotal = editingPaymentOrder.totalValue || 0;
+      const pendAmt = Math.max(0, orderTotal - newTotalReceived);
+
+      let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
+      if (newTotalReceived >= orderTotal && orderTotal > 0) autoStatus = "Fully paid";
+      else if (newTotalReceived > 0) autoStatus = "Partial paid";
+
+      const record: PaymentDetails = {
+        id: editingPaymentOrder.id,
+        orderId: editingPaymentOrder.id,
+        amountReceived: newTotalReceived,
+        lastEnteredAmount: 0,
+        pendingAmount: pendAmt,
+        paymentStatus: autoStatus,
+        paymentReceivedDate: remainingReceipts[0]?.paymentReceivedDate || new Date().toISOString().split("T")[0],
+        utrId: remainingReceipts[0]?.utrId || "",
+        comments: remainingReceipts[0]?.comments || "",
+        receipts: remainingReceipts,
+        updatedAt: new Date().toISOString(),
+        updatedByUserId: activeUser.id,
+        updatedByUserName: activeUser.name,
+      };
+
+      await savePaymentDetails(record);
+
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Delete Payment Record",
+        targetType: "Order",
+        targetId: editingPaymentOrder.id,
+        targetName: editingPaymentOrder.companyName || editingPaymentOrder.clientName || "Order",
+        details: `Deleted Payment Receipt ID ${receiptId} (Amount: ₹${recToDelete?.amount || 0}). New Total Received=₹${newTotalReceived.toLocaleString()}`,
+      });
+
+      setPaymentSaveSuccess(`Payment record deleted successfully.`);
+      setTimeout(() => setPaymentSaveSuccess(null), 4000);
+
+      setPaymentForm((prev) => ({
+        ...prev,
+        lastEnteredAmount: "0",
+        amountReceived: newTotalReceived.toString(),
+        pendingAmount: pendAmt.toString(),
+        paymentStatus: autoStatus,
+      }));
+      setPreviousAmountReceived(newTotalReceived);
+    } catch (err: any) {
+      console.error("Error deleting payment receipt:", err);
+      alert(`Failed to delete payment receipt: ${err.message || "Please check connection."}`);
+    } finally {
+      setIsSavingPayment(false);
+    }
+  };
+
+  // Save Payment Details to Firestore "payment_details" collection
+  const handleSavePaymentDetails = async () => {
+    if (!editingPaymentOrder) return;
+
+    const lastAmt = parseFloat(paymentForm.lastEnteredAmount) || 0;
+    if (lastAmt > 0) {
+      await handleAddPaymentReceipt();
+      setEditingPaymentOrder(null);
+      return;
+    }
+
+    setIsSavingPayment(true);
+    setPaymentSaveSuccess(null);
+
+    try {
+      const amtRec = parseFloat(paymentForm.amountReceived) || 0;
+      const pendAmt = parseFloat(paymentForm.pendingAmount) || 0;
+      const existingP = paymentDetailsList.find((p) => p.orderId === editingPaymentOrder.id);
+
+      const record: PaymentDetails = {
+        id: editingPaymentOrder.id,
+        orderId: editingPaymentOrder.id,
+        invoiceNumber: editingPaymentOrder.billingDetails?.invoiceNumber || editingPaymentOrder.id,
+        amountReceived: amtRec,
+        lastEnteredAmount: 0,
+        pendingAmount: pendAmt,
+        paymentStatus: paymentForm.paymentStatus,
+        paymentReceivedDate: paymentForm.paymentReceivedDate,
+        utrId: paymentForm.utrId.trim(),
+        comments: paymentForm.comments.trim(),
+        receipts: existingP?.receipts || [],
+        updatedAt: new Date().toISOString(),
+        updatedByUserId: activeUser.id,
+        updatedByUserName: activeUser.name,
+      };
+
+      await savePaymentDetails(record);
+
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Update Payment Details",
+        targetType: "Order",
+        targetId: editingPaymentOrder.id,
+        targetName: editingPaymentOrder.companyName || editingPaymentOrder.clientName || "Order",
+        details: `Updated Payment Summary for Invoice #${editingPaymentOrder.billingDetails?.invoiceNumber}: Status=${paymentForm.paymentStatus}, Total Received=₹${amtRec.toLocaleString()}, Pending=₹${pendAmt.toLocaleString()}`,
       });
 
       setPaymentSaveSuccess(`Payment details for ${editingPaymentOrder.clientName} updated successfully!`);
@@ -920,9 +1602,9 @@ export default function PaymentListView({
       setTimeout(() => {
         setPaymentSaveSuccess(null);
       }, 4000);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error saving payment details:", err);
-      alert("Failed to save payment details to database. Please check connection.");
+      alert(`Failed to save payment details: ${err.message || "Please check connection."}`);
     } finally {
       setIsSavingPayment(false);
     }
@@ -1042,7 +1724,7 @@ export default function PaymentListView({
             to: dynamicTo,
             cc: dynamicCc,
             bcc: dynamicBcc,
-            subject: subject,
+            subject,
             text: body,
             senderUserId: activeUser?.id,
             category: "payment_reminder"
@@ -1062,7 +1744,7 @@ export default function PaymentListView({
           actionType: "Send Email",
           targetType: "Order",
           targetId: order.id,
-          targetName: order.companyName,
+          targetName: order.companyName || order.clientName || "Order",
           details: `Sent Payment Reminder using template "${tmplName}" to ${order.clientName} (${order.email || "N/A"}) for Invoice #${order.billingDetails?.invoiceNumber} (Due: ${dueInfo.dueDateFormatted})`,
         });
       }
@@ -1073,11 +1755,260 @@ export default function PaymentListView({
         } using template "${tmplName}"!`
       );
       setSelectedOrderIds({});
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error sending payment reminders:", err);
-      alert("Failed to send payment reminders. Please try again.");
+      alert(`Failed to send payment reminders: ${err.message || "Please try again."}`);
     } finally {
       setIsSendingEmail(false);
+    }
+  };
+
+  // Helper function to calculate overdue days from due date string
+  const computeOverdueDays = (dueDateStr: string): number => {
+    if (!dueDateStr) return 0;
+    const due = new Date(dueDateStr);
+    if (isNaN(due.getTime())) return 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    due.setHours(0, 0, 0, 0);
+    const diffTime = today.getTime() - due.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 3600 * 24));
+    return Math.max(0, diffDays);
+  };
+
+  // Parsed and validated bulk rows for Bad Debtors
+  const parsedBadDebtorImportRows = useMemo(() => {
+    if (!badDebtorsImportText.trim()) return [];
+
+    const parseResult = Papa.parse<Record<string, string>>(badDebtorsImportText.trim(), {
+      header: true,
+      skipEmptyLines: "greedy",
+    });
+
+    let rowsData = parseResult.data || [];
+    if (rowsData.length === 0) return [];
+
+    return rowsData.map((row, index) => {
+      const getVal = (keys: string[]) => {
+        const normKeys = keys.map((k) => k.toLowerCase().replace(/[^a-z0-9]/g, ""));
+        for (const [k, v] of Object.entries(row)) {
+          const normKey = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (normKeys.includes(normKey) && v !== undefined && v !== null) {
+            return String(v).trim();
+          }
+        }
+        return "";
+      };
+
+      const companyName = getVal(["companyname", "company", "partyname", "customername"]);
+      const clientName = getVal(["clientname", "contactname", "contact", "person"]);
+      const email = getVal(["email", "clientemail", "emailaddress"]);
+      const phone = getVal(["phone", "mobile", "contactnumber"]);
+      const customerPo = getVal(["customerpo", "ponumber", "po", "custpo"]);
+      const invoiceNumber = getVal(["invoicenumber", "invoiceno", "billnumber", "billno"]);
+      const invoiceDate = getVal(["invoicedate", "billdate", "date"]) || new Date().toISOString().split("T")[0];
+      const rawAmt = getVal(["invoiceamount", "amount", "totalamount", "billamount"]);
+      const dueDate = getVal(["duedate", "paymentduedate"]) || new Date().toISOString().split("T")[0];
+      const rawOverdue = getVal(["overduedays", "overdue", "days"]);
+      const comments = getVal(["comments", "remarks", "notes"]);
+      const statusRaw = getVal(["status", "baddebtstatus"]) || "Bad Debt";
+
+      const invoiceAmount = parseFloat(rawAmt.replace(/[^0-9.]/g, "")) || 0;
+      const overdueDays = parseInt(rawOverdue, 10) || computeOverdueDays(dueDate);
+
+      let validationError = "";
+      if (!companyName) validationError = "Company Name missing";
+      else if (!invoiceNumber) validationError = "Invoice Number missing";
+      else if (invoiceAmount <= 0) validationError = "Invalid Invoice Amount";
+
+      return {
+        rowIndex: index + 1,
+        companyName,
+        clientName,
+        email,
+        phone,
+        customerPo,
+        invoiceNumber,
+        invoiceDate,
+        invoiceAmount,
+        dueDate,
+        overdueDays,
+        comments,
+        status: (["Bad Debt", "Written Off", "In Recovery", "Paid"].includes(statusRaw) ? statusRaw : "Bad Debt") as any,
+        isValid: !validationError,
+        validationError,
+      };
+    });
+  }, [badDebtorsImportText]);
+
+  // Execute Bad Debtors Bulk Import
+  const handleExecuteBadDebtorsBulkImport = async () => {
+    const validRows = parsedBadDebtorImportRows.filter((r) => r.isValid);
+    if (validRows.length === 0) {
+      alert("No valid bad debtor rows found to import.");
+      return;
+    }
+
+    setIsSavingBadDebtorsImport(true);
+    try {
+      let importedCount = 0;
+      for (const row of validRows) {
+        const bdRecord: BadDebtor = {
+          id: `bd-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+          companyName: row.companyName,
+          clientName: row.clientName,
+          email: row.email,
+          phone: row.phone,
+          customerPo: row.customerPo,
+          invoiceNumber: row.invoiceNumber,
+          invoiceDate: row.invoiceDate,
+          invoiceAmount: row.invoiceAmount,
+          dueDate: row.dueDate,
+          overdueDays: row.overdueDays,
+          comments: row.comments || "Bulk Imported Bad Debt Details",
+          status: row.status,
+          createdAt: new Date().toISOString(),
+          createdByUserId: activeUser.id,
+          createdByUserName: activeUser.name,
+        };
+
+        await saveBadDebtor(bdRecord);
+        importedCount++;
+      }
+
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Bulk Import Bad Debtors",
+        targetType: "BadDebtors",
+        targetId: "bulk-import",
+        targetName: "Bad Debtors Collection",
+        details: `Successfully bulk imported ${importedCount} Bad Debtor record(s).`,
+      });
+
+      setPaymentSaveSuccess(`Successfully bulk imported ${importedCount} bad debtor record(s)!`);
+      setTimeout(() => setPaymentSaveSuccess(null), 5000);
+
+      setBadDebtorsImportText("");
+      setBadDebtorsImportFileName("");
+      setShowBadDebtorsImportModal(false);
+    } catch (err: any) {
+      console.error("Error bulk importing bad debtors:", err);
+      alert(`Bulk import failed: ${err.message || "Please check CSV data format."}`);
+    } finally {
+      setIsSavingBadDebtorsImport(false);
+    }
+  };
+
+  // Helper for downloading Sample Bad Debtors CSV
+  const handleDownloadBadDebtorsSampleCSV = () => {
+    const csvContent =
+      "Company Name,Client Name,Email,Phone,Customer PO,Invoice Number,Invoice Date,Invoice Amount,Due Date,Overdue Days,Comments,Status\n" +
+      "Acme Supplies Ltd,John Doe,john@acme.com,+919876543210,PO-2025-984,INV-2025-088,2025-01-10,125000,2025-02-10,180,Account defaulted payment repeatedly,Bad Debt\n" +
+      "Beta Enterprises,Jane Smith,jane@beta.com,+919876543211,PO-2025-102,INV-2025-092,2025-02-01,85000,2025-03-01,150,In legal recovery process,In Recovery";
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", "bad_debtors_sample_import.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Save / Update Single Bad Debtor
+  const handleSaveBadDebtor = async () => {
+    if (!badDebtorForm.companyName.trim()) {
+      alert("Please enter Company Name.");
+      return;
+    }
+    if (!badDebtorForm.invoiceNumber.trim()) {
+      alert("Please enter Invoice Number.");
+      return;
+    }
+    const invAmt = parseFloat(badDebtorForm.invoiceAmount) || 0;
+    if (invAmt <= 0) {
+      alert("Please enter a valid Invoice Amount.");
+      return;
+    }
+
+    setIsSavingBadDebtor(true);
+    try {
+      const recordId = editingBadDebtor ? editingBadDebtor.id : `bd-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+      const bdRecord: BadDebtor = {
+        id: recordId,
+        companyName: badDebtorForm.companyName.trim(),
+        clientName: badDebtorForm.clientName.trim(),
+        email: badDebtorForm.email.trim(),
+        phone: badDebtorForm.phone.trim(),
+        customerPo: badDebtorForm.customerPo.trim(),
+        invoiceNumber: badDebtorForm.invoiceNumber.trim(),
+        invoiceDate: badDebtorForm.invoiceDate,
+        invoiceAmount: invAmt,
+        dueDate: badDebtorForm.dueDate,
+        overdueDays: parseInt(badDebtorForm.overdueDays, 10) || computeOverdueDays(badDebtorForm.dueDate),
+        comments: badDebtorForm.comments.trim(),
+        status: badDebtorForm.status,
+        createdAt: editingBadDebtor?.createdAt || new Date().toISOString(),
+        createdByUserId: editingBadDebtor?.createdByUserId || activeUser.id,
+        createdByUserName: editingBadDebtor?.createdByUserName || activeUser.name,
+      };
+
+      await saveBadDebtor(bdRecord);
+
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: editingBadDebtor ? "Update Bad Debtor" : "Add Bad Debtor",
+        targetType: "BadDebtor",
+        targetId: recordId,
+        targetName: badDebtorForm.companyName.trim(),
+        details: `${editingBadDebtor ? "Updated" : "Added"} Bad Debtor record for Invoice #${badDebtorForm.invoiceNumber}: Amount=₹${invAmt.toLocaleString()}, Overdue=${bdRecord.overdueDays}d`,
+      });
+
+      setPaymentSaveSuccess(`Bad debtor record for ${badDebtorForm.companyName} saved successfully.`);
+      setTimeout(() => setPaymentSaveSuccess(null), 4000);
+
+      setShowBadDebtorModal(false);
+      setEditingBadDebtor(null);
+    } catch (err: any) {
+      console.error("Error saving bad debtor:", err);
+      alert(`Failed to save bad debtor: ${err.message || "Please check connection."}`);
+    } finally {
+      setIsSavingBadDebtor(false);
+    }
+  };
+
+  // Delete Bad Debtor
+  const handleDeleteBadDebtor = async (id: string, companyName: string) => {
+    if (!window.confirm(`Are you sure you want to delete the bad debtor record for ${companyName}?`)) {
+      return;
+    }
+
+    try {
+      await deleteBadDebtorDoc(id);
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Delete Bad Debtor",
+        targetType: "BadDebtor",
+        targetId: id,
+        targetName: companyName,
+        details: `Deleted Bad Debtor record for ${companyName}`,
+      });
+
+      setPaymentSaveSuccess(`Bad debtor record deleted.`);
+      setTimeout(() => setPaymentSaveSuccess(null), 4000);
+    } catch (err: any) {
+      console.error("Error deleting bad debtor:", err);
+      alert(`Failed to delete bad debtor: ${err.message || "Please check connection."}`);
     }
   };
 
@@ -1209,8 +2140,18 @@ export default function PaymentListView({
                 className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
               />
             </div>
-            <div className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
-              Showing <b>{filteredConsolidatedDebtors.length}</b> debtor parties with pending invoices
+            <div className="flex items-center gap-3 shrink-0 w-full sm:w-auto justify-between sm:justify-start">
+              <button
+                type="button"
+                onClick={() => setShowBulkImportModal(true)}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-xl shadow-xs transition-all cursor-pointer"
+              >
+                <FileSpreadsheet size={15} />
+                <span>Bulk Import Receipts</span>
+              </button>
+              <div className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
+                Showing <b>{filteredConsolidatedDebtors.length}</b> debtor parties
+              </div>
             </div>
           </div>
 
@@ -1237,6 +2178,7 @@ export default function PaymentListView({
                       <th className="py-3 px-3 w-8 text-center">#</th>
                       <th className="py-3 px-4">Party / Client Company</th>
                       <th className="py-3 px-4">Contact Info</th>
+                      <th className="py-3 px-4">Sales Person</th>
                       <th className="py-3 px-3 text-center">Pending Invoices</th>
                       <th className="py-3 px-4 text-right">Total Invoice Value</th>
                       <th className="py-3 px-4 text-right">Payment Received</th>
@@ -1298,6 +2240,14 @@ export default function PaymentListView({
                                 )}
                               </div>
                             </td>
+                            <td className="py-3 px-4">
+                              <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+                                <User2 size={12} className="text-emerald-600 shrink-0" />
+                                <span className="text-[11px] font-semibold text-slate-800 truncate max-w-[140px]" title={getPartySalesPersons(party.orders)}>
+                                  {getPartySalesPersons(party.orders)}
+                                </span>
+                              </div>
+                            </td>
                             <td className="py-3 px-3 text-center">
                               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold font-mono bg-blue-50 text-blue-700 border border-blue-200">
                                 {party.invoiceCount} {party.invoiceCount === 1 ? "Invoice" : "Invoices"}
@@ -1344,7 +2294,7 @@ export default function PaymentListView({
                           {/* Expanded Row: Invoice Breakdown */}
                           {isExpanded && (
                             <tr className="bg-slate-50/70 border-b border-slate-200">
-                              <td colSpan={10} className="p-4">
+                              <td colSpan={11} className="p-4">
                                 <div className="space-y-4 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
                                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
                                     <div className="flex items-center gap-2">
@@ -1363,11 +2313,12 @@ export default function PaymentListView({
 
                                   {/* Invoices Table */}
                                   <div className="overflow-x-auto scrollbar-thin border border-slate-200 rounded-lg">
-                                    <table className="w-full text-left text-xs min-w-[850px]">
+                                    <table className="w-full text-left text-xs min-w-[900px]">
                                       <thead>
                                         <tr className="bg-emerald-50/60 text-slate-700 font-mono font-bold text-[10px] uppercase border-b border-emerald-100">
                                           <th className="p-2.5">Invoice #</th>
                                           <th className="p-2.5">PO #</th>
+                                          <th className="p-2.5">Sales Person</th>
                                           <th className="p-2.5">Expected Dispatch Date</th>
                                           <th className="p-2.5">Due Date & Status</th>
                                           <th className="p-2.5 text-right">Invoice Amount</th>
@@ -1392,6 +2343,12 @@ export default function PaymentListView({
                                               </td>
                                               <td className="p-2.5 font-mono text-slate-600">
                                                 {o.closedWonDetails?.customerPoNumber || "N/A"}
+                                              </td>
+                                              <td className="p-2.5 text-[11px] font-medium text-slate-700">
+                                                <div className="inline-flex items-center gap-1 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded">
+                                                  <User2 size={11} className="text-emerald-600 shrink-0" />
+                                                  <span className="font-semibold text-slate-800">{getAssignedUserName(o.assignedToUserId)}</span>
+                                                </div>
                                               </td>
                                               <td className="p-2.5 text-slate-500 text-[11px]">
                                                 {o.closedWonDetails?.dispatchDate ? formatDate(o.closedWonDetails.dispatchDate) : "N/A"}
@@ -1459,7 +2416,250 @@ export default function PaymentListView({
       )}
 
 
-      {/* SUB-TAB 3: PAYMENT REMINDER CONSOLIDATED */}
+      {/* SUB-TAB: BAD DEBTORS */}
+      {activeSubTab === "bad_debtors" && (
+        <div className="space-y-4">
+          {/* Summary KPI Banner */}
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Bad Debtors</p>
+                <p className="text-xl font-black font-mono text-slate-900 mt-1">{filteredBadDebtors.length}</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Flagged defaulted accounts</p>
+              </div>
+              <div className="p-3 bg-rose-50 text-rose-700 rounded-xl">
+                <AlertTriangle size={20} />
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Bad Debt Invoices</p>
+                <p className="text-xl font-black font-mono text-slate-900 mt-1">{filteredBadDebtors.length}</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Defaulted invoices</p>
+              </div>
+              <div className="p-3 bg-blue-50 text-blue-700 rounded-xl">
+                <FileSpreadsheet size={20} />
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Bad Debt Amount</p>
+                <p className="text-xl font-black font-mono text-rose-600 mt-1">
+                  ₹{filteredBadDebtors.reduce((sum, b) => sum + (b.invoiceAmount || 0), 0).toLocaleString()}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Grand total bad debt value</p>
+              </div>
+              <div className="p-3 bg-rose-50 text-rose-600 rounded-xl">
+                <IndianRupee size={20} />
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Max Overdue</p>
+                <p className="text-xl font-black font-mono text-amber-600 mt-1">
+                  {filteredBadDebtors.length > 0 ? Math.max(0, ...filteredBadDebtors.map((b) => b.overdueDays || 0)) : 0} Days
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Highest overdue period</p>
+              </div>
+              <div className="p-3 bg-amber-50 text-amber-700 rounded-xl">
+                <Clock size={20} />
+              </div>
+            </div>
+          </div>
+
+          {/* Search & Actions Toolbar */}
+          <div className="bg-white p-4 border border-slate-200/85 rounded-xl shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search company name, PO #, invoice #, client contact, email, status..."
+                value={badDebtorsSearchTerm}
+                onChange={(e) => setBadDebtorsSearchTerm(e.target.value)}
+                className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setBadDebtorsImportText("");
+                  setBadDebtorsImportFileName("");
+                  setShowBadDebtorsImportModal(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold font-mono bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-all cursor-pointer shadow-2xs"
+              >
+                <Upload size={14} />
+                <span>Bulk Import Bad Debtors</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingBadDebtor(null);
+                  setBadDebtorForm({
+                    companyName: "",
+                    clientName: "",
+                    email: "",
+                    phone: "",
+                    customerPo: "",
+                    invoiceNumber: "",
+                    invoiceDate: new Date().toISOString().split("T")[0],
+                    invoiceAmount: "",
+                    dueDate: new Date().toISOString().split("T")[0],
+                    overdueDays: "0",
+                    comments: "",
+                    status: "Bad Debt",
+                  });
+                  setShowBadDebtorModal(true);
+                }}
+                disabled={!teamCanAdd}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold font-mono transition-all shadow-2xs cursor-pointer ${
+                  teamCanAdd
+                    ? "bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20"
+                    : "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                }`}
+              >
+                <Plus size={14} />
+                <span>Add Bad Debtor</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Bad Debtors Table */}
+          {filteredBadDebtors.length === 0 ? (
+            <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center shadow-2xs">
+              <div className="inline-flex p-4 rounded-full bg-rose-50 text-rose-600 mb-3">
+                <AlertTriangle size={32} />
+              </div>
+              <h3 className="text-sm font-bold text-slate-800">No Bad Debtors Records</h3>
+              <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                {badDebtorsSearchTerm
+                  ? "No bad debtor records matched your search query."
+                  : "No bad debtors have been logged yet. Click 'Add Bad Debtor' or 'Bulk Import Bad Debtors' to record defaulted accounts."}
+              </p>
+            </div>
+          ) : (
+            <div className="bg-white border border-slate-200/85 rounded-2xl shadow-xs overflow-hidden">
+              <div className="overflow-x-auto scrollbar-thin">
+                <table className="w-full text-left text-xs min-w-[1000px]">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 font-mono font-bold text-[10px] uppercase border-b border-slate-200/85">
+                      <th className="p-3.5">Company & Client Contact</th>
+                      <th className="p-3.5">Customer PO #</th>
+                      <th className="p-3.5">Invoice # & Date</th>
+                      <th className="p-3.5 text-right">Invoice Amount</th>
+                      <th className="p-3.5">Due Date</th>
+                      <th className="p-3.5 text-center">Overdue Days</th>
+                      <th className="p-3.5">Status & Remarks</th>
+                      <th className="p-3.5 text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700 font-sans">
+                    {filteredBadDebtors.map((bd) => (
+                      <tr key={bd.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="p-3.5">
+                          <div className="font-extrabold text-slate-900 text-xs">{bd.companyName}</div>
+                          {bd.clientName && (
+                            <div className="text-[11px] text-slate-600 flex items-center gap-1 mt-0.5">
+                              <User2 size={11} className="text-slate-400 shrink-0" />
+                              <span>{bd.clientName}</span>
+                            </div>
+                          )}
+                          {bd.email && (
+                            <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
+                              <Mail size={10} className="shrink-0" />
+                              <span>{bd.email}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-3.5 font-mono text-slate-700 font-medium">
+                          {bd.customerPo || <span className="text-slate-400 italic">N/A</span>}
+                        </td>
+                        <td className="p-3.5 font-mono">
+                          <div className="font-bold text-slate-900">{bd.invoiceNumber}</div>
+                          <div className="text-[10px] text-slate-500">{formatDate(bd.invoiceDate)}</div>
+                        </td>
+                        <td className="p-3.5 text-right font-mono font-black text-rose-600 text-sm">
+                          ₹{bd.invoiceAmount.toLocaleString()}
+                        </td>
+                        <td className="p-3.5 font-mono text-slate-700 font-medium">
+                          {formatDate(bd.dueDate)}
+                        </td>
+                        <td className="p-3.5 text-center font-mono">
+                          <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-rose-200">
+                            <Clock size={10} />
+                            {bd.overdueDays} Days
+                          </span>
+                        </td>
+                        <td className="p-3.5">
+                          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-extrabold font-mono uppercase mb-1 ${
+                            bd.status === "Written Off"
+                              ? "bg-slate-100 text-slate-700 border border-slate-200"
+                              : bd.status === "In Recovery"
+                              ? "bg-amber-100 text-amber-800 border border-amber-200"
+                              : bd.status === "Paid"
+                              ? "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                              : "bg-rose-100 text-rose-800 border border-rose-200"
+                          }`}>
+                            {bd.status || "Bad Debt"}
+                          </span>
+                          {bd.comments && (
+                            <p className="text-[11px] text-slate-500 line-clamp-1 italic">{bd.comments}</p>
+                          )}
+                        </td>
+                        <td className="p-3.5 text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingBadDebtor(bd);
+                                setBadDebtorForm({
+                                  companyName: bd.companyName || "",
+                                  clientName: bd.clientName || "",
+                                  email: bd.email || "",
+                                  phone: bd.phone || "",
+                                  customerPo: bd.customerPo || "",
+                                  invoiceNumber: bd.invoiceNumber || "",
+                                  invoiceDate: bd.invoiceDate || new Date().toISOString().split("T")[0],
+                                  invoiceAmount: String(bd.invoiceAmount || ""),
+                                  dueDate: bd.dueDate || new Date().toISOString().split("T")[0],
+                                  overdueDays: String(bd.overdueDays || "0"),
+                                  comments: bd.comments || "",
+                                  status: bd.status || "Bad Debt",
+                                });
+                                setShowBadDebtorModal(true);
+                              }}
+                              disabled={!teamCanEdit}
+                              className="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all cursor-pointer"
+                              title="Edit Record"
+                            >
+                              <Edit3 size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteBadDebtor(bd.id, bd.companyName)}
+                              disabled={!teamCanEdit}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
+                              title="Delete Record"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {activeSubTab === "payment_reminder_consolidated" && (
         <div className="space-y-4">
           {/* Summary KPI Banner */}
@@ -1585,6 +2785,10 @@ export default function PaymentListView({
                 <span>
                   <b>{selectedConsolidatedCount}</b> of <b>{filteredConsolidatedParties.length}</b> parties selected
                 </span>
+                <span className="text-slate-300">|</span>
+                <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-bold">
+                  Due Today or Overdue (≥ 1 day)
+                </span>
               </div>
               <div>
                 Selected Outstanding Total: <strong className="text-rose-600 font-extrabold">₹{selectedConsolidatedParties.reduce((sum, p) => sum + p.totalPendingAmount, 0).toLocaleString()}</strong>
@@ -1602,7 +2806,7 @@ export default function PaymentListView({
               <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
                 {consolidatedSearchTerm
                   ? "No parties matched your search keywords."
-                  : "All client payments are 100% cleared or no mapped invoices with outstanding balances were found."}
+                  : "No debtor parties currently have invoices that are due today or overdue. Parties with upcoming invoices will appear here automatically when due."}
               </p>
             </div>
           ) : (
@@ -1628,6 +2832,7 @@ export default function PaymentListView({
                       <th className="py-3 px-3 w-8 text-center">#</th>
                       <th className="py-3 px-4">Party / Client Company</th>
                       <th className="py-3 px-4">Contact Info</th>
+                      <th className="py-3 px-4">Sales Person</th>
                       <th className="py-3 px-3 text-center">Pending Invoices</th>
                       <th className="py-3 px-4 text-right">Total Invoice Value</th>
                       <th className="py-3 px-4 text-right">Payment Received</th>
@@ -1687,6 +2892,14 @@ export default function PaymentListView({
                                 )}
                               </div>
                             </td>
+                            <td className="py-3 px-4">
+                              <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+                                <User2 size={12} className="text-emerald-600 shrink-0" />
+                                <span className="text-[11px] font-semibold text-slate-800 truncate max-w-[140px]" title={getPartySalesPersons(party.orders)}>
+                                  {getPartySalesPersons(party.orders)}
+                                </span>
+                              </div>
+                            </td>
                             <td className="py-3 px-3 text-center">
                               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold font-mono bg-blue-50 text-blue-700 border border-blue-200">
                                 {party.invoiceCount} {party.invoiceCount === 1 ? "Invoice" : "Invoices"}
@@ -1744,7 +2957,7 @@ export default function PaymentListView({
                           {/* Expanded Row: Invoice Breakdown & Template Table Live Preview */}
                           {isExpanded && (
                             <tr className="bg-slate-50/70 border-b border-slate-200">
-                              <td colSpan={10} className="p-4">
+                              <td colSpan={11} className="p-4">
                                 <div className="space-y-4 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
                                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
                                     <div className="flex items-center gap-2">
@@ -1763,11 +2976,12 @@ export default function PaymentListView({
 
                                   {/* Invoices Table */}
                                   <div className="overflow-x-auto scrollbar-thin border border-slate-200 rounded-lg">
-                                    <table className="w-full text-left text-xs">
+                                    <table className="w-full text-left text-xs min-w-[900px]">
                                       <thead>
                                         <tr className="bg-emerald-50/60 text-slate-700 font-mono font-bold text-[10px] uppercase border-b border-emerald-100">
                                           <th className="p-2.5">Invoice #</th>
                                           <th className="p-2.5">PO #</th>
+                                          <th className="p-2.5">Sales Person</th>
                                           <th className="p-2.5">Expected Dispatch Date</th>
                                           <th className="p-2.5">Due Date</th>
                                           <th className="p-2.5 text-right">Invoice Amount</th>
@@ -1791,6 +3005,12 @@ export default function PaymentListView({
                                               </td>
                                               <td className="p-2.5 font-mono text-slate-600">
                                                 {o.closedWonDetails?.customerPoNumber || "N/A"}
+                                              </td>
+                                              <td className="p-2.5 text-[11px] font-medium text-slate-700">
+                                                <div className="inline-flex items-center gap-1 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded">
+                                                  <User2 size={11} className="text-emerald-600 shrink-0" />
+                                                  <span className="font-semibold text-slate-800">{getAssignedUserName(o.assignedToUserId)}</span>
+                                                </div>
                                               </td>
                                               <td className="p-2.5 text-slate-500 text-[11px]">
                                                 {o.closedWonDetails?.dispatchDate ? formatDate(o.closedWonDetails.dispatchDate) : "N/A"}
@@ -2169,11 +3389,11 @@ export default function PaymentListView({
                 </button>
                 <span className="text-slate-300">|</span>
                 <span>
-                  <b>{selectedCount}</b> of <b>{reminderOrders.length}</b> parties selected
+                  <b>{selectedCount}</b> of <b>{reminderOrders.length}</b> orders selected
                 </span>
               </div>
               <div>
-                Calculated Due Date = <strong className="text-slate-700">Expected Dispatch Date + Payment Days</strong>
+                Filtered by: <strong className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">Due Today or Overdue (≥ 1 day)</strong>
               </div>
             </div>
           </div>
@@ -2182,9 +3402,11 @@ export default function PaymentListView({
           {reminderOrders.length === 0 ? (
             <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center">
               <BellRing className="mx-auto h-12 w-12 text-slate-300 mb-3" />
-              <p className="text-sm font-bold text-slate-600">No Mapped Orders Found for Reminders</p>
+              <p className="text-sm font-bold text-slate-600">No Orders Due Today or Overdue</p>
               <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                Once invoices are mapped to orders, they will appear here with calculated due dates and options to send payment reminder emails.
+                {reminderSearchTerm
+                  ? "No reminder orders matched your search criteria."
+                  : "All client payments are either cleared or not yet due for reminder. Orders will automatically appear here once their due status reaches Due Today or Overdue."}
               </p>
             </div>
           ) : (
@@ -2208,6 +3430,7 @@ export default function PaymentListView({
                         </button>
                       </th>
                       <th className="p-4">Client / Company</th>
+                      <th className="p-4">Sales Person</th>
                       <th className="p-4">Invoice # & PO</th>
                       <th className="p-4 text-right">Order Amount</th>
                       <th className="p-4 text-right">Amount Received</th>
@@ -2265,6 +3488,16 @@ export default function PaymentListView({
                                 {order.email}
                               </div>
                             )}
+                          </td>
+
+                          {/* Sales Person */}
+                          <td className="p-4">
+                            <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+                              <User2 size={12} className="text-emerald-600 shrink-0" />
+                              <span className="text-[11px] font-semibold text-slate-800 font-sans truncate max-w-[130px]" title={getAssignedUserName(order.assignedToUserId)}>
+                                {getAssignedUserName(order.assignedToUserId)}
+                              </span>
+                            </div>
                           </td>
 
                           {/* Invoice & PO */}
@@ -2422,6 +3655,7 @@ export default function PaymentListView({
                     <tr className="bg-emerald-50/50 border-b border-emerald-100 font-mono font-bold text-slate-600 uppercase tracking-wider text-[10px]">
                       <th className="p-4 w-10 text-center"></th>
                       <th className="p-4">Client / Company</th>
+                      <th className="p-4">Sales Person</th>
                       <th className="p-4">Invoice # & PO</th>
                       <th className="p-4 text-right">Order Amount</th>
                       <th className="p-4 text-right">Payment Received</th>
@@ -2475,6 +3709,16 @@ export default function PaymentListView({
                                 <Building2 size={10} className="text-slate-400" />
                                 {order.companyName}
                               </span>
+                            </td>
+
+                            {/* Sales Person */}
+                            <td className="p-4">
+                              <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+                                <User2 size={12} className="text-emerald-600 shrink-0" />
+                                <span className="text-[11px] font-semibold text-slate-800 font-sans truncate max-w-[130px]" title={getAssignedUserName(order.assignedToUserId)}>
+                                  {getAssignedUserName(order.assignedToUserId)}
+                                </span>
+                              </div>
                             </td>
 
                             {/* Invoice # & PO */}
@@ -2560,7 +3804,7 @@ export default function PaymentListView({
                           {/* Expanded detail row */}
                           {isExpanded && (
                             <tr className="bg-emerald-50/20">
-                              <td colSpan={10} className="p-5 border-b border-emerald-100">
+                              <td colSpan={11} className="p-5 border-b border-emerald-100">
                                 <div className="space-y-4 animate-fadeIn">
                                   {/* Mapped Payment Details Highlight Summary Card */}
                                   <div className="bg-gradient-to-r from-emerald-50 via-white to-emerald-50 p-4 border border-emerald-200 rounded-2xl shadow-2xs">
@@ -2587,11 +3831,17 @@ export default function PaymentListView({
                                       </button>
                                     </div>
 
-                                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-[11px] font-mono">
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 text-[11px] font-mono">
                                       <div className="bg-white p-2.5 rounded-xl border border-emerald-100 shadow-2xs">
                                         <span className="text-[9px] text-slate-400 block font-bold uppercase">Payment Status</span>
                                         <span className="font-extrabold text-emerald-700 block mt-0.5">
                                           Fully Paid
+                                        </span>
+                                      </div>
+                                      <div className="bg-white p-2.5 rounded-xl border border-emerald-100 shadow-2xs">
+                                        <span className="text-[9px] text-slate-400 block font-bold uppercase">Sales Person</span>
+                                        <span className="font-bold text-slate-800 block mt-0.5 truncate" title={getAssignedUserName(order.assignedToUserId)}>
+                                          {getAssignedUserName(order.assignedToUserId)}
                                         </span>
                                       </div>
                                       <div className="bg-white p-2.5 rounded-xl border border-emerald-100 shadow-2xs">
@@ -2757,143 +4007,290 @@ export default function PaymentListView({
               </button>
             </div>
 
-            {/* Order total info badge */}
+            {/* Order info badge */}
             <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex items-center justify-between text-xs font-mono">
-              <span className="text-slate-500 font-bold uppercase">Order Total Amount:</span>
-              <span className="text-slate-900 font-black text-sm">
-                ${(editingPaymentOrder.totalValue || 0).toLocaleString()}
-              </span>
+              <div>
+                <span className="text-slate-500 font-bold uppercase block text-[10px]">Sales Person</span>
+                <span className="text-slate-800 font-bold text-xs flex items-center gap-1 mt-0.5">
+                  <User2 size={12} className="text-emerald-600 shrink-0" />
+                  {getAssignedUserName(editingPaymentOrder.assignedToUserId)}
+                </span>
+              </div>
+              <div className="text-right">
+                <span className="text-slate-500 font-bold uppercase block text-[10px]">Order Total Amount</span>
+                <span className="text-slate-900 font-black text-sm">
+                  ₹{(editingPaymentOrder.totalValue || 0).toLocaleString()}
+                </span>
+              </div>
             </div>
 
             {/* Form Fields */}
             <div className="space-y-4">
-              {/* Row 1: How much payment received & Pending Amount */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
-                    How Much Payment Received (₹)
-                  </label>
-                  <div className="relative">
-                    <IndianRupee size={14} className="absolute left-3 top-2.5 text-slate-400" />
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={paymentForm.amountReceived}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        const numVal = parseFloat(val) || 0;
-                        const total = editingPaymentOrder.totalValue || 0;
-                        const calcPending = Math.max(0, total - numVal);
-                        
-                        let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
-                        if (numVal >= total && total > 0) autoStatus = "Fully paid";
-                        else if (numVal > 0) autoStatus = "Partial paid";
+              {/* SECTION 1: Payment Receipt Records History */}
+              <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                  <span className="text-xs font-extrabold text-slate-800 uppercase font-mono tracking-wider flex items-center gap-1.5">
+                    <History size={14} className="text-blue-600" />
+                    Payment Receipts History
+                  </span>
+                  <span className="text-[10px] font-mono font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
+                    {orderReceipts.length} Record{orderReceipts.length === 1 ? "" : "s"}
+                  </span>
+                </div>
 
+                {orderReceipts.length === 0 ? (
+                  <div className="text-center py-3 bg-white border border-dashed border-slate-200 rounded-lg text-slate-500 text-xs">
+                    No separate payment receipt records logged yet. Use the form below to add a new record.
+                  </div>
+                ) : (
+                  <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100 bg-white">
+                    {orderReceipts.map((rec) => (
+                      <div key={rec.id} className="p-2.5 flex items-center justify-between text-xs hover:bg-slate-50 transition-colors">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2 font-mono font-bold text-slate-800">
+                            <Calendar size={12} className="text-slate-400" />
+                            <span>{formatDate(rec.paymentReceivedDate)}</span>
+                            {rec.utrId && (
+                              <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">
+                                UTR: {rec.utrId}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-500 flex items-center gap-2">
+                            <span>By: {rec.createdBy || "System"}</span>
+                            {rec.comments && <span className="italic">• {rec.comments}</span>}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="font-mono font-extrabold text-emerald-700 text-xs sm:text-sm">
+                            ₹{(rec.amount || 0).toLocaleString()}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeletePaymentReceipt(rec.id)}
+                            title="Delete this payment record"
+                            className="text-rose-400 hover:text-rose-600 p-1 rounded hover:bg-rose-50 transition-colors cursor-pointer"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* SECTION 2: Add New Payment Received Details */}
+              <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between border-b border-emerald-200/60 pb-2">
+                  <span className="text-xs font-extrabold text-emerald-900 uppercase font-mono tracking-wider flex items-center gap-1.5">
+                    <Receipt size={14} className="text-emerald-600" />
+                    Add New Payment Received Record
+                  </span>
+                  <span className="text-[10px] font-mono text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded font-semibold">
+                    + New Payment Entry
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {/* Received Date */}
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase font-bold text-slate-700 mb-1">
+                      Received Date *
+                    </label>
+                    <input
+                      type="date"
+                      value={paymentForm.paymentReceivedDate}
+                      onChange={(e) =>
+                        setPaymentForm((prev) => ({ ...prev, paymentReceivedDate: e.target.value }))
+                      }
+                      className="w-full text-xs font-mono font-medium text-slate-800 bg-white border border-slate-200 rounded-xl px-2.5 py-2 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                    />
+                  </div>
+
+                  {/* UTR ID / Transaction Ref */}
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase font-bold text-slate-700 mb-1">
+                      UTR ID / Ref
+                    </label>
+                    <div className="relative">
+                      <Hash size={13} className="absolute left-2.5 top-2.5 text-slate-400" />
+                      <input
+                        type="text"
+                        value={paymentForm.utrId}
+                        onChange={(e) =>
+                          setPaymentForm((prev) => ({ ...prev, utrId: e.target.value }))
+                        }
+                        className="w-full text-xs font-mono text-slate-800 bg-white border border-slate-200 rounded-xl pl-7 pr-2 py-2 outline-none focus:ring-1 focus:ring-emerald-500"
+                        placeholder="UTR12345678"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Amount Received in this Entry */}
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase font-bold text-emerald-800 mb-1">
+                      Amount (₹) *
+                    </label>
+                    <div className="relative">
+                      <IndianRupee size={13} className="absolute left-2.5 top-2.5 text-emerald-600" />
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={paymentForm.lastEnteredAmount}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const entryAmt = parseFloat(val) || 0;
+                          const total = editingPaymentOrder.totalValue || 0;
+                          const existingSum = orderReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+                          const totalReceived = existingSum + entryAmt;
+                          const calcPending = Math.max(0, total - totalReceived);
+
+                          let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
+                          if (totalReceived >= total && total > 0) autoStatus = "Fully paid";
+                          else if (totalReceived > 0) autoStatus = "Partial paid";
+
+                          setPaymentForm((prev) => ({
+                            ...prev,
+                            lastEnteredAmount: val,
+                            amountReceived: totalReceived.toString(),
+                            pendingAmount: calcPending.toString(),
+                            paymentStatus: autoStatus,
+                          }));
+                        }}
+                        className="w-full text-xs font-mono font-extrabold text-emerald-900 bg-white border border-emerald-300 rounded-xl pl-7 pr-2 py-2 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[11px] text-slate-500 italic">
+                    {parseFloat(paymentForm.lastEnteredAmount) > 0 ? (
+                      <span className="text-emerald-700 font-semibold">
+                        Adding ₹{parseFloat(paymentForm.lastEnteredAmount).toLocaleString()} to total received
+                      </span>
+                    ) : (
+                      "Enter amount above to log a new payment record"
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={isSavingPayment || !(parseFloat(paymentForm.lastEnteredAmount) > 0)}
+                    onClick={handleAddPaymentReceipt}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-lg transition-all shadow-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Plus size={13} />
+                    <span>+ Save Payment Record</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* SECTION 2: Cumulative Payment Summary */}
+              <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-3.5 space-y-3">
+                <span className="text-[11px] font-mono uppercase font-extrabold text-slate-600 block border-b border-slate-200/60 pb-1.5">
+                  Overall Payment Summary
+                </span>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* How Much Payment Received (Total) */}
+                  <div>
+                    <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
+                      How Much Payment Received (Total ₹)
+                    </label>
+                    <div className="relative">
+                      <IndianRupee size={14} className="absolute left-3 top-2.5 text-slate-400" />
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={paymentForm.amountReceived}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const numVal = parseFloat(val) || 0;
+                          const total = editingPaymentOrder.totalValue || 0;
+                          const calcPending = Math.max(0, total - numVal);
+                          const calcEntry = Math.max(0, numVal - previousAmountReceived);
+
+                          let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
+                          if (numVal >= total && total > 0) autoStatus = "Fully paid";
+                          else if (numVal > 0) autoStatus = "Partial paid";
+
+                          setPaymentForm((prev) => ({
+                            ...prev,
+                            amountReceived: val,
+                            lastEnteredAmount: calcEntry.toString(),
+                            pendingAmount: calcPending.toString(),
+                            paymentStatus: autoStatus,
+                          }));
+                        }}
+                        className="w-full text-xs font-mono font-bold text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Pending Amount */}
+                  <div>
+                    <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
+                      Pending Amount (₹)
+                    </label>
+                    <div className="relative">
+                      <IndianRupee size={14} className="absolute left-3 top-2.5 text-slate-400" />
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={paymentForm.pendingAmount}
+                        onChange={(e) =>
+                          setPaymentForm((prev) => ({ ...prev, pendingAmount: e.target.value }))
+                        }
+                        className="w-full text-xs font-mono font-bold text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Payment Status & Comments */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
+                      Payment Status
+                    </label>
+                    <select
+                      value={paymentForm.paymentStatus}
+                      onChange={(e) =>
                         setPaymentForm((prev) => ({
                           ...prev,
-                          amountReceived: val,
-                          pendingAmount: calcPending.toString(),
-                          paymentStatus: autoStatus,
-                        }));
-                      }}
-                      className="w-full text-xs font-mono font-bold text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
-                      placeholder="0.00"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
-                    Pending Amount (₹)
-                  </label>
-                  <div className="relative">
-                    <IndianRupee size={14} className="absolute left-3 top-2.5 text-slate-400" />
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={paymentForm.pendingAmount}
-                      onChange={(e) =>
-                        setPaymentForm((prev) => ({ ...prev, pendingAmount: e.target.value }))
+                          paymentStatus: e.target.value as "Unpaid" | "Partial paid" | "Fully paid",
+                        }))
                       }
-                      className="w-full text-xs font-mono font-bold text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
-                      placeholder="0.00"
+                      className="w-full text-xs font-bold text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                    >
+                      <option value="Unpaid">Unpaid</option>
+                      <option value="Partial paid">Partial paid</option>
+                      <option value="Fully paid">Fully paid</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
+                      Comments / Notes
+                    </label>
+                    <input
+                      type="text"
+                      value={paymentForm.comments}
+                      onChange={(e) =>
+                        setPaymentForm((prev) => ({ ...prev, comments: e.target.value }))
+                      }
+                      className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-xl p-2 outline-none focus:ring-1 focus:ring-emerald-500 placeholder:text-slate-400"
+                      placeholder="Payment notes / bank ref..."
                     />
                   </div>
                 </div>
-              </div>
-
-              {/* Row 2: Payment Status & Payment Received Date */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
-                    Payment Status
-                  </label>
-                  <select
-                    value={paymentForm.paymentStatus}
-                    onChange={(e) =>
-                      setPaymentForm((prev) => ({
-                        ...prev,
-                        paymentStatus: e.target.value as "Unpaid" | "Partial paid" | "Fully paid",
-                      }))
-                    }
-                    className="w-full text-xs font-bold text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-                  >
-                    <option value="Unpaid">Unpaid</option>
-                    <option value="Partial paid">Partial paid</option>
-                    <option value="Fully paid">Fully paid</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
-                    Payment Received Date
-                  </label>
-                  <input
-                    type="date"
-                    value={paymentForm.paymentReceivedDate}
-                    onChange={(e) =>
-                      setPaymentForm((prev) => ({ ...prev, paymentReceivedDate: e.target.value }))
-                    }
-                    className="w-full text-xs font-mono font-medium text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-                  />
-                </div>
-              </div>
-
-              {/* Row 3: UTR ID */}
-              <div>
-                <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
-                  UTR ID / Transaction Ref
-                </label>
-                <div className="relative">
-                  <Hash size={14} className="absolute left-3 top-2.5 text-slate-400" />
-                  <input
-                    type="text"
-                    value={paymentForm.utrId}
-                    onChange={(e) =>
-                      setPaymentForm((prev) => ({ ...prev, utrId: e.target.value }))
-                    }
-                    className="w-full text-xs font-mono text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500"
-                    placeholder="e.g. UTR1234567890"
-                  />
-                </div>
-              </div>
-
-              {/* Row 4: Comments */}
-              <div>
-                <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
-                  Comments / Payment Notes
-                </label>
-                <textarea
-                  rows={2}
-                  value={paymentForm.comments}
-                  onChange={(e) =>
-                    setPaymentForm((prev) => ({ ...prev, comments: e.target.value }))
-                  }
-                  className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-xl p-3 outline-none focus:ring-1 focus:ring-emerald-500 placeholder:text-slate-400"
-                  placeholder="Enter any payment notes or bank receipt reference details..."
-                />
               </div>
             </div>
 
@@ -2981,6 +4378,642 @@ export default function PaymentListView({
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold font-mono rounded-xl transition-all shadow-xs cursor-pointer"
               >
                 Go to Indent Billing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BULK PAYMENT RECEIPTS IMPORT MODAL */}
+      {showBulkImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-4xl w-full max-h-[92vh] flex flex-col overflow-hidden animate-scaleUp">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/30">
+                  <FileSpreadsheet size={22} />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold flex items-center gap-2">
+                    Bulk Import Payment Receipts
+                    <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-mono px-2 py-0.5 rounded-full border border-emerald-500/30 font-normal">
+                      Google Sheets / CSV
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Import multiple payment receipts mapped automatically against Invoice Numbers. Pending balances recalculate instantly.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBulkImportModal(false);
+                  setBulkInputText("");
+                  setBulkFileName("");
+                }}
+                className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-5 flex-1 scrollbar-thin">
+              {/* Guidance & Sample Actions */}
+              <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-2xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-emerald-950 font-mono uppercase flex items-center gap-1.5">
+                    <Info size={14} className="text-emerald-700" />
+                    Format Requirements & Auto-Mapping
+                  </h4>
+                  <p className="text-xs text-emerald-800 leading-relaxed max-w-2xl">
+                    Your spreadsheet must include an <strong>Invoice Number</strong> (or Invoice # / Order ID) and an <strong>Amount Received</strong> column. Optional columns: <strong>Payment Date</strong>, <strong>UTR Number</strong>, <strong>Comments</strong>.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 w-full md:w-auto">
+                  <button
+                    type="button"
+                    onClick={handleDownloadSampleCSV}
+                    className="flex-1 md:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-emerald-100/60 text-emerald-800 border border-emerald-300 text-xs font-bold font-mono rounded-xl transition-all cursor-pointer shadow-2xs"
+                  >
+                    <Download size={14} />
+                    <span>Download CSV Sample</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopySampleTemplate}
+                    className="flex-1 md:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-emerald-100/60 text-emerald-800 border border-emerald-300 text-xs font-bold font-mono rounded-xl transition-all cursor-pointer shadow-2xs"
+                  >
+                    <Clipboard size={14} />
+                    <span>Copy Header Template</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Upload or Paste Controls */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* File Upload Drop Zone */}
+                <div className="border-2 border-dashed border-slate-200 hover:border-emerald-500/60 bg-slate-50/50 hover:bg-emerald-50/30 rounded-2xl p-4 transition-all flex flex-col items-center justify-center text-center group cursor-pointer relative">
+                  <input
+                    type="file"
+                    accept=".csv,.tsv,.txt"
+                    onChange={handleFileUpload}
+                    className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                  />
+                  <div className="p-3 bg-white text-emerald-600 rounded-full shadow-xs mb-2 group-hover:scale-110 transition-transform border border-slate-100">
+                    <FileUp size={24} />
+                  </div>
+                  <span className="text-xs font-bold text-slate-800">
+                    {bulkFileName ? `Uploaded: ${bulkFileName}` : "Click or Drag CSV / TSV file here"}
+                  </span>
+                  <span className="text-[11px] text-slate-400 mt-0.5">
+                    Supports .csv, .tsv export from Google Sheets & Excel
+                  </span>
+                </div>
+
+                {/* Direct Paste / Edit Info */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-bold font-mono uppercase text-slate-700 flex items-center justify-between">
+                    <span>Or Paste / Edit Data Below</span>
+                    <span className="text-[10px] text-slate-400 font-normal">Tab or comma separated</span>
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={bulkInputText}
+                    onChange={(e) => setBulkInputText(e.target.value)}
+                    placeholder={`Invoice Number\tAmount Received\tPayment Date\tUTR Number\tComments\nINV-2026-001\t25000\t2026-08-25\tUTR987654321\tPartial payment received`}
+                    className="w-full text-xs font-mono text-slate-800 bg-white border border-slate-200 rounded-xl p-3 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 resize-none shadow-2xs placeholder:text-slate-300"
+                  />
+                </div>
+              </div>
+
+              {/* Live Mapping KPI Summary */}
+              {parsedBulkRows.length > 0 && (
+                <div className="space-y-3 pt-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900 text-white rounded-xl p-3.5">
+                    <div className="flex items-center gap-4">
+                      <div className="text-xs font-mono font-extrabold uppercase tracking-wider text-slate-300">
+                        Import Verification
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="bg-emerald-500 text-white font-mono text-xs px-2.5 py-0.5 rounded-full font-bold">
+                          {parsedBulkRows.filter((r) => r.isValid).length} Valid Mapped
+                        </span>
+                        {parsedBulkRows.filter((r) => !r.isValid).length > 0 && (
+                          <span className="bg-rose-500 text-white font-mono text-xs px-2.5 py-0.5 rounded-full font-bold">
+                            {parsedBulkRows.filter((r) => !r.isValid).length} Errors / Unmatched
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-xs font-mono text-emerald-400 font-bold">
+                      Total Payment Sum to Import: ₹
+                      {parsedBulkRows
+                        .filter((r) => r.isValid)
+                        .reduce((sum, r) => sum + r.rawAmount, 0)
+                        .toLocaleString()}
+                    </div>
+                  </div>
+
+                  {/* Parsed Rows Preview Table */}
+                  <div className="border border-slate-200 rounded-xl overflow-hidden max-h-60 overflow-y-auto scrollbar-thin">
+                    <table className="w-full text-left border-collapse">
+                      <thead className="bg-slate-100 border-b border-slate-200 sticky top-0 z-10 text-[10px] font-mono uppercase font-extrabold text-slate-600">
+                        <tr>
+                          <th className="py-2 px-3">Row #</th>
+                          <th className="py-2 px-3">Invoice #</th>
+                          <th className="py-2 px-3">Matched Client / Party</th>
+                          <th className="py-2 px-3 text-right">Payment Amount</th>
+                          <th className="py-2 px-3">Date</th>
+                          <th className="py-2 px-3">UTR / Ref</th>
+                          <th className="py-2 px-3 text-right">Calculated New Pending</th>
+                          <th className="py-2 px-3 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs">
+                        {parsedBulkRows.map((r, i) => (
+                          <tr
+                            key={i}
+                            className={r.isValid ? "hover:bg-slate-50/80" : "bg-rose-50/50 hover:bg-rose-50"}
+                          >
+                            <td className="py-2 px-3 font-mono text-[11px] text-slate-400">{r.rowIndex}</td>
+                            <td className="py-2 px-3 font-mono font-bold text-slate-800">
+                              {r.rawInvoiceNo}
+                            </td>
+                            <td className="py-2 px-3">
+                              {r.isValid ? (
+                                <div>
+                                  <div className="font-semibold text-slate-800">{r.matchedClientName}</div>
+                                  {r.matchedCompanyName && (
+                                    <div className="text-[10px] text-slate-500">{r.matchedCompanyName}</div>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-rose-600 font-medium text-[11px]">
+                                  {r.validationError}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-extrabold text-emerald-700">
+                              ₹{r.rawAmount.toLocaleString()}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] text-slate-600">{r.rawDate}</td>
+                            <td className="py-2 px-3 font-mono text-[11px] text-slate-600">
+                              {r.rawUtr || <span className="text-slate-300">N/A</span>}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-bold">
+                              {r.isValid ? (
+                                <span className={r.newPendingAmount === 0 ? "text-emerald-600" : "text-amber-700"}>
+                                  ₹{r.newPendingAmount?.toLocaleString()}
+                                </span>
+                              ) : (
+                                <span className="text-slate-300">-</span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              {r.isValid ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                                  <CheckCircle2 size={11} />
+                                  Matched ({r.newStatus})
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full">
+                                  <AlertCircle size={11} />
+                                  Failed
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBulkImportModal(false);
+                  setBulkInputText("");
+                  setBulkFileName("");
+                }}
+                className="px-4 py-2 border border-slate-200 hover:border-slate-300 text-slate-600 hover:text-slate-800 text-xs font-bold font-mono rounded-xl transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isSavingBulkImport || parsedBulkRows.filter((r) => r.isValid).length === 0
+                }
+                onClick={handleExecuteBulkImport}
+                className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-xl transition-all shadow-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isSavingBulkImport ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Importing & Updating Pendings...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload size={16} />
+                    <span>
+                      Import {parsedBulkRows.filter((r) => r.isValid).length} Valid Payment Receipt(s)
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BAD DEBTORS ADD / EDIT MODAL */}
+      {showBadDebtorModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto scrollbar-thin">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-rose-50 text-rose-600 rounded-lg">
+                  <AlertTriangle size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {editingBadDebtor ? "Edit Bad Debtor Record" : "Add Bad Debtor Details"}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    {editingBadDebtor ? "Update information for this defaulted account." : "Record a bad debtor with invoice details and overdue days."}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBadDebtorModal(false);
+                  setEditingBadDebtor(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="sm:col-span-2 space-y-1">
+                <label className="font-bold text-slate-700">Company Name *</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Acme Corporation Pvt Ltd"
+                  value={badDebtorForm.companyName}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, companyName: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Client / Contact Person</label>
+                <input
+                  type="text"
+                  placeholder="e.g. John Doe"
+                  value={badDebtorForm.clientName}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, clientName: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Client Email (For Reminders)</label>
+                <input
+                  type="email"
+                  placeholder="e.g. accounts@acme.com"
+                  value={badDebtorForm.email}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, email: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Client Phone</label>
+                <input
+                  type="text"
+                  placeholder="e.g. +91 9876543210"
+                  value={badDebtorForm.phone}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, phone: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Customer PO #</label>
+                <input
+                  type="text"
+                  placeholder="e.g. PO-2025-984"
+                  value={badDebtorForm.customerPo}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, customerPo: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Invoice Number *</label>
+                <input
+                  type="text"
+                  placeholder="e.g. INV-2025-088"
+                  value={badDebtorForm.invoiceNumber}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, invoiceNumber: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Invoice Date *</label>
+                <input
+                  type="date"
+                  value={badDebtorForm.invoiceDate}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, invoiceDate: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Invoice Amount (₹) *</label>
+                <input
+                  type="number"
+                  placeholder="e.g. 150000"
+                  value={badDebtorForm.invoiceAmount}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, invoiceAmount: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Due Date *</label>
+                <input
+                  type="date"
+                  value={badDebtorForm.dueDate}
+                  onChange={(e) => {
+                    const newDue = e.target.value;
+                    const autoOverdue = computeOverdueDays(newDue);
+                    setBadDebtorForm((prev) => ({ ...prev, dueDate: newDue, overdueDays: String(autoOverdue) }));
+                  }}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Overdue Days</label>
+                <input
+                  type="number"
+                  placeholder="e.g. 180"
+                  value={badDebtorForm.overdueDays}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, overdueDays: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700">Status</label>
+                <select
+                  value={badDebtorForm.status}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, status: e.target.value as any }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 font-medium"
+                >
+                  <option value="Bad Debt">Bad Debt</option>
+                  <option value="In Recovery">In Recovery</option>
+                  <option value="Written Off">Written Off</option>
+                  <option value="Paid">Paid</option>
+                </select>
+              </div>
+
+              <div className="sm:col-span-2 space-y-1">
+                <label className="font-bold text-slate-700">Comments / Remarks</label>
+                <textarea
+                  rows={2}
+                  placeholder="Add legal status, internal notes, default history..."
+                  value={badDebtorForm.comments}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, comments: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl p-3 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBadDebtorModal(false);
+                  setEditingBadDebtor(null);
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSavingBadDebtor}
+                onClick={handleSaveBadDebtor}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold font-mono bg-rose-600 hover:bg-rose-700 text-white shadow-xs cursor-pointer"
+              >
+                {isSavingBadDebtor ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <>
+                    <Save size={14} />
+                    <span>{editingBadDebtor ? "Update Record" : "Save Bad Debtor"}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BAD DEBTORS BULK IMPORT MODAL */}
+      {showBadDebtorsImportModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto scrollbar-thin">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-blue-50 text-blue-600 rounded-lg">
+                  <Upload size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Bulk Import Bad Debtors</h3>
+                  <p className="text-[11px] text-slate-500">
+                    Paste raw data or upload CSV/TSV with bad debtor invoice details.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBadDebtorsImportModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Controls & Helpers */}
+            <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-bold text-slate-700">Supported CSV / TSV Headers:</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownloadBadDebtorsSampleCSV}
+                    className="flex items-center gap-1 text-[11px] font-bold font-mono text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
+                  >
+                    <Download size={12} />
+                    <span>Sample CSV</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sample = `Company Name\tClient Name\tEmail\tCustomer PO\tInvoice Number\tInvoice Date\tInvoice Amount\tDue Date\tOverdue Days\tComments\tStatus\nAcme Corp\tJohn Doe\tjohn@acme.com\tPO-98421\tINV-2025-088\t2025-01-10\t125000\t2025-02-10\t180\tOverdue account\tBad Debt`;
+                      navigator.clipboard.writeText(sample);
+                      alert("Sample template header copied to clipboard!");
+                    }}
+                    className="flex items-center gap-1 text-[11px] font-bold font-mono text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
+                  >
+                    <Clipboard size={12} />
+                    <span>Copy Template</span>
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 font-mono">
+                Headers: <strong>Company Name</strong>, <strong>Customer PO</strong>, <strong>Invoice Number</strong>, <strong>Invoice Date</strong>, <strong>Invoice Amount</strong>, <strong>Due Date</strong>, <strong>Overdue Days</strong>, Client Name, Email, Phone, Comments, Status
+              </p>
+            </div>
+
+            {/* Input / Upload Section */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-700">Paste Data or Upload File</label>
+                <input
+                  type="file"
+                  accept=".csv,.tsv,.txt"
+                  id="bad-debtors-file-upload"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setBadDebtorsImportFileName(file.name);
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                      const text = evt.target?.result as string;
+                      if (text) setBadDebtorsImportText(text);
+                    };
+                    reader.readAsText(file);
+                  }}
+                />
+                <label
+                  htmlFor="bad-debtors-file-upload"
+                  className="flex items-center gap-1 text-[11px] font-bold text-slate-600 hover:text-emerald-700 cursor-pointer"
+                >
+                  <FileUp size={13} />
+                  <span>Upload File {badDebtorsImportFileName ? `(${badDebtorsImportFileName})` : ""}</span>
+                </label>
+              </div>
+
+              <textarea
+                rows={6}
+                placeholder={`Company Name,Customer PO,Invoice Number,Invoice Date,Invoice Amount,Due Date,Overdue Days,Client Name,Email\nAcme Ltd,PO-102,INV-901,2025-01-01,75000,2025-02-01,150,Jane,jane@acme.com`}
+                value={badDebtorsImportText}
+                onChange={(e) => setBadDebtorsImportText(e.target.value)}
+                className="w-full text-xs font-mono text-slate-800 bg-slate-50 border border-slate-200 rounded-xl p-3 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
+
+            {/* Validation Preview */}
+            {parsedBadDebtorImportRows.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-mono">
+                  <span className="font-bold text-slate-700">Validation Preview ({parsedBadDebtorImportRows.length} rows detected)</span>
+                  <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Valid: {parsedBadDebtorImportRows.filter((r) => r.isValid).length} | Invalid: {parsedBadDebtorImportRows.filter((r) => !r.isValid).length}
+                  </span>
+                </div>
+
+                <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl">
+                  <table className="w-full text-left text-[11px] font-mono">
+                    <thead className="bg-slate-100 text-slate-700 sticky top-0">
+                      <tr>
+                        <th className="p-2">Row</th>
+                        <th className="p-2">Company</th>
+                        <th className="p-2">PO #</th>
+                        <th className="p-2">Invoice #</th>
+                        <th className="p-2 text-right">Amount</th>
+                        <th className="p-2 text-center">Overdue</th>
+                        <th className="p-2">Validation Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {parsedBadDebtorImportRows.map((r, idx) => (
+                        <tr key={idx} className={r.isValid ? "bg-white" : "bg-rose-50/70"}>
+                          <td className="p-2 text-slate-400">#{r.rowIndex}</td>
+                          <td className="p-2 font-bold text-slate-800">{r.companyName}</td>
+                          <td className="p-2 text-slate-600">{r.customerPo || "N/A"}</td>
+                          <td className="p-2 font-bold text-slate-900">{r.invoiceNumber}</td>
+                          <td className="p-2 text-right font-bold text-rose-600">₹{r.invoiceAmount?.toLocaleString() || 0}</td>
+                          <td className="p-2 text-center font-bold text-amber-700">{r.overdueDays || 0}d</td>
+                          <td className="p-2">
+                            {r.isValid ? (
+                              <span className="text-emerald-700 font-bold flex items-center gap-1">
+                                <Check size={12} /> Ready
+                              </span>
+                            ) : (
+                              <span className="text-rose-600 font-bold flex items-center gap-1">
+                                <AlertCircle size={12} /> {r.validationError}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowBadDebtorsImportModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSavingBadDebtorsImport || parsedBadDebtorImportRows.filter((r) => r.isValid).length === 0}
+                onClick={handleExecuteBadDebtorsBulkImport}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold font-mono transition-all shadow-xs cursor-pointer ${
+                  parsedBadDebtorImportRows.filter((r) => r.isValid).length > 0 && !isSavingBadDebtorsImport
+                    ? "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-600/20"
+                    : "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                }`}
+              >
+                {isSavingBadDebtorsImport ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>Importing Bad Debtors...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload size={14} />
+                    <span>Import Valid Records ({parsedBadDebtorImportRows.filter((r) => r.isValid).length})</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

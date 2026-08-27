@@ -33,6 +33,7 @@ export interface User {
 
 export interface ClosedWonDetails {
   customerPoNumber: string;
+  piNumber?: string;
   poDate: string;
   freightTerm: string;
   freightChargedInBill?: string;
@@ -42,6 +43,7 @@ export interface ClosedWonDetails {
   vehicleNo?: string;
   deliveryTerm: string;
   destinationAddress: string;
+  gstin?: string;
   dispatchDate: string;
   dispatchLocation: string;
   warehouseManagedBy: string;
@@ -92,11 +94,17 @@ export interface PaymentBank {
 
 export interface BillingDetails {
   invoiceNumber: string;
+  invoiceDate?: string;
   invoiceFileUrl?: string;
   invoiceFileName?: string;
   mappedAt?: string;
   mappedByUserId?: string;
   actualDispatchDate?: string;
+  ebillNo?: string;
+  vehicleNo?: string;
+  transportName?: string;
+  lrNo?: string;
+  dispatchDate?: string;
 }
 
 export interface OrderOffer {
@@ -106,6 +114,7 @@ export interface OrderOffer {
   email: string;
   phone: string;
   billingAddress?: string;
+  billingGstin?: string;
   status: "New" | "Contacted" | "Proposal" | "Negotiation" | "Closed Won" | "Closed Lost";
   totalValue: number;
   items: OrderItem[];
@@ -121,6 +130,28 @@ export interface OrderOffer {
   createdAt: string;
   closedWonDetails?: ClosedWonDetails;
   billingDetails?: BillingDetails;
+  isBadDebtor?: boolean;
+  badDebtorRecord?: BadDebtor;
+}
+
+export interface BadDebtor {
+  id: string;
+  companyName: string;
+  clientName?: string;
+  email?: string;
+  phone?: string;
+  customerPo?: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  invoiceAmount: number;
+  dueDate: string;
+  overdueDays: number;
+  comments?: string;
+  status?: "Bad Debt" | "Written Off" | "In Recovery" | "Paid";
+  createdAt?: string;
+  createdByUserId?: string;
+  createdByUserName?: string;
+  updatedAt?: string;
 }
 
 export interface ProjectWorkflow {
@@ -151,8 +182,8 @@ export interface ActionLog {
   timestamp: string;
   userId: string;
   userName: string;
-  actionType: "Create Lead" | "Edit Lead" | "Delete Lead" | "Create Task" | "Edit Task" | "Delete Task" | "Create User" | "Edit User" | "Delete User" | "Create Product" | "Edit Product" | "Delete Product" | "Create Order" | "Edit Order" | "Delete Order" | "Create Category" | "Edit Category" | "Delete Category" | "Create Group" | "Edit Group" | "Delete Group" | "Create Manufacturer" | "Edit Manufacturer" | "Delete Manufacturer" | "Create Freight Term" | "Edit Freight Term" | "Delete Freight Term" | "Create Transporter" | "Edit Transporter" | "Delete Transporter" | "Map Invoice" | "Update Invoice" | "Update Payment" | "Update Order Status" | "Map Customer PO" | "Update Google Drive Settings" | "Create Email Template" | "Update Email Template" | "Delete Email Template" | "Send Email" | "Create Payment Term" | "Edit Payment Term" | "Delete Payment Term" | "Create Payment Credit Period" | "Edit Payment Credit Period" | "Delete Payment Credit Period" | "Update Email Sending Mode" | "Update Single Setted ID Config" | "Update User SMTP Credentials" | "Remove User SMTP Credentials";
-  targetType: "Lead" | "Task" | "User" | "Product" | "Order" | "Category" | "Group" | "Manufacturer" | "Freight Term" | "Transporter" | "Settings" | "EmailTemplate" | "Payment Term" | "Payment Credit Period";
+  actionType: "Create Lead" | "Edit Lead" | "Delete Lead" | "Create Task" | "Edit Task" | "Delete Task" | "Create User" | "Edit User" | "Delete User" | "Create Product" | "Edit Product" | "Delete Product" | "Create Order" | "Edit Order" | "Delete Order" | "Create Category" | "Edit Category" | "Delete Category" | "Create Group" | "Edit Group" | "Delete Group" | "Create Manufacturer" | "Edit Manufacturer" | "Delete Manufacturer" | "Create Freight Term" | "Edit Freight Term" | "Delete Freight Term" | "Create Transporter" | "Edit Transporter" | "Delete Transporter" | "Map Invoice" | "Update Invoice" | "Update Payment" | "Update Order Status" | "Map Customer PO" | "Update Google Drive Settings" | "Create Email Template" | "Update Email Template" | "Delete Email Template" | "Send Email" | "Create Payment Term" | "Edit Payment Term" | "Delete Payment Term" | "Create Payment Credit Period" | "Edit Payment Credit Period" | "Delete Payment Credit Period" | "Create Tax Rate" | "Edit Tax Rate" | "Delete Tax Rate" | "Update Email Sending Mode" | "Update Single Setted ID Config" | "Update User SMTP Credentials" | "Remove User SMTP Credentials" | "Add Payment Receipt" | "Delete Payment Record" | "Update Payment Details" | "Add Bad Debtor" | "Update Bad Debtor" | "Delete Bad Debtor" | "Bulk Import Bad Debtors";
+  targetType: "Lead" | "Task" | "User" | "Product" | "Order" | "Category" | "Group" | "Manufacturer" | "Freight Term" | "Transporter" | "Settings" | "EmailTemplate" | "Payment Term" | "Payment Credit Period" | "Tax Rate" | "BadDebtor" | "BadDebtors";
   targetId: string;
   targetName: string;
   details: string;
@@ -217,6 +248,7 @@ export interface FreightTerm {
 
 export interface TransporterName {
   id: string;
+  transporterId?: string;
   name: string;
   contactPerson?: string;
   emailId?: string;
@@ -288,15 +320,30 @@ export interface PaymentLocation {
 export interface PaymentDetails {
   id: string; // Document ID (orderId)
   orderId: string;
+  invoiceNumber?: string;
   amountReceived: number;
+  lastEnteredAmount?: number;
   pendingAmount: number;
   paymentStatus: "Unpaid" | "Partial paid" | "Fully paid";
   paymentReceivedDate?: string;
   utrId?: string;
   comments?: string;
+  receipts?: PaymentReceiptRecord[];
   updatedAt?: string;
   updatedByUserId?: string;
   updatedByUserName?: string;
+}
+
+export interface PaymentReceiptRecord {
+  id: string;
+  orderId: string;
+  invoiceNumber?: string;
+  amount: number;
+  paymentReceivedDate: string;
+  utrId?: string;
+  comments?: string;
+  createdAt: string;
+  createdBy?: string;
 }
 
 export interface Product {
@@ -318,6 +365,12 @@ export interface PaymentTerm {
 }
 
 export interface PaymentCreditPeriod {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface TaxRate {
   id: string;
   name: string;
   createdAt: string;

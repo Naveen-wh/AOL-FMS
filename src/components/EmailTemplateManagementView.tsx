@@ -924,12 +924,17 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
                   placeholder="587 or 465"
                   className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                   value={sendingConfig.singleConfig?.smtpPort || 587}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const portNum = Number(e.target.value);
                     setSendingConfig({
                       ...sendingConfig,
-                      singleConfig: { ...(sendingConfig.singleConfig || {}), smtpPort: Number(e.target.value) },
-                    })
-                  }
+                      singleConfig: {
+                        ...(sendingConfig.singleConfig || {}),
+                        smtpPort: portNum,
+                        secure: portNum === 465,
+                      },
+                    });
+                  }}
                 />
               </div>
 
@@ -998,13 +1003,17 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
                   onChange={(e) =>
                     setSendingConfig({
                       ...sendingConfig,
-                      singleConfig: { ...(sendingConfig.singleConfig || {}), secure: e.target.checked },
+                      singleConfig: {
+                        ...(sendingConfig.singleConfig || {}),
+                        secure: e.target.checked,
+                        smtpPort: e.target.checked ? 465 : (sendingConfig.singleConfig?.smtpPort === 465 ? 587 : (sendingConfig.singleConfig?.smtpPort || 587)),
+                      },
                     })
                   }
                   className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer"
                 />
                 <label htmlFor="single_smtp_secure" className="text-xs font-semibold text-slate-700 cursor-pointer">
-                  SSL/TLS Encryption (Port 465)
+                  Direct SSL/TLS (Port 465) / STARTTLS (Port 587)
                 </label>
               </div>
             </div>
@@ -1434,7 +1443,14 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
                   placeholder="587 or 465"
                   className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                   value={userSmtpForm.smtpPort || 587}
-                  onChange={(e) => setUserSmtpForm({ ...userSmtpForm, smtpPort: Number(e.target.value) })}
+                  onChange={(e) => {
+                    const portNum = Number(e.target.value);
+                    setUserSmtpForm({
+                      ...userSmtpForm,
+                      smtpPort: portNum,
+                      secure: portNum === 465,
+                    });
+                  }}
                 />
               </div>
 
@@ -1474,11 +1490,17 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
                   type="checkbox"
                   id="user_smtp_secure"
                   checked={userSmtpForm.secure || false}
-                  onChange={(e) => setUserSmtpForm({ ...userSmtpForm, secure: e.target.checked })}
+                  onChange={(e) => {
+                    setUserSmtpForm({
+                      ...userSmtpForm,
+                      secure: e.target.checked,
+                      smtpPort: e.target.checked ? 465 : (userSmtpForm.smtpPort === 465 ? 587 : (userSmtpForm.smtpPort || 587)),
+                    });
+                  }}
                   className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer"
                 />
                 <label htmlFor="user_smtp_secure" className="text-xs font-semibold text-slate-700 cursor-pointer">
-                  SSL/TLS Encryption (Port 465)
+                  Direct SSL/TLS (Port 465) / STARTTLS (Port 587)
                 </label>
               </div>
             </div>

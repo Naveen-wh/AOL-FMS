@@ -4,16 +4,17 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { User, OrderOffer, OrderItem, Product, Client, Team, AccessLevel, Role, PaymentBank, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, PaymentTerm, PaymentCreditPeriod } from "../types";
-import { canEditOrderOffer, canDeleteOrderOffer, canViewOrderOffer, getReportingTreeUsers } from "../data";
-import { uploadPOToDrive, hasDriveConnection, ensureGoogleDriveAccess, getSharedDriveSettings, updateSharedParentFolder, DriveSettings, openOrDownloadDocument } from "../lib/googleDriveService";
+import { User, OrderOffer, OrderItem, Product, Client, Team, AccessLevel, Role, PaymentBank, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, PaymentTerm, PaymentCreditPeriod, TaxRate, BillingDetails, ClosedWonDetails, PaymentReceiptRecord, PaymentDetails } from "../types";
+import { canEditOrderOffer, canDeleteOrderOffer, canViewOrderOffer, getReportingTreeUsers, INITIAL_TAX_RATES } from "../data";
+import { uploadPOToDrive, hasDriveConnection, ensureGoogleDriveAccess, getSharedDriveSettings, isUserTeamAllowedForDrive, DriveSettings, openOrDownloadDocument } from "../lib/googleDriveService";
 import {
   getEmailAutoSelectSettings,
   saveEmailAutoSelectSettings,
+  savePaymentDetails,
 } from "../lib/firebaseService";
 import { auth } from "../firebase";
 import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
-import { Plus, Search, Edit2, Trash2, ShieldAlert, Lock, Unlock, Filter, IndianRupee, Calendar, X, Check, HelpCircle, Building2, ShoppingCart, Percent, ShoppingBag, Upload, FileText, Loader2, Mail, FileSpreadsheet, Eye, Phone } from "lucide-react";
+import { Plus, Search, Edit2, Trash2, ShieldAlert, Lock, Unlock, Filter, IndianRupee, Calendar, X, Check, HelpCircle, Building2, ShoppingCart, Percent, ShoppingBag, Upload, FileText, Loader2, Mail, FileSpreadsheet, Eye, Phone, User as UserIcon, RefreshCw } from "lucide-react";
 import InlineDeleteConfirm from "./InlineDeleteConfirm";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
 import { formatDate } from "../utils";
@@ -78,6 +79,7 @@ interface OrdersOffersViewProps {
   dispatchLocations?: DispatchLocation[];
   paymentTerms?: PaymentTerm[];
   paymentCreditPeriods?: PaymentCreditPeriod[];
+  taxRates?: TaxRate[];
   emailTemplates?: EmailTemplate[];
   onAddOrder: (order: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId">) => void;
   onEditOrder: (order: OrderOffer) => void;
@@ -102,6 +104,7 @@ export default function OrdersOffersView({
   dispatchLocations = [],
   paymentTerms = [],
   paymentCreditPeriods = [],
+  taxRates = [],
   emailTemplates = [],
   onAddOrder,
   onEditOrder,
@@ -124,6 +127,12 @@ export default function OrdersOffersView({
   const isExecutive = activeUser.role === Role.Admin || activeUser.teamName === "Executive";
   const clientCompanies = Array.from(new Set(clients.map((c) => c.companyName).filter(Boolean)));
 
+  const availableTaxRates = useMemo(() => {
+    if (taxRates && taxRates.length > 0) return taxRates;
+    return INITIAL_TAX_RATES;
+  }, [taxRates]);
+  const defaultTaxValue = availableTaxRates.find(t => t.name === "18%" || t.name.includes("18"))?.name || availableTaxRates[0]?.name || "18%";
+
   const teamCanAdd = activeUser.role === Role.Admin || teamPermissions?.["orders"]?.add !== false;
   const teamCanEdit = activeUser.role === Role.Admin || teamPermissions?.["orders"]?.edit !== false;
   const teamCanView = activeUser.role === Role.Admin || teamPermissions?.["orders"]?.view !== false;
@@ -139,21 +148,40 @@ export default function OrdersOffersView({
   const [editingOrder, setEditingOrder] = useState<OrderOffer | null>(null);
   const [selectedOrderDetails, setSelectedOrderDetails] = useState<OrderOffer | null>(null);
 
-  // Import fields config for Orders & Offers (Without invoice attached)
+  // Import fields config for Orders & Offers + Historical Invoices & Payment Details
   const orderImportFields: ImportFieldDefinition[] = [
+    // Client & Basic Order Details
     { key: "clientName", label: "Client Full Name", required: true, sampleValue: "Rahul Sharma", description: "Primary contact full name" },
     { key: "companyName", label: "Company Name", required: true, sampleValue: "Hindustan Unilever", description: "Client company name" },
     { key: "email", label: "Client Email", sampleValue: "rahul@hul.com", description: "Primary client email address" },
     { key: "phone", label: "Client Phone", sampleValue: "+91 9876543210", description: "Contact phone number" },
     { key: "billingAddress", label: "Client Billing Address", sampleValue: "42 Industrial Estate, Sector 5, Kolkata", description: "Billing address for invoices" },
-    { key: "status", label: "Pipeline Status", sampleValue: "New", description: "New, Contacted, Proposal, Negotiation, Closed Won, Closed Lost" },
-    { key: "productName", label: "Product Name", sampleValue: "Hydrogen Peroxide", description: "Item description or product name" },
+    { key: "status", label: "Pipeline Status", sampleValue: "Closed Won", description: "New, Contacted, Proposal, Negotiation, Closed Won, Closed Lost" },
+    { key: "productName", label: "Product Name", sampleValue: "Hydrogen Peroxide 50%", description: "Item description or product name" },
     { key: "quantity", label: "Quantity", sampleValue: "100", description: "Quantity of items" },
     { key: "rate", label: "Rate (₹)", sampleValue: "250", description: "Unit rate / price per item" },
     { key: "totalValue", label: "Total Order Value (₹)", sampleValue: "25000", description: "Total order or offer amount" },
     { key: "notes", label: "Notes / Details", sampleValue: "Urgent dispatch", description: "Internal notes or instructions" },
-    { key: "payment", label: "Payment Terms", sampleValue: "Advance Payment", description: "Payment terms" },
+    { key: "payment", label: "Payment Terms", sampleValue: "30 Days Credit", description: "Payment terms" },
     { key: "delivery", label: "Delivery Terms", sampleValue: "FOB Plant", description: "Delivery terms" },
+
+    // Invoicing & System Mapping Fields
+    { key: "invoiceNumber", label: "Invoice Number", sampleValue: "INV-2025-001", description: "Maps historical invoice into system billing & dispatch" },
+    { key: "invoiceDate", label: "Invoice Date", sampleValue: "2025-08-20", description: "Date of invoice issuance (YYYY-MM-DD)" },
+    { key: "customerPoNumber", label: "Customer PO Number", sampleValue: "PO-99481", description: "Customer Purchase Order number" },
+    { key: "poDate", label: "Customer PO Date", sampleValue: "2025-08-15", description: "Customer PO Date (YYYY-MM-DD)" },
+    { key: "piNumber", label: "PI Number (Proforma)", sampleValue: "PI-2025-88", description: "Proforma Invoice (PI) reference number" },
+    { key: "ebillNo", label: "E-Way Bill Number", sampleValue: "EWB12345678", description: "E-Way Bill number" },
+    { key: "vehicleNo", label: "Vehicle Number", sampleValue: "WB 02 AB 1234", description: "Vehicle / Transport vehicle number" },
+    { key: "transportName", label: "Transporter Name", sampleValue: "VRL Logistics", description: "Logistics or transport carrier company" },
+    { key: "lrNo", label: "LR / Bilty Number", sampleValue: "LR-55443", description: "Transporter LR or Bilty number" },
+    { key: "dispatchDate", label: "Dispatch Date", sampleValue: "2025-08-22", description: "Date of goods dispatch (YYYY-MM-DD)" },
+
+    // Historical Payment Details
+    { key: "amountReceived", label: "Amount Received (₹)", sampleValue: "15000", description: "Amount paid so far against this invoice" },
+    { key: "paymentStatus", label: "Payment Status", sampleValue: "Partial paid", description: "Unpaid, Partial paid, or Fully paid (Auto-calculated if omitted)" },
+    { key: "paymentReceivedDate", label: "Payment Receipt Date", sampleValue: "2025-08-25", description: "Date payment was received (YYYY-MM-DD)" },
+    { key: "utrId", label: "UTR / Transaction Ref", sampleValue: "UTR987654321", description: "Bank UTR or Transaction reference number" },
   ];
 
   const handleImportOrders = async (rows: Record<string, any>[]) => {
@@ -188,24 +216,133 @@ export default function OrdersOffersView({
         amount: totalVal
       }];
 
-      const newOrderData: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId"> = {
+      // Invoicing / Billing details mapping
+      const invoiceNumber = row.invoiceNumber?.trim() || "";
+      const invoiceDate = row.invoiceDate?.trim() || "";
+      const ebillNo = row.ebillNo?.trim() || "";
+      const vehicleNo = row.vehicleNo?.trim() || "";
+      const transportName = row.transportName?.trim() || "";
+      const lrNo = row.lrNo?.trim() || "";
+      const dispatchDate = row.dispatchDate?.trim() || "";
+
+      let billingDetails: BillingDetails | undefined = undefined;
+      if (invoiceNumber || invoiceDate || ebillNo || vehicleNo || transportName || lrNo || dispatchDate) {
+        billingDetails = {
+          invoiceNumber: invoiceNumber || `INV-HIST-${Date.now().toString().slice(-4)}-${i+1}`,
+          invoiceDate: invoiceDate || new Date().toISOString().split("T")[0],
+          ebillNo,
+          vehicleNo,
+          transportName,
+          lrNo,
+          dispatchDate,
+          invoiceFileUrl: "",
+          invoiceFileName: "",
+        };
+      }
+
+      // Customer PO / Closed Won details
+      const customerPoNumber = row.customerPoNumber?.trim() || "";
+      const poDate = row.poDate?.trim() || "";
+      const piNumber = row.piNumber?.trim() || "";
+      let closedWonDetails: ClosedWonDetails | undefined = undefined;
+      if (customerPoNumber || poDate || piNumber) {
+        closedWonDetails = {
+          customerPoNumber,
+          poDate: poDate || new Date().toISOString().split("T")[0],
+          piNumber,
+          freightTerm: row.delivery?.trim() || "",
+          freightChargedInBill: "No",
+          transporterName: transportName || "",
+          vehicleNo: vehicleNo || "",
+          deliveryTerm: row.delivery?.trim() || "",
+          destinationAddress: row.billingAddress?.trim() || "",
+          dispatchDate: dispatchDate || new Date().toISOString().split("T")[0],
+          dispatchLocation: "",
+          warehouseManagedBy: "",
+        };
+      }
+
+      // Pipeline status: if invoice is mapped or PO attached, default to "Closed Won" if status is missing or "New"
+      let finalStatus: OrderOffer["status"] = (row.status?.trim() as OrderOffer["status"]) || "New";
+      if ((invoiceNumber || customerPoNumber) && (!row.status || row.status.trim() === "New")) {
+        finalStatus = "Closed Won";
+      }
+
+      const orderId = `order-imp-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
+
+      const newOrderData: OrderOffer = {
+        id: orderId,
+        createdAt: new Date().toISOString(),
+        createdByUserId: activeUserId,
         clientName,
         companyName,
         email: row.email?.trim() || "",
         phone: row.phone?.trim() || "+1 (555) 000-0000",
         billingAddress: row.billingAddress?.trim() || "",
-        status: (row.status?.trim() as OrderOffer["status"]) || "New",
+        status: finalStatus,
         totalValue: totalVal,
         items: itemsList,
         assignedToUserId: activeUserId,
-        notes: row.notes?.trim() || "Imported via Sheets / CSV Wizard",
+        notes: row.notes?.trim() || (invoiceNumber ? `Historical import with Invoice #${invoiceNumber}` : "Imported via Sheets / CSV Wizard"),
         payment: row.payment?.trim() || "",
         delivery: row.delivery?.trim() || "",
         otherTerms: row.otherTerms?.trim() || "",
+        billingDetails,
+        closedWonDetails,
       };
 
       try {
         await onAddOrder(newOrderData);
+
+        // If Invoice Number or Payment Details exist, initialize PaymentDetails record in system
+        const effectiveInvoiceNo = invoiceNumber || (billingDetails?.invoiceNumber ?? "");
+        const rawAmtReceived = parseFloat(row.amountReceived);
+        const amtReceived = !isNaN(rawAmtReceived) ? rawAmtReceived : 0;
+        const paymentStatusRaw = row.paymentStatus?.trim();
+        const paymentReceivedDate = row.paymentReceivedDate?.trim() || new Date().toISOString().split("T")[0];
+        const utrId = row.utrId?.trim() || "";
+
+        if (effectiveInvoiceNo || amtReceived > 0 || paymentStatusRaw) {
+          const pendingAmt = Math.max(0, totalVal - amtReceived);
+          let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
+          if (paymentStatusRaw && ["Unpaid", "Partial paid", "Fully paid"].includes(paymentStatusRaw)) {
+            autoStatus = paymentStatusRaw as any;
+          } else if (amtReceived >= totalVal && totalVal > 0) {
+            autoStatus = "Fully paid";
+          } else if (amtReceived > 0) {
+            autoStatus = "Partial paid";
+          }
+
+          const receipts: PaymentReceiptRecord[] = amtReceived > 0 ? [{
+            id: `receipt-imp-${Date.now()}-${i}`,
+            orderId,
+            invoiceNumber: effectiveInvoiceNo || orderId,
+            amount: amtReceived,
+            paymentReceivedDate,
+            utrId,
+            comments: "Historical Bulk Import Receipt",
+            createdAt: new Date().toISOString(),
+            createdBy: activeUser?.name || "System Bulk Import",
+          }] : [];
+
+          await savePaymentDetails({
+            id: orderId,
+            orderId: orderId,
+            invoiceNumber: effectiveInvoiceNo || orderId,
+            amountReceived: amtReceived,
+            lastEnteredAmount: amtReceived,
+            pendingAmount: pendingAmt,
+            paymentStatus: autoStatus,
+            paymentReceivedDate,
+            utrId,
+            comments: `Historical bulk import mapping for Invoice ${effectiveInvoiceNo || orderId}`,
+            receipts,
+            updatedAt: new Date().toISOString(),
+            updatedByUserId: activeUserId,
+            updatedByUserName: activeUser?.name || "System",
+          });
+        }
+
         successCount++;
       } catch (err: any) {
         errors.push(`Row ${i + 1} (${companyName}): ${err.message || err}`);
@@ -223,6 +360,7 @@ export default function OrdersOffersView({
   const [newTemplateId, setNewTemplateId] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [newBillingAddress, setNewBillingAddress] = useState("");
+  const [newBillingGstin, setNewBillingGstin] = useState("");
   const [newStatus, setNewStatus] = useState<OrderOffer["status"]>("New");
   const [newAssignedTo, setNewAssignedTo] = useState(activeUserId);
   const [newNotes, setNewNotes] = useState("");
@@ -236,7 +374,7 @@ export default function OrdersOffersView({
 
   // Multi-product items state for ADD
   const [newItems, setNewItems] = useState<Omit<OrderItem, "amount">[]>([
-    { productId: products[0]?.id || "proj-1", productName: products[0]?.name || "Default Product", quantity: "" as any, rate: "" as any, hsnCode: products[0]?.hsnCode || "", packing: "", taxes: "18% Extra" }
+    { productId: products[0]?.id || "proj-1", productName: products[0]?.name || "Default Product", quantity: "" as any, rate: "" as any, hsnCode: products[0]?.hsnCode || "", packing: "", taxes: "18%" }
   ]);
 
   // Form states - Edit Order
@@ -247,6 +385,7 @@ export default function OrdersOffersView({
   const [editTemplateId, setEditTemplateId] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editBillingAddress, setEditBillingAddress] = useState("");
+  const [editBillingGstin, setEditBillingGstin] = useState("");
   const [editStatus, setEditStatus] = useState<OrderOffer["status"]>("New");
   const [editAssignedTo, setEditAssignedTo] = useState("");
   const [editNotes, setEditNotes] = useState("");
@@ -272,6 +411,8 @@ export default function OrdersOffersView({
   const [newDispatchLocation, setNewDispatchLocation] = useState("");
   const [newWarehouseManagedBy, setNewWarehouseManagedBy] = useState("");
   const [newPoAttachmentUrl, setNewPoAttachmentUrl] = useState("");
+  const [newGstin, setNewGstin] = useState("");
+  const [newSameAsBilling, setNewSameAsBilling] = useState(false);
 
   // Closed Won details - Edit
   const [editPoNumber, setEditPoNumber] = useState("");
@@ -288,6 +429,8 @@ export default function OrdersOffersView({
   const [editDispatchLocation, setEditDispatchLocation] = useState("");
   const [editWarehouseManagedBy, setEditWarehouseManagedBy] = useState("");
   const [editPoAttachmentUrl, setEditPoAttachmentUrl] = useState("");
+  const [editGstin, setEditGstin] = useState("");
+  const [editSameAsBilling, setEditSameAsBilling] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [hasDriveAccess, setHasDriveAccess] = useState(hasDriveConnection());
@@ -295,12 +438,8 @@ export default function OrdersOffersView({
   const [newPoFileName, setNewPoFileName] = useState("");
   const [editPoFileName, setEditPoFileName] = useState("");
 
-  // Shared Google Drive Folder Config States (Developer Managed)
+  // Shared Google Drive Folder Settings
   const [driveSettings, setDriveSettings] = useState<DriveSettings | null>(null);
-  const [configFolderName, setConfigFolderName] = useState("");
-  const [isConfiguringDrive, setIsConfiguringDrive] = useState(false);
-  const [configError, setConfigError] = useState<string | null>(null);
-  const [configSuccess, setConfigSuccess] = useState(false);
 
   // Email auto select settings
   const [autoSelectSettings, setAutoSelectSettings] = useState<EmailAutoSelectSettings>({
@@ -313,10 +452,8 @@ export default function OrdersOffersView({
       const settings = await getSharedDriveSettings();
       if (settings) {
         setDriveSettings(settings);
-        setConfigFolderName(settings.folderName);
         setHasDriveAccess(hasDriveConnection(settings));
       } else {
-        setConfigFolderName("SMS_PO");
         setHasDriveAccess(hasDriveConnection(null));
       }
 
@@ -329,6 +466,19 @@ export default function OrdersOffersView({
     };
     fetchSettings();
   }, []);
+
+  const getTransporterDisplayName = (name?: string) => {
+    if (!name || name === "N/A" || name === "TBD") return name || "N/A";
+    const found = transporters.find(
+      (t) => t.name.toLowerCase() === name.toLowerCase()
+    );
+    if (found) {
+      const idStr = found.transporterId || found.id;
+      if (name.includes(`(${idStr})`)) return name;
+      return `${found.name}${idStr ? ` (${idStr})` : ""}`;
+    }
+    return name;
+  };
 
   // Multi-product items state for EDIT
   const [editItems, setEditItems] = useState<Omit<OrderItem, "amount">[]>([]);
@@ -422,6 +572,43 @@ export default function OrdersOffersView({
   const closedWonValue = closedWonOrders.reduce((sum, o) => sum + o.totalValue, 0);
   const totalProductLines = visibleOrders.reduce((sum, o) => sum + (o.items?.length || 0), 0);
 
+  // Tax & Amount Calculations (Inclusive of 18% GST by default)
+  const parseTaxPercent = (taxStr?: string): number => {
+    if (!taxStr) return 18;
+    const match = taxStr.match(/(\d+(?:\.\d+)?)/);
+    return match ? parseFloat(match[1]) : 18;
+  };
+
+  const calculateItemBaseAmount = (item: { quantity: number | string; rate: number | string }) => {
+    return (Number(item.quantity) || 0) * (Number(item.rate) || 0);
+  };
+
+  const calculateItemGstAmount = (item: { quantity: number | string; rate: number | string; taxes?: string }) => {
+    const base = calculateItemBaseAmount(item);
+    const taxPct = parseTaxPercent((item as any).taxes || defaultTaxValue);
+    return base * (taxPct / 100);
+  };
+
+  const calculateItemTotalWithGst = (item: { quantity: number | string; rate: number | string; taxes?: string }) => {
+    const base = calculateItemBaseAmount(item);
+    const gst = calculateItemGstAmount(item);
+    return base + gst;
+  };
+
+  const calculateBaseTotal = (itemsList: Omit<OrderItem, "amount">[]) => {
+    return itemsList.reduce((sum, item) => sum + calculateItemBaseAmount(item), 0);
+  };
+
+  const calculateTotalGst = (itemsList: Omit<OrderItem, "amount">[]) => {
+    return itemsList.reduce((sum, item) => sum + calculateItemGstAmount(item), 0);
+  };
+
+  const calculateTotalValueWithGst = (itemsList: Omit<OrderItem, "amount">[]) => {
+    return itemsList.reduce((sum, item) => sum + calculateItemTotalWithGst(item), 0);
+  };
+
+  const calculateTotalValue = calculateTotalValueWithGst;
+
   // Add order item row handlers
   const handleAddProductRow = (isEdit: boolean) => {
     const defaultProduct = products[0] || { id: "proj-1", name: "Default Product", hsnCode: "" };
@@ -432,7 +619,7 @@ export default function OrdersOffersView({
       rate: isEdit ? 25000 : ("" as any),
       hsnCode: defaultProduct.hsnCode || "",
       packing: "",
-      taxes: "18% Extra"
+      taxes: defaultTaxValue
     };
     if (isEdit) {
       setEditItems([...editItems, newItem]);
@@ -460,7 +647,7 @@ export default function OrdersOffersView({
       item.productId = value;
       item.productName = p ? p.name : "Unknown Product";
       (item as any).hsnCode = p?.hsnCode || "";
-      (item as any).taxes = "18% Extra";
+      (item as any).taxes = (item as any).taxes || defaultTaxValue;
     } else if (field === "quantity") {
       item.quantity = value === "" ? ("" as any) : Math.max(0, Number(value));
     } else if (field === "rate") {
@@ -480,10 +667,6 @@ export default function OrdersOffersView({
     }
   };
 
-  const calculateTotalValue = (itemsList: Omit<OrderItem, "amount">[]) => {
-    return itemsList.reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.rate) || 0)), 0);
-  };
-
   // Reset form helper
   const resetAddForm = () => {
     setNewClientName("");
@@ -494,7 +677,7 @@ export default function OrdersOffersView({
     setNewSendEmail(false);
     setNewStatus("New");
     setNewItems([
-      { productId: products[0]?.id || "proj-1", productName: products[0]?.name || "Default Product", quantity: "" as any, rate: "" as any, hsnCode: products[0]?.hsnCode || "", packing: "", taxes: "18% Extra" }
+      { productId: products[0]?.id || "proj-1", productName: products[0]?.name || "Default Product", quantity: "" as any, rate: "" as any, hsnCode: products[0]?.hsnCode || "", packing: "", taxes: defaultTaxValue }
     ]);
     setNewAssignedTo(activeUserId);
     setNewNotes("");
@@ -522,6 +705,9 @@ export default function OrdersOffersView({
     setNewWarehouseManagedBy("");
     setNewPoAttachmentUrl("");
     setNewPoFileName("");
+    setNewGstin("");
+    setNewBillingGstin("");
+    setNewSameAsBilling(false);
     setUploadError(null);
   };
 
@@ -541,10 +727,10 @@ export default function OrdersOffersView({
       const result = await uploadPOToDrive(file, clientNameArg, poNumArg);
       if (isEdit) {
         setEditPoAttachmentUrl(result.webViewLink);
-        setEditPoFileName(file.name);
+        setEditPoFileName(result.name);
       } else {
         setNewPoAttachmentUrl(result.webViewLink);
-        setNewPoFileName(file.name);
+        setNewPoFileName(result.name);
       }
       if (result.isLocalFallback) {
         setUploadError(`Notice: ${result.fallbackReason || 'Attached locally.'} To sync directly to Google Drive, enable the Google Drive API in Google Cloud Console.`);
@@ -565,7 +751,6 @@ export default function OrdersOffersView({
       const settings = await getSharedDriveSettings();
       if (settings) {
         setDriveSettings(settings);
-        setConfigFolderName(settings.folderName);
       }
       setHasDriveAccess(true);
     } catch (err: any) {
@@ -576,44 +761,58 @@ export default function OrdersOffersView({
     }
   };
 
-  const handleUpdateDriveFolder = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!configFolderName || configFolderName.trim() === "") {
-      setConfigError("Folder name cannot be empty.");
-      return;
-    }
-    
-    setIsConfiguringDrive(true);
-    setConfigError(null);
-    setConfigSuccess(false);
-
-    try {
-      const token = await ensureGoogleDriveAccess(true);
-      const updated = await updateSharedParentFolder(token, configFolderName.trim());
-      setDriveSettings(updated);
-      setConfigSuccess(true);
-      setHasDriveAccess(true);
-      
-      setTimeout(() => {
-        setConfigSuccess(false);
-      }, 3000);
-    } catch (err: any) {
-      console.error(err);
-      setConfigError(err.message || "Failed to update Google Drive folder. Make sure pop-ups are allowed and you are logged in.");
-    } finally {
-      setIsConfiguringDrive(false);
-    }
-  };
-
   // Submit handers
   const handleCreateOrderSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newClientName || !newCompanyName) return;
+    if (!newClientName || !newCompanyName) {
+      alert("Company Name and Client Full Name are required.");
+      return;
+    }
 
-    const finalItems: OrderItem[] = newItems.map((item) => ({
-      ...item,
-      amount: item.quantity * item.rate
-    }));
+    if (!newStatus) {
+      alert("Pipeline Status is required.");
+      return;
+    }
+
+    if (!newAssignedTo) {
+      alert("Assign Lead To is required.");
+      return;
+    }
+
+    if (!newItems || newItems.length === 0) {
+      alert("At least one product line item is required.");
+      return;
+    }
+
+    for (let i = 0; i < newItems.length; i++) {
+      const item = newItems[i];
+      if (!item.productId) {
+        alert(`Product details missing in line item #${i + 1}: Please select a product.`);
+        return;
+      }
+      if (item.quantity === "" || item.quantity === null || item.quantity === undefined || Number(item.quantity) <= 0) {
+        alert(`Product details incomplete in line item #${i + 1}: Quantity must be greater than 0.`);
+        return;
+      }
+      if (item.rate === "" || item.rate === null || item.rate === undefined || Number(item.rate) <= 0) {
+        alert(`Product details incomplete in line item #${i + 1}: Rate must be greater than 0.`);
+        return;
+      }
+    }
+
+    const finalItems: OrderItem[] = newItems.map((item) => {
+      const qty = Number(item.quantity) || 0;
+      const rate = Number(item.rate) || 0;
+      const taxStr = (item as any).taxes || defaultTaxValue;
+      const totalAmountWithGst = calculateItemTotalWithGst({ quantity: qty, rate, taxes: taxStr });
+      return {
+        ...item,
+        quantity: qty,
+        rate: rate,
+        taxes: taxStr,
+        amount: totalAmountWithGst
+      };
+    });
 
     const computedTotal = finalItems.reduce((acc, it) => acc + it.amount, 0);
 
@@ -623,6 +822,7 @@ export default function OrdersOffersView({
       email: newEmail,
       phone: newPhone || "+1 (555) 000-0000",
       billingAddress: newBillingAddress,
+      billingGstin: newBillingGstin,
       status: newStatus,
       totalValue: computedTotal,
       items: finalItems,
@@ -645,6 +845,7 @@ export default function OrdersOffersView({
         vehicleNo: newVehicleNo,
         deliveryTerm: newDeliveryTerm,
         destinationAddress: newDestinationAddress,
+        gstin: newGstin,
         dispatchDate: newDispatchDate,
         dispatchLocation: newDispatchLocation,
         warehouseManagedBy: newWarehouseManagedBy,
@@ -811,6 +1012,7 @@ export default function OrdersOffersView({
     setEditPhone(order.phone);
     const clientMatch = clients.find(c => c.companyName === order.companyName && c.fullName === order.clientName) || clients.find(c => c.companyName === order.companyName);
     setEditBillingAddress(order.billingAddress || clientMatch?.address || "");
+    setEditBillingGstin(order.billingGstin || clientMatch?.gst || "");
     setEditStatus(order.status);
     setEditAssignedTo(order.assignedToUserId);
     setEditNotes(order.notes);
@@ -837,6 +1039,8 @@ export default function OrdersOffersView({
     setEditDispatchLocation(order.closedWonDetails?.dispatchLocation || "");
     setEditWarehouseManagedBy(order.closedWonDetails?.warehouseManagedBy || "");
     setEditPoAttachmentUrl(order.closedWonDetails?.poAttachmentUrl || "");
+    setEditGstin(order.closedWonDetails?.gstin || "");
+    setEditSameAsBilling(false);
 
     setIsEditOpen(true);
   };
@@ -845,10 +1049,50 @@ export default function OrdersOffersView({
     e.preventDefault();
     if (!editingOrder) return;
 
-    const finalItems: OrderItem[] = editItems.map((item) => ({
-      ...item,
-      amount: item.quantity * item.rate
-    }));
+    if (!editStatus) {
+      alert("Pipeline Status is required.");
+      return;
+    }
+
+    if (!editAssignedTo) {
+      alert("Assign Lead To is required.");
+      return;
+    }
+
+    if (!editItems || editItems.length === 0) {
+      alert("At least one product line item is required.");
+      return;
+    }
+
+    for (let i = 0; i < editItems.length; i++) {
+      const item = editItems[i];
+      if (!item.productId) {
+        alert(`Product details missing in line item #${i + 1}: Please select a product.`);
+        return;
+      }
+      if (item.quantity === "" || item.quantity === null || item.quantity === undefined || Number(item.quantity) <= 0) {
+        alert(`Product details incomplete in line item #${i + 1}: Quantity must be greater than 0.`);
+        return;
+      }
+      if (item.rate === "" || item.rate === null || item.rate === undefined || Number(item.rate) <= 0) {
+        alert(`Product details incomplete in line item #${i + 1}: Rate must be greater than 0.`);
+        return;
+      }
+    }
+
+    const finalItems: OrderItem[] = editItems.map((item) => {
+      const qty = Number(item.quantity) || 0;
+      const rate = Number(item.rate) || 0;
+      const taxStr = (item as any).taxes || defaultTaxValue;
+      const totalAmountWithGst = calculateItemTotalWithGst({ quantity: qty, rate, taxes: taxStr });
+      return {
+        ...item,
+        quantity: qty,
+        rate: rate,
+        taxes: taxStr,
+        amount: totalAmountWithGst
+      };
+    });
 
     const computedTotal = finalItems.reduce((acc, it) => acc + it.amount, 0);
 
@@ -859,6 +1103,7 @@ export default function OrdersOffersView({
       email: editEmail,
       phone: editPhone,
       billingAddress: editBillingAddress,
+      billingGstin: editBillingGstin,
       status: editStatus,
       totalValue: computedTotal,
       items: finalItems,
@@ -881,6 +1126,7 @@ export default function OrdersOffersView({
         vehicleNo: editVehicleNo,
         deliveryTerm: editDeliveryTerm,
         destinationAddress: editDestinationAddress,
+        gstin: editGstin,
         dispatchDate: editDispatchDate,
         dispatchLocation: editDispatchLocation,
         warehouseManagedBy: editWarehouseManagedBy,
@@ -1126,123 +1372,84 @@ export default function OrdersOffersView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-center">
-          {teamCanAdd ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setIsImportOpen(true)}
-                className="bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all duration-150 transform hover:-translate-y-0.5 cursor-pointer"
-                id="btn-import-orders"
-              >
-                <FileSpreadsheet size={15} />
-                <span>Import Orders (Sheets / CSV)</span>
-              </button>
-
-              <button
-                id="btn-add-order"
-                onClick={() => {
-                  resetAddForm();
-                  setIsAddOpen(true);
-                }}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all duration-150 transform hover:-translate-y-0.5 cursor-pointer"
-              >
-                <Plus size={15} />
-                Create Order / Offer
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                disabled
-                title="Your team does not have permission to import orders."
-                className="bg-slate-100 text-slate-400 border border-slate-200 font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm cursor-not-allowed"
-              >
-                <Lock size={15} />
-                <span>Import Orders</span>
-              </button>
-
-              <button
-                disabled
-                title="Your team does not have permission to create orders."
-                className="bg-slate-100 text-slate-400 border border-slate-200 font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm cursor-not-allowed"
-              >
-                <Lock size={15} />
-                Create Order / Offer
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Developer-Only Google Drive Shared Directory Configuration */}
-      {activeUser.role === Role.Admin && (
-        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 shadow-xs">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div>
-              <h2 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-tight flex items-center gap-2">
-                <FileText className="text-indigo-650 h-4 w-4 animate-pulse" />
-                Google Drive Shared Directory Settings (Developer)
-              </h2>
-              <p className="text-[11px] text-slate-500 mt-1 max-w-xl">
-                Configure the central folder name for PO documents. Uploaded purchase orders are stored in this central folder, grouped into dedicated subfolders for each customer company in an organized manner.
-              </p>
-              {driveSettings?.folderId ? (
-                <div className="mt-2.5 flex flex-wrap items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold break-all">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
-                  <span>Current Active Shared Folder:</span>
-                  <span className="font-mono bg-emerald-100/60 px-1 py-0.5 rounded text-[10px] font-bold">{driveSettings.folderName}</span>
-                  <span className="text-slate-400 font-normal">| ID:</span>
-                  <span className="font-mono bg-emerald-100/60 px-1 py-0.5 rounded text-[10px] break-all max-w-full select-all">{driveSettings.folderId}</span>
+          {/* Google Drive Status & Re-authorization */}
+          {isUserTeamAllowedForDrive(activeUser, driveSettings) && (
+            <div className="flex items-center gap-1.5 mr-1">
+              {hasDriveAccess ? (
+                <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-2 rounded-xl text-[11px] font-bold">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                  <span>Google Drive Active</span>
+                  <button
+                    type="button"
+                    onClick={handleConnectDrive}
+                    disabled={isConnecting}
+                    className="ml-1 text-[10px] text-emerald-800 hover:text-emerald-950 font-semibold underline cursor-pointer"
+                    title="Refresh / Re-authorize Google Drive Access"
+                  >
+                    {isConnecting ? "Refreshing..." : "Re-auth"}
+                  </button>
                 </div>
               ) : (
-                <div className="mt-2.5 flex flex-wrap items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold break-all">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0"></span>
-                  <span>Default active:</span>
-                  <code className="font-mono bg-amber-100/60 px-1 py-0.5 rounded text-[10px] font-bold">SMS_PO</code>
-                  <span>(Auto-created and saved on first upload)</span>
+                <div className="inline-flex items-center gap-2 bg-amber-50 text-amber-800 border border-amber-200 px-3 py-1.5 rounded-xl text-[11px] font-bold">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                    <span>Drive Unlinked</span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isConnecting}
+                    onClick={handleConnectDrive}
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-1 px-2.5 rounded-lg text-[10px] flex items-center gap-1 transition-all shadow-xs cursor-pointer"
+                    title="Connect / Authorize Google Drive"
+                  >
+                    {isConnecting ? (
+                      <Loader2 size={10} className="animate-spin" />
+                    ) : (
+                      <Upload size={10} />
+                    )}
+                    <span>Connect Drive</span>
+                  </button>
                 </div>
               )}
             </div>
-            
-            <form onSubmit={handleUpdateDriveFolder} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 min-w-0 sm:max-w-md w-full md:w-auto">
-              <div className="relative flex-1 min-w-0">
-                <input
-                  type="text"
-                  value={configFolderName}
-                  onChange={(e) => setConfigFolderName(e.target.value)}
-                  placeholder="e.g. SMS_PO_Central"
-                  disabled={isConfiguringDrive}
-                  className="w-full text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-slate-400 font-mono"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={isConfiguringDrive}
-                className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer whitespace-nowrap shadow-xs"
-              >
-                {isConfiguringDrive ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    <span>Configuring...</span>
-                  </>
-                ) : (
-                  <span>Set Shared Folder</span>
-                )}
-              </button>
-            </form>
-          </div>
-          {configError && (
-            <p className="text-[10px] text-rose-500 font-semibold mt-2.5 flex items-center gap-1">
-              <span>⚠️</span> {configError}
-            </p>
           )}
-          {configSuccess && (
-            <p className="text-[10px] text-emerald-600 font-bold mt-2.5 flex items-center gap-1">
-              <Check size={12} /> Google Drive folder successfully updated in Firestore! All team members will now store files inside this designated folder.
-            </p>
+
+          {activeUser.role === Role.Admin && (
+            <button
+              type="button"
+              onClick={() => setIsImportOpen(true)}
+              className="bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all duration-150 transform hover:-translate-y-0.5 cursor-pointer"
+              id="btn-import-orders"
+            >
+              <FileSpreadsheet size={15} />
+              <span>Bulk Import Invoices & Orders</span>
+            </button>
+          )}
+
+          {teamCanAdd ? (
+            <button
+              id="btn-add-order"
+              onClick={() => {
+                resetAddForm();
+                setIsAddOpen(true);
+              }}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all duration-150 transform hover:-translate-y-0.5 cursor-pointer"
+            >
+              <Plus size={15} />
+              Create Order / Offer
+            </button>
+          ) : (
+            <button
+              disabled
+              title="Your team does not have permission to create orders."
+              className="bg-slate-100 text-slate-400 border border-slate-200 font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm cursor-not-allowed"
+            >
+              <Lock size={15} />
+              Create Order / Offer
+            </button>
           )}
         </div>
-      )}
+      </div>
 
       {activeUser.role === Role.Admin && (
         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center md:justify-between gap-4 -mt-2">
@@ -1464,12 +1671,13 @@ export default function OrdersOffersView({
                       {/* Client / Company info */}
                       <td className="py-3 px-4 min-w-[200px]">
                         <div className="flex flex-col">
-                          <span className="text-xs font-bold text-slate-900">
-                            {order.clientName}
+                          <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                            <Building2 size={12} className="text-slate-400 shrink-0" />
+                            {order.companyName || order.clientName}
                           </span>
-                          <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1 mt-0.5">
-                            <Building2 size={11} className="text-slate-400" />
-                            {order.companyName}
+                          <span className="text-[10px] text-slate-600 font-medium flex items-center gap-1 mt-0.5">
+                            <UserIcon size={11} className="text-slate-400 shrink-0" />
+                            {order.clientName}
                           </span>
                           <span className="text-[10px] text-slate-400 mt-0.5 font-mono">
                             {order.email} | {order.phone}
@@ -1723,11 +1931,21 @@ export default function OrdersOffersView({
                           setNewEmail(match.email);
                           setNewPhone(match.phone);
                           setNewBillingAddress(match.address || "");
+                          setNewBillingGstin(match.gst || "");
+                          if (newSameAsBilling) {
+                            setNewDestinationAddress(match.address || "");
+                            setNewGstin(match.gst || "");
+                          }
                         } else {
                           setNewClientName("");
                           setNewEmail("");
                           setNewPhone("");
                           setNewBillingAddress("");
+                          setNewBillingGstin("");
+                          if (newSameAsBilling) {
+                            setNewDestinationAddress("");
+                            setNewGstin("");
+                          }
                         }
                       }}
                       className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-semibold"
@@ -1783,8 +2001,15 @@ export default function OrdersOffersView({
                         setNewEmail(email);
                         setNewPhone(phone);
                         const match = clients.find(c => c.companyName === newCompanyName && c.fullName === name && c.email === email);
-                        if (match?.address) {
-                          setNewBillingAddress(match.address);
+                        if (match) {
+                          if (match.address) {
+                            setNewBillingAddress(match.address);
+                            if (newSameAsBilling) setNewDestinationAddress(match.address);
+                          }
+                          if (match.gst) {
+                            setNewBillingGstin(match.gst);
+                            if (newSameAsBilling) setNewGstin(match.gst);
+                          }
                         }
                       }
                     }}
@@ -1859,17 +2084,40 @@ export default function OrdersOffersView({
                 </div>
               </div>
 
+              {/* Billing GSTIN */}
+              <div>
+                <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Billing GSTIN (Optional)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 27AAAAA0000A1Z5"
+                  value={newBillingGstin}
+                  onChange={(e) => {
+                    setNewBillingGstin(e.target.value);
+                    if (newSameAsBilling) {
+                      setNewGstin(e.target.value);
+                    }
+                  }}
+                  className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-mono"
+                />
+              </div>
+
               {/* Client Billing Address */}
               <div>
                 <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono flex items-center justify-between">
-                  <span>Client Billing Address</span>
+                  <span>Client Billing Address *</span>
                   <span className="text-[10px] text-indigo-600 font-semibold normal-case">(Used for billing & invoice creation)</span>
                 </label>
                 <textarea
                   rows={2}
+                  required
                   placeholder="Enter or adjust client billing address..."
                   value={newBillingAddress}
-                  onChange={(e) => setNewBillingAddress(e.target.value)}
+                  onChange={(e) => {
+                    setNewBillingAddress(e.target.value);
+                    if (newSameAsBilling) {
+                      setNewDestinationAddress(e.target.value);
+                    }
+                  }}
                   className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
                 />
               </div>
@@ -1877,11 +2125,12 @@ export default function OrdersOffersView({
               {/* Status & Assigned To */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Pipeline Status</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Pipeline Status *</label>
                   <select
+                    required
                     value={newStatus}
                     onChange={(e) => setNewStatus(e.target.value as OrderOffer["status"])}
-                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
+                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-semibold"
                   >
                     <optgroup label="Offer">
                       <option value="New">New</option>
@@ -1899,15 +2148,16 @@ export default function OrdersOffersView({
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Assign Lead To</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Assign Lead To *</label>
                   <select
+                    required
                     value={newAssignedTo}
                     onChange={(e) => setNewAssignedTo(e.target.value)}
                     className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-semibold"
                   >
                     {assignableUsers.map((u) => (
                       <option key={u.id} value={u.id}>
-                        {u.name} ({u.role})
+                        {u.name}
                       </option>
                     ))}
                   </select>
@@ -1977,7 +2227,7 @@ export default function OrdersOffersView({
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                   <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wide flex items-center gap-1.5">
                     <ShoppingBag size={14} className="text-indigo-600" />
-                    Order Line Items
+                    Order Line Items *
                   </h3>
                   <button
                     type="button"
@@ -1994,8 +2244,9 @@ export default function OrdersOffersView({
                       <div key={index} className="bg-white p-3 rounded-lg border border-slate-200 animate-fade-in space-y-2">
                         <div className="grid grid-cols-12 gap-2 items-center">
                           <div className="col-span-5">
-                            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Product</label>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Product *</label>
                             <select
+                              required
                               value={item.productId}
                               onChange={(e) => handleProductRowChange(index, "productId", e.target.value, false)}
                               className="w-full text-xs border border-slate-200 bg-slate-50 p-1.5 rounded-md focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-semibold"
@@ -2009,10 +2260,12 @@ export default function OrdersOffersView({
                           </div>
 
                           <div className="col-span-2">
-                            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Qty (Kg)</label>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Qty (Kg) *</label>
                             <input
                               type="number"
-                              min="0"
+                              required
+                              min="0.01"
+                              step="any"
                               placeholder="Qty in Kg"
                               value={item.quantity === "" || item.quantity === null || item.quantity === undefined ? "" : item.quantity}
                               onChange={(e) => handleProductRowChange(index, "quantity", e.target.value, false)}
@@ -2021,10 +2274,12 @@ export default function OrdersOffersView({
                           </div>
 
                           <div className="col-span-3">
-                            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Rate (₹)</label>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Rate (₹) *</label>
                             <input
                               type="number"
-                              min="0"
+                              required
+                              min="0.01"
+                              step="any"
                               placeholder="Rate"
                               value={item.rate === "" || item.rate === null || item.rate === undefined ? "" : item.rate}
                               onChange={(e) => handleProductRowChange(index, "rate", e.target.value, false)}
@@ -2032,23 +2287,26 @@ export default function OrdersOffersView({
                             />
                           </div>
 
-                          <div className="col-span-2 flex items-center justify-between gap-1 mt-3">
-                            <span className="text-[11px] font-bold text-slate-700 font-mono">
-                              ₹{((Number(item.quantity) || 0) * (Number(item.rate) || 0)).toLocaleString()}
-                            </span>
-                            <button
-                              type="button"
-                              disabled={newItems.length === 1}
-                              onClick={() => handleRemoveProductRow(index, false)}
-                              className={`p-1 rounded transition-colors ${
-                                newItems.length === 1
-                                  ? "text-slate-200 cursor-not-allowed"
-                                  : "text-rose-500 hover:bg-rose-50 cursor-pointer"
-                              }`}
-                              title="Remove item"
-                            >
-                              <X size={14} />
-                            </button>
+                          <div className="col-span-2 flex flex-col justify-center items-end gap-0.5 pr-1">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase font-mono">Amount (Incl. GST)</span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[11px] font-bold text-indigo-900 font-mono">
+                                ₹{calculateItemTotalWithGst(item).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={newItems.length === 1}
+                                onClick={() => handleRemoveProductRow(index, false)}
+                                className={`p-1 rounded transition-colors ${
+                                  newItems.length === 1
+                                    ? "text-slate-200 cursor-not-allowed"
+                                    : "text-rose-500 hover:bg-rose-50 cursor-pointer"
+                                }`}
+                                title="Remove item"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
                           </div>
                         </div>
 
@@ -2070,10 +2328,20 @@ export default function OrdersOffersView({
                             />
                           </div>
                           <div>
-                            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Taxes (Fixed)</label>
-                            <div className="w-full text-[11px] border border-slate-100 bg-slate-50/50 p-1.5 rounded text-slate-500 font-medium">
-                              {(item as any).taxes || "18% Extra"}
-                            </div>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Taxes (18% Default) *</label>
+                            <select
+                              required
+                              value={(item as any).taxes || defaultTaxValue}
+                              onChange={(e) => handleProductRowChange(index, "taxes", e.target.value, false)}
+                              className="w-full text-[11px] border border-slate-200 bg-white p-1 rounded focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-semibold"
+                            >
+                              {(item as any).taxes && !availableTaxRates.some(t => t.name === (item as any).taxes) && (
+                                <option value={(item as any).taxes}>{(item as any).taxes}</option>
+                              )}
+                              {availableTaxRates.map((t) => (
+                                <option key={t.id} value={t.name}>{t.name}</option>
+                              ))}
+                            </select>
                           </div>
                         </div>
                       </div>
@@ -2081,10 +2349,20 @@ export default function OrdersOffersView({
                   </div>
                 </div>
 
-                {/* Total amount panel */}
-                <div className="flex justify-between items-center bg-slate-100 p-3 rounded-lg border border-slate-200 mt-2 font-mono">
-                  <span className="text-xs font-bold text-slate-600">GRAND TOTAL ORDER VALUE:</span>
-                  <span className="text-sm font-black text-slate-900">₹{calculateTotalValue(newItems).toLocaleString()}</span>
+                {/* Total amount panel with GST breakdown */}
+                <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 mt-2 font-mono space-y-1">
+                  <div className="flex justify-between items-center text-xs text-slate-600">
+                    <span>Base Subtotal (Excl. Tax):</span>
+                    <span className="font-bold">₹{calculateBaseTotal(newItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs text-slate-600">
+                    <span>Total GST (18% / applicable tax):</span>
+                    <span className="font-bold text-indigo-600">₹{calculateTotalGst(newItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-200 pt-1.5 mt-1">
+                    <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
+                    <span className="text-indigo-900 font-black">₹{calculateTotalValueWithGst(newItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
                 </div>
               </div>
 
@@ -2181,7 +2459,9 @@ export default function OrdersOffersView({
                       >
                         <option value="">Select Transporter...</option>
                         {transporters.map((transporter) => (
-                          <option key={transporter.id} value={transporter.name}>{transporter.name}</option>
+                          <option key={transporter.id} value={transporter.name}>
+                            {transporter.name}{transporter.transporterId ? ` (${transporter.transporterId})` : (transporter.id ? ` (${transporter.id})` : "")}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -2253,11 +2533,44 @@ export default function OrdersOffersView({
                     </div>
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Destination Delivery Address</label>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <input
+                        type="checkbox"
+                        id="new-same-address"
+                        checked={newSameAsBilling}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setNewSameAsBilling(checked);
+                          if (checked) {
+                            setNewDestinationAddress(newBillingAddress);
+                            setNewGstin(newBillingGstin);
+                          }
+                        }}
+                        className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-slate-300 rounded cursor-pointer"
+                      />
+                      <label htmlFor="new-same-address" className="text-xs font-semibold text-slate-700 cursor-pointer">
+                        Delivery Address same as billing address
+                      </label>
+                    </div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">
+                      Destination Delivery Address {!newSameAsBilling ? "*" : ""}
+                    </label>
                     <textarea
                       rows={2}
+                      required={!newSameAsBilling}
                       value={newDestinationAddress}
                       onChange={(e) => setNewDestinationAddress(e.target.value)}
+                      disabled={newSameAsBilling}
+                      className={`w-full text-xs border border-slate-200 px-3 py-2 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none ${newSameAsBilling ? "bg-slate-100 text-slate-500 cursor-not-allowed" : "bg-white"}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">GSTIN (Optional)</label>
+                    <input
+                      type="text"
+                      value={newGstin}
+                      onChange={(e) => setNewGstin(e.target.value)}
+                      placeholder="e.g. 27AAAAA0000A1Z5"
                       className="w-full text-xs border border-slate-200 bg-white px-3 py-2 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none"
                     />
                   </div>
@@ -2329,35 +2642,45 @@ export default function OrdersOffersView({
                         {!hasDriveAccess ? (
                           <div className="border border-slate-200 bg-slate-50/50 rounded-xl p-5 text-center transition-all">
                             <FileText className="mx-auto h-6 w-6 text-indigo-500 mb-2 opacity-80" />
-                            <p className="text-xs font-semibold text-slate-750">
-                              {activeUser.role === Role.Admin ? "Connect Google Drive to Upload POs" : "Google Drive Upload Not Set Up"}
-                            </p>
-                            <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
-                              {activeUser.role === Role.Admin 
-                                ? "Automatically uploads PDF, image or word documents directly to your secure Google Drive in a folder called SMS_PO."
-                                : "The central Google Drive folder is not linked or authorized. Please ask your Sales System Administrator to link Google Drive to enable direct PO document uploads."
-                              }
-                            </p>
-                            {activeUser.role === Role.Admin ? (
-                              <button
-                                type="button"
-                                disabled={isConnecting}
-                                onClick={handleConnectDrive}
-                                className="mt-3 inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2 px-4 rounded-xl text-xs transition-all duration-150 shadow-sm cursor-pointer"
-                              >
-                                {isConnecting ? (
-                                  <>
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    <span>Authorizing...</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Upload className="h-3.5 w-3.5" />
-                                    <span>Connect Google Drive</span>
-                                  </>
-                                )}
-                              </button>
-                            ) : null}
+                            {isUserTeamAllowedForDrive(activeUser, driveSettings) ? (
+                              <>
+                                <p className="text-xs font-semibold text-slate-750">
+                                  Connect Google Drive to Upload POs
+                                </p>
+                                <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
+                                  {driveSettings?.folderName
+                                    ? `Connect or re-authorize to upload PO documents directly to central folder "${driveSettings.folderName}".`
+                                    : "Connect your Google Drive account to securely upload customer PO documents."}
+                                </p>
+                                <button
+                                  type="button"
+                                  disabled={isConnecting}
+                                  onClick={handleConnectDrive}
+                                  className="mt-3 inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2 px-4 rounded-xl text-xs transition-all duration-150 shadow-sm cursor-pointer"
+                                >
+                                  {isConnecting ? (
+                                    <>
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      <span>Authorizing...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Upload className="h-3.5 w-3.5" />
+                                      <span>Connect Google Drive</span>
+                                    </>
+                                  )}
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <p className="text-xs font-semibold text-slate-750">
+                                  Google Drive Access Restricted
+                                </p>
+                                <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
+                                  Google Drive upload is restricted to authorized teams. Please contact your system administrator to enable access for team <span className="font-semibold text-slate-700 font-mono">"{activeUser.teamName || "Unassigned"}"</span>.
+                                </p>
+                              </>
+                            )}
                             {uploadError && (
                               <p className="text-[10px] text-rose-500 font-semibold mt-2">⚠️ {uploadError}</p>
                             )}
@@ -2549,17 +2872,40 @@ export default function OrdersOffersView({
                 </div>
               </div>
 
+              {/* Billing GSTIN */}
+              <div>
+                <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Billing GSTIN (Optional)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 27AAAAA0000A1Z5"
+                  value={editBillingGstin}
+                  onChange={(e) => {
+                    setEditBillingGstin(e.target.value);
+                    if (editSameAsBilling) {
+                      setEditGstin(e.target.value);
+                    }
+                  }}
+                  className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800 font-mono"
+                />
+              </div>
+
               {/* Client Billing Address */}
               <div>
                 <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono flex items-center justify-between">
-                  <span>Client Billing Address</span>
+                  <span>Client Billing Address *</span>
                   <span className="text-[10px] text-amber-600 font-semibold normal-case">(Used for billing & invoice creation)</span>
                 </label>
                 <textarea
                   rows={2}
+                  required
                   placeholder="Enter or adjust client billing address..."
                   value={editBillingAddress}
-                  onChange={(e) => setEditBillingAddress(e.target.value)}
+                  onChange={(e) => {
+                    setEditBillingAddress(e.target.value);
+                    if (editSameAsBilling) {
+                      setEditDestinationAddress(e.target.value);
+                    }
+                  }}
                   className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
                 />
               </div>
@@ -2567,11 +2913,12 @@ export default function OrdersOffersView({
               {/* Status & Assigned To */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Pipeline Status</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Pipeline Status *</label>
                   <select
+                    required
                     value={editStatus}
                     onChange={(e) => setEditStatus(e.target.value as OrderOffer["status"])}
-                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
+                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800 font-semibold"
                   >
                     <optgroup label="Offer">
                       <option value="New">New</option>
@@ -2589,15 +2936,16 @@ export default function OrdersOffersView({
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Reassigned Owner</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Assign Lead To *</label>
                   <select
+                    required
                     value={editAssignedTo}
                     onChange={(e) => setEditAssignedTo(e.target.value)}
                     className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800 font-semibold"
                   >
                     {assignableUsers.map((u) => (
                       <option key={u.id} value={u.id}>
-                        {u.name} ({u.role})
+                        {u.name}
                       </option>
                     ))}
                   </select>
@@ -2667,7 +3015,7 @@ export default function OrdersOffersView({
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                   <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wide flex items-center gap-1.5">
                     <ShoppingBag size={14} className="text-amber-800" />
-                    Order Line Items
+                    Order Line Items *
                   </h3>
                   <button
                     type="button"
@@ -2684,8 +3032,9 @@ export default function OrdersOffersView({
                       <div key={index} className="bg-white p-3 rounded-lg border border-slate-200 animate-fade-in space-y-2">
                         <div className="grid grid-cols-12 gap-2 items-center">
                           <div className="col-span-5">
-                            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Product</label>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Product *</label>
                             <select
+                              required
                               value={item.productId}
                               onChange={(e) => handleProductRowChange(index, "productId", e.target.value, true)}
                               className="w-full text-xs border border-slate-200 bg-slate-50 p-1.5 rounded-md focus:ring-1 focus:ring-amber-500 outline-none text-slate-800 font-semibold"
@@ -2699,10 +3048,12 @@ export default function OrdersOffersView({
                           </div>
 
                           <div className="col-span-2">
-                            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Qty (Kg)</label>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Qty (Kg) *</label>
                             <input
                               type="number"
-                              min="0"
+                              required
+                              min="0.01"
+                              step="any"
                               placeholder="Qty in Kg"
                               value={item.quantity === "" || item.quantity === null || item.quantity === undefined ? "" : item.quantity}
                               onChange={(e) => handleProductRowChange(index, "quantity", e.target.value, true)}
@@ -2711,10 +3062,12 @@ export default function OrdersOffersView({
                           </div>
 
                           <div className="col-span-3">
-                            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Rate (₹)</label>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Rate (₹) *</label>
                             <input
                               type="number"
-                              min="0"
+                              required
+                              min="0.01"
+                              step="any"
                               placeholder="Rate"
                               value={item.rate === "" || item.rate === null || item.rate === undefined ? "" : item.rate}
                               onChange={(e) => handleProductRowChange(index, "rate", e.target.value, true)}
@@ -2722,23 +3075,26 @@ export default function OrdersOffersView({
                             />
                           </div>
 
-                          <div className="col-span-2 flex items-center justify-between gap-1 mt-3">
-                            <span className="text-[11px] font-bold text-slate-700 font-mono">
-                              ₹{((Number(item.quantity) || 0) * (Number(item.rate) || 0)).toLocaleString()}
-                            </span>
-                            <button
-                              type="button"
-                              disabled={editItems.length === 1}
-                              onClick={() => handleRemoveProductRow(index, true)}
-                              className={`p-1 rounded transition-colors ${
-                                editItems.length === 1
-                                  ? "text-slate-200 cursor-not-allowed"
-                                  : "text-rose-500 hover:bg-rose-50 cursor-pointer"
-                              }`}
-                              title="Remove item"
-                            >
-                              <X size={14} />
-                            </button>
+                          <div className="col-span-2 flex flex-col justify-center items-end gap-0.5 pr-1">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase font-mono">Amount (Incl. GST)</span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[11px] font-bold text-amber-950 font-mono">
+                                ₹{calculateItemTotalWithGst(item).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={editItems.length === 1}
+                                onClick={() => handleRemoveProductRow(index, true)}
+                                className={`p-1 rounded transition-colors ${
+                                  editItems.length === 1
+                                    ? "text-slate-200 cursor-not-allowed"
+                                    : "text-rose-500 hover:bg-rose-50 cursor-pointer"
+                                }`}
+                                title="Remove item"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
                           </div>
                         </div>
 
@@ -2760,10 +3116,20 @@ export default function OrdersOffersView({
                             />
                           </div>
                           <div>
-                            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Taxes (Fixed)</label>
-                            <div className="w-full text-[11px] border border-slate-100 bg-slate-50/50 p-1.5 rounded text-slate-500 font-medium">
-                              {(item as any).taxes || "18% Extra"}
-                            </div>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Taxes (18% Default) *</label>
+                            <select
+                              required
+                              value={(item as any).taxes || defaultTaxValue}
+                              onChange={(e) => handleProductRowChange(index, "taxes", e.target.value, true)}
+                              className="w-full text-[11px] border border-slate-200 bg-white p-1 rounded focus:ring-1 focus:ring-amber-500 outline-none text-slate-800 font-semibold"
+                            >
+                              {(item as any).taxes && !availableTaxRates.some(t => t.name === (item as any).taxes) && (
+                                <option value={(item as any).taxes}>{(item as any).taxes}</option>
+                              )}
+                              {availableTaxRates.map((t) => (
+                                <option key={t.id} value={t.name}>{t.name}</option>
+                              ))}
+                            </select>
                           </div>
                         </div>
                       </div>
@@ -2771,10 +3137,20 @@ export default function OrdersOffersView({
                   </div>
                 </div>
 
-                {/* Total amount panel */}
-                <div className="flex justify-between items-center bg-slate-100 p-3 rounded-lg border border-slate-200 mt-2 font-mono">
-                  <span className="text-xs font-bold text-slate-600">GRAND TOTAL ORDER VALUE:</span>
-                  <span className="text-sm font-black text-slate-900">₹{calculateTotalValue(editItems).toLocaleString()}</span>
+                {/* Total amount panel with GST breakdown */}
+                <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 mt-2 font-mono space-y-1">
+                  <div className="flex justify-between items-center text-xs text-slate-600">
+                    <span>Base Subtotal (Excl. Tax):</span>
+                    <span className="font-bold">₹{calculateBaseTotal(editItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs text-slate-600">
+                    <span>Total GST (18% / applicable tax):</span>
+                    <span className="font-bold text-amber-700">₹{calculateTotalGst(editItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-200 pt-1.5 mt-1">
+                    <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
+                    <span className="text-amber-950 font-black">₹{calculateTotalValueWithGst(editItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
                 </div>
               </div>
 
@@ -2871,7 +3247,9 @@ export default function OrdersOffersView({
                       >
                         <option value="">Select Transporter...</option>
                         {transporters.map((transporter) => (
-                          <option key={transporter.id} value={transporter.name}>{transporter.name}</option>
+                          <option key={transporter.id} value={transporter.name}>
+                            {transporter.name}{transporter.transporterId ? ` (${transporter.transporterId})` : (transporter.id ? ` (${transporter.id})` : "")}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -2943,11 +3321,44 @@ export default function OrdersOffersView({
                     </div>
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Destination Delivery Address</label>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <input
+                        type="checkbox"
+                        id="edit-same-address"
+                        checked={editSameAsBilling}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setEditSameAsBilling(checked);
+                          if (checked) {
+                            setEditDestinationAddress(editBillingAddress);
+                            setEditGstin(editBillingGstin);
+                          }
+                        }}
+                        className="h-4 w-4 text-amber-600 focus:ring-amber-500 border-slate-300 rounded cursor-pointer"
+                      />
+                      <label htmlFor="edit-same-address" className="text-xs font-semibold text-slate-700 cursor-pointer">
+                        Delivery Address same as billing address
+                      </label>
+                    </div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">
+                      Destination Delivery Address {!editSameAsBilling ? "*" : ""}
+                    </label>
                     <textarea
                       rows={2}
+                      required={!editSameAsBilling}
                       value={editDestinationAddress}
                       onChange={(e) => setEditDestinationAddress(e.target.value)}
+                      disabled={editSameAsBilling}
+                      className={`w-full text-xs border border-slate-200 px-3 py-2 rounded-lg focus:ring-1 focus:ring-amber-500 outline-none ${editSameAsBilling ? "bg-slate-100 text-slate-500 cursor-not-allowed" : "bg-white"}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">GSTIN (Optional)</label>
+                    <input
+                      type="text"
+                      value={editGstin}
+                      onChange={(e) => setEditGstin(e.target.value)}
+                      placeholder="e.g. 27AAAAA0000A1Z5"
                       className="w-full text-xs border border-slate-200 bg-white px-3 py-2 rounded-lg focus:ring-1 focus:ring-amber-500 outline-none"
                     />
                   </div>
@@ -3019,35 +3430,45 @@ export default function OrdersOffersView({
                         {!hasDriveAccess ? (
                           <div className="border border-slate-200 bg-slate-50/50 rounded-xl p-5 text-center transition-all">
                             <FileText className="mx-auto h-6 w-6 text-indigo-500 mb-2 opacity-80" />
-                            <p className="text-xs font-semibold text-slate-750">
-                              {activeUser.role === Role.Admin ? "Connect Google Drive to Upload POs" : "Google Drive Upload Not Set Up"}
-                            </p>
-                            <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
-                              {activeUser.role === Role.Admin 
-                                ? "Automatically uploads PDF, image or word documents directly to your secure Google Drive in a folder called SMS_PO."
-                                : "The central Google Drive folder is not linked or authorized. Please ask your Sales System Administrator to link Google Drive to enable direct PO document uploads."
-                              }
-                            </p>
-                            {activeUser.role === Role.Admin ? (
-                              <button
-                                type="button"
-                                disabled={isConnecting}
-                                onClick={handleConnectDrive}
-                                className="mt-3 inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2 px-4 rounded-xl text-xs transition-all duration-150 shadow-sm cursor-pointer"
-                              >
-                                {isConnecting ? (
-                                  <>
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    <span>Authorizing...</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Upload className="h-3.5 w-3.5" />
-                                    <span>Connect Google Drive</span>
-                                  </>
-                                )}
-                              </button>
-                            ) : null}
+                            {isUserTeamAllowedForDrive(activeUser, driveSettings) ? (
+                              <>
+                                <p className="text-xs font-semibold text-slate-750">
+                                  Connect Google Drive to Upload POs
+                                </p>
+                                <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
+                                  {driveSettings?.folderName
+                                    ? `Connect or re-authorize to upload PO documents directly to central folder "${driveSettings.folderName}".`
+                                    : "Connect your Google Drive account to securely upload customer PO documents."}
+                                </p>
+                                <button
+                                  type="button"
+                                  disabled={isConnecting}
+                                  onClick={handleConnectDrive}
+                                  className="mt-3 inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2 px-4 rounded-xl text-xs transition-all duration-150 shadow-sm cursor-pointer"
+                                >
+                                  {isConnecting ? (
+                                    <>
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      <span>Authorizing...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Upload className="h-3.5 w-3.5" />
+                                      <span>Connect Google Drive</span>
+                                    </>
+                                  )}
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <p className="text-xs font-semibold text-slate-750">
+                                  Google Drive Access Restricted
+                                </p>
+                                <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
+                                  Google Drive upload is restricted to authorized teams. Please contact your system administrator to enable access for team <span className="font-semibold text-slate-700 font-mono">"{activeUser.teamName || "Unassigned"}"</span>.
+                                </p>
+                              </>
+                            )}
                             {uploadError && (
                               <p className="text-[10px] text-rose-500 font-semibold mt-2">⚠️ {uploadError}</p>
                             )}
@@ -3449,10 +3870,15 @@ export default function OrdersOffersView({
                   </div>
 
                   <div className="space-y-0.5 pt-2 border-t border-slate-100 col-span-2 md:col-span-1">
-                    <span className="text-[9px] font-mono text-slate-400 uppercase block">Billing Address</span>
+                    <span className="text-[9px] font-mono text-slate-400 uppercase block">Billing Address & GSTIN</span>
                     <span className="text-[10.5px] text-slate-600 font-medium block leading-normal line-clamp-2" title={selectedOrderDetails.billingAddress}>
                       {selectedOrderDetails.billingAddress || "N/A"}
                     </span>
+                    {selectedOrderDetails.billingGstin && (
+                      <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
+                        GSTIN: {selectedOrderDetails.billingGstin}
+                      </span>
+                    )}
                   </div>
 
                   <div className="space-y-0.5 pt-2 border-t border-slate-100">
@@ -3534,6 +3960,13 @@ export default function OrdersOffersView({
                           {selectedOrderDetails.closedWonDetails.destinationAddress || "N/A"}
                         </span>
                       </div>
+
+                      <div>
+                        <span className="text-[9px] font-mono text-slate-400 uppercase block">GSTIN</span>
+                        <span className="text-[11px] font-bold text-slate-700 font-mono">
+                          {selectedOrderDetails.closedWonDetails.gstin || "N/A"}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="space-y-3">
@@ -3563,7 +3996,7 @@ export default function OrdersOffersView({
                       <div>
                         <span className="text-[9px] font-mono text-slate-400 uppercase block">Logistics Partner</span>
                         <div className="text-[11px] font-bold text-slate-700">
-                          {selectedOrderDetails.closedWonDetails.transporterName || "N/A"}
+                          {getTransporterDisplayName(selectedOrderDetails.closedWonDetails.transporterName)}
                         </div>
                         <div className="text-[10px] text-slate-500 font-mono mt-0.5">
                           Vehicle No: {selectedOrderDetails.closedWonDetails.vehicleNo || "N/A"}
@@ -3648,12 +4081,12 @@ export default function OrdersOffersView({
         </div>
       )}
 
-      {/* Data Import Modal for Orders / Offers */}
+      {/* Data Import Modal for Orders / Offers / Historical Invoices */}
       <DataImportModal
         isOpen={isImportOpen}
         onClose={() => setIsImportOpen(false)}
-        title="Import Sales Orders / Offers (Without Invoice Attached)"
-        entityName="Orders / Offers"
+        title="Bulk Import Sales Orders, Offers & Historical Invoices"
+        entityName="Orders, Offers & Invoices"
         fields={orderImportFields}
         onImport={handleImportOrders}
       />

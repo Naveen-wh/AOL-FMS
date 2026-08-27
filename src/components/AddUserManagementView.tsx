@@ -21,7 +21,7 @@ export default function AddUserManagementView({
   const activeUser = users.find((u) => u.id === activeUserId);
   const isAdmin = activeUser?.role === Role.Admin;
   const isSeniorManager = activeUser?.role === Role.SeniorManager;
-  const canAddUser = isAdmin || isSeniorManager;
+  const canAddUser = isAdmin;
 
   // Search and Filter State
   const [searchTerm, setSearchTerm] = useState("");
@@ -190,7 +190,7 @@ export default function AddUserManagementView({
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingUserId || !onUpdateUser) return;
+    if (!isAdmin || !editingUserId || !onUpdateUser) return;
 
     setIsSavingEdit(true);
     setEditMsg(null);

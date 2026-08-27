@@ -58,6 +58,7 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
       { key: "{{email}}", label: "Client Email", description: "Primary client email address", sampleValue: "care@aromaorganic.in" },
       { key: "{{phone}}", label: "Client Phone", description: "Primary client phone number", sampleValue: "+91 9123456789" },
       { key: "{{billingAddress}}", label: "Client Billing Address", description: "Client billing address for invoicing", sampleValue: "Plot 42, Commercial Complex, Sector 5, Kolkata 700091" },
+      { key: "{{billingGstin}}", label: "Billing GSTIN", description: "Billing GST Identification Number", sampleValue: "27AAAAA0000A1Z5" },
       { key: "{{clientBillingAddress}}", label: "Client Billing Address Alias", description: "Alias for client billing address", sampleValue: "Plot 42, Commercial Complex, Sector 5, Kolkata 700091" },
       { key: "{{status}}", label: "Pipeline Status", description: "Stage / Pipeline Status (e.g. New, Contacted, Closed Won)", sampleValue: "Closed Won" },
       { key: "{{totalValue}}", label: "Total Value ($)", description: "Total deal amount or order total", sampleValue: "$225,000" },
@@ -86,6 +87,7 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
       { key: "{{transporterName}}", label: "Transporter Name", description: "Logistics carrier name", sampleValue: "VRL Logistics" },
       { key: "{{deliveryTerm}}", label: "Delivery Term", description: "Dispatch delivery term", sampleValue: "Door Delivery" },
       { key: "{{destinationAddress}}", label: "Destination Address", description: "Factory or warehouse shipping address", sampleValue: "Plot 42, Raninagar Industrial Estate, WB" },
+      { key: "{{gstin}}", label: "GSTIN", description: "Customer GST Identification Number", sampleValue: "27AAAAA0000A1Z5" },
       { key: "{{dispatchDate}}", label: "Dispatch Date", description: "Target or actual date of dispatch", sampleValue: "2026-08-05" },
       { key: "{{dispatchLocation}}", label: "Dispatch Location", description: "Source factory/terminal dispatch point", sampleValue: "Kolkata Depot" },
       { key: "{{warehouseManagedBy}}", label: "Warehouse Managed By", description: "Warehouse location or manager", sampleValue: "Central Chemical Hub" },
@@ -139,6 +141,7 @@ export interface ReplaceVariablesContext {
   email?: string;
   phone?: string;
   billingAddress?: string;
+  billingGstin?: string;
   clientBillingAddress?: string;
   status?: string;
   totalValue?: string | number;
@@ -160,6 +163,7 @@ export interface ReplaceVariablesContext {
   transporterName?: string;
   deliveryTerm?: string;
   destinationAddress?: string;
+  gstin?: string;
   dispatchDate?: string;
   dispatchLocation?: string;
   warehouseManagedBy?: string;
@@ -225,6 +229,7 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{email\}\}|\{email\}/gi, ctx.email || "")
     .replace(/\{\{phone\}\}|\{phone\}/gi, ctx.phone || "")
     .replace(/\{\{billingAddress\}\}|\{billingAddress\}/gi, ctx.billingAddress || ctx.clientBillingAddress || "")
+    .replace(/\{\{billingGstin\}\}|\{billingGstin\}/gi, ctx.billingGstin || "")
     .replace(/\{\{clientBillingAddress\}\}|\{clientBillingAddress\}/gi, ctx.clientBillingAddress || ctx.billingAddress || "")
     .replace(/\{\{status\}\}|\{status\}/gi, ctx.status || "")
     .replace(/\{\{totalValue\}\}|\{totalValue\}/gi, totalValFormatted)
@@ -252,6 +257,7 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{transporterName\}\}|\{transporterName\}/gi, ctx.transporterName || "")
     .replace(/\{\{deliveryTerm\}\}|\{deliveryTerm\}/gi, ctx.deliveryTerm || "")
     .replace(/\{\{destinationAddress\}\}|\{destinationAddress\}/gi, ctx.destinationAddress || "")
+    .replace(/\{\{gstin\}\}|\{gstin\}/gi, ctx.gstin || "")
     .replace(/\{\{dispatchDate\}\}|\{dispatchDate\}/gi, ctx.dispatchDate || "")
     .replace(/\{\{dispatchLocation\}\}|\{dispatchLocation\}/gi, ctx.dispatchLocation || "")
     .replace(/\{\{warehouseManagedBy\}\}|\{warehouseManagedBy\}/gi, ctx.warehouseManagedBy || "")

@@ -142,10 +142,10 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
             <Briefcase size={22} className="stroke-[2.5]" />
           </div>
           <h2 className="text-lg font-extrabold tracking-tight text-slate-900">
-            Sales Management Portal
+            AOL FMS
           </h2>
           <p className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest mt-1">
-            Hierarchical Authorization Entry
+            Sales Indent
           </p>
         </div>
 

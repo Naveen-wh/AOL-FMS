@@ -10,8 +10,42 @@ let cachedAccessToken: string | null = null;
 export interface DriveSettings {
   folderName: string;
   folderId: string;
+  driveType?: "shared_drive" | "shared_folder" | "my_drive";
   adminAccessToken?: string;
   tokenExpiry?: number;
+  allowAllTeams?: boolean;
+  allowedTeamIds?: string[];
+}
+
+/**
+ * Extracts and sanitizes a Google Drive Folder ID or Shared Drive ID
+ * from a raw ID or full Google Drive URL (including Shared Drives /folders/ or /drives/ URLs).
+ */
+export function extractDriveFolderId(input: string): string {
+  if (!input) return "";
+  const trimmed = input.trim();
+
+  // Pattern: https://drive.google.com/drive/u/0/folders/XYZ or /folders/XYZ
+  const folderMatch = trimmed.match(/\/folders\/([a-zA-Z0-9_\-]+)/);
+  if (folderMatch && folderMatch[1]) {
+    return folderMatch[1];
+  }
+
+  // Pattern: https://drive.google.com/drive/u/0/drives/XYZ or /drives/XYZ (Shared Drive Root)
+  const driveMatch = trimmed.match(/\/drives\/([a-zA-Z0-9_\-]+)/);
+  if (driveMatch && driveMatch[1]) {
+    return driveMatch[1];
+  }
+
+  // Pattern: ?id=XYZ or &id=XYZ
+  const queryMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_\-]+)/);
+  if (queryMatch && queryMatch[1]) {
+    return queryMatch[1];
+  }
+
+  // Strip query parameters if pasted as ID with ?...
+  const cleanId = trimmed.split("?")[0].split("&")[0].trim();
+  return cleanId;
 }
 
 // Listen to auth sign-out to clear the cached token in memory
@@ -39,8 +73,32 @@ export function hasDriveConnection(settings?: DriveSettings | null): boolean {
 }
 
 /**
+ * Checks if a specific user / team is authorized to connect to Google Drive and upload files.
+ * Admins are always authorized.
+ * If allowAllTeams is true (or undefined), all users are authorized.
+ * Otherwise, the user's teamName or ID must be in allowedTeamIds.
+ */
+export function isUserTeamAllowedForDrive(
+  user?: { role?: string; teamName?: string; id?: string } | null,
+  settings?: DriveSettings | null
+): boolean {
+  if (!user) return false;
+  if (user.role === "Admin") return true;
+  if (!settings) return true; // Default allowed if not configured yet
+  if (settings.allowAllTeams !== false) return true; // Default is all teams allowed
+  if (!settings.allowedTeamIds || settings.allowedTeamIds.length === 0) return true;
+
+  const userTeam = (user.teamName || "").trim().toLowerCase();
+  return settings.allowedTeamIds.some(
+    (t) => t.trim().toLowerCase() === userTeam || t.toLowerCase() === (user.id || "").toLowerCase()
+  );
+}
+
+/**
  * Ensures we have a valid Google Drive access token.
  * If not cached, prompts the user via pop-up to authorize/sign in.
+ * CRITICAL: When saving the refreshed token to Firestore, it NEVER overwrites
+ * or changes the pre-configured folderId or folderName.
  */
 export async function ensureGoogleDriveAccess(forcePrompt = false): Promise<string> {
   // 1. If we have a system-injected token from AI Studio, ALWAYS prefer it as it requires zero popups.
@@ -84,16 +142,16 @@ export async function ensureGoogleDriveAccess(forcePrompt = false): Promise<stri
 
     cachedAccessToken = token;
 
-    // Save the new token to Firestore!
+    // Save the new token to Firestore WITHOUT touching folderId, folderName or team settings!
     try {
       const currentSettings = await getSharedDriveSettings();
-      const folderName = currentSettings?.folderName || "SMS_PO";
-      const folderId = currentSettings?.folderId || "";
       const updatedSettings: DriveSettings = {
-        folderName,
-        folderId,
+        folderName: currentSettings?.folderName || "SMS_PO",
+        folderId: currentSettings?.folderId || "",
+        allowAllTeams: currentSettings?.allowAllTeams ?? true,
+        allowedTeamIds: currentSettings?.allowedTeamIds || [],
         adminAccessToken: token,
-        tokenExpiry: Date.now() + 3500 * 1000 // expires in 1 hour minus buffer
+        tokenExpiry: Date.now() + 3500 * 1000, // expires in ~1 hour
       };
       await saveSharedDriveSettings(updatedSettings);
     } catch (e) {
@@ -185,12 +243,12 @@ export async function fileToDataUrl(file: File): Promise<string> {
 }
 
 /**
- * Finds or creates a folder with the given name in Google Drive.
+ * Finds or creates a folder with the given name in Google Drive or Shared Drives.
  */
 export async function findOrCreateFolderByName(token: string, folderName: string): Promise<string> {
   const cleanName = folderName.replace(/'/g, "\\'");
   const queryStr = encodeURIComponent(`name = '${cleanName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${queryStr}&fields=files(id,name)`;
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${queryStr}&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives&fields=files(id,name)`;
   
   const searchRes = await fetch(searchUrl, {
     method: "GET",
@@ -209,8 +267,8 @@ export async function findOrCreateFolderByName(token: string, folderName: string
     return searchData.files[0].id;
   }
 
-  // Folder not found, create it
-  const createUrl = "https://www.googleapis.com/drive/v3/files";
+  // Folder not found, create it (supports Shared Drives & My Drive)
+  const createUrl = "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true";
   const createRes = await fetch(createUrl, {
     method: "POST",
     headers: {
@@ -238,14 +296,22 @@ export async function findOrCreateFolderByName(token: string, folderName: string
  */
 export async function resolveSharedParentFolder(token: string): Promise<DriveSettings> {
   const stored = await getSharedDriveSettings();
-  if (stored && stored.folderId) {
+  if (stored && stored.folderId && stored.folderId.trim() !== "") {
     return stored;
   }
 
-  // Fallback / default folder
-  const folderName = "SMS_PO";
+  // Fallback / default folder only if admin hasn't set one yet
+  const folderName = stored?.folderName || "SMS_PO";
   const folderId = await findOrCreateFolderByName(token, folderName);
-  const settings = { folderName, folderId };
+  const settings: DriveSettings = {
+    folderName,
+    folderId,
+    driveType: "my_drive",
+    allowAllTeams: stored?.allowAllTeams ?? true,
+    allowedTeamIds: stored?.allowedTeamIds || [],
+    adminAccessToken: stored?.adminAccessToken || token,
+    tokenExpiry: stored?.tokenExpiry || (Date.now() + 3500 * 1000)
+  };
 
   try {
     await saveSharedDriveSettings(settings);
@@ -257,17 +323,21 @@ export async function resolveSharedParentFolder(token: string): Promise<DriveSet
 }
 
 /**
- * Allows the developer/admin to update the shared Google Drive folder.
+ * Allows the admin to update the shared Google Drive folder.
  */
 export async function updateSharedParentFolder(token: string, newFolderName: string): Promise<DriveSettings> {
   if (!newFolderName || newFolderName.trim() === "") {
     throw new Error("Folder name cannot be empty.");
   }
   
+  const currentSettings = await getSharedDriveSettings();
   const folderId = await findOrCreateFolderByName(token, newFolderName.trim());
   const settings: DriveSettings = { 
     folderName: newFolderName.trim(), 
     folderId,
+    driveType: currentSettings?.driveType || "my_drive",
+    allowAllTeams: currentSettings?.allowAllTeams ?? true,
+    allowedTeamIds: currentSettings?.allowedTeamIds || [],
     adminAccessToken: token,
     tokenExpiry: Date.now() + 3500 * 1000 // 1 hour minus buffer
   };
@@ -276,12 +346,12 @@ export async function updateSharedParentFolder(token: string, newFolderName: str
 }
 
 /**
- * Finds or creates a subfolder inside a specific parent folder.
+ * Finds or creates a subfolder inside a specific parent folder or Shared Drive.
  */
 export async function findOrCreateSubfolder(token: string, parentId: string, folderName: string): Promise<string> {
   const cleanName = folderName.replace(/'/g, "\\'");
   const queryStr = encodeURIComponent(`name = '${cleanName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${queryStr}&fields=files(id,name)`;
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${queryStr}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name)`;
   
   const searchRes = await fetch(searchUrl, {
     method: "GET",
@@ -300,8 +370,8 @@ export async function findOrCreateSubfolder(token: string, parentId: string, fol
     return searchData.files[0].id;
   }
 
-  // Subfolder not found, create it inside the parent
-  const createUrl = "https://www.googleapis.com/drive/v3/files";
+  // Subfolder not found, create it inside the parent (supports Shared Drives and regular folders)
+  const createUrl = "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true";
   const createRes = await fetch(createUrl, {
     method: "POST",
     headers: {
@@ -324,20 +394,172 @@ export async function findOrCreateSubfolder(token: string, parentId: string, fol
   return folder.id;
 }
 
+export interface DriveTargetVerification {
+  valid: boolean;
+  id: string;
+  name: string;
+  type: "shared_drive" | "shared_folder" | "my_drive" | "unknown";
+  description: string;
+}
+
 /**
- * Uploads a file to the shared Google Drive parent folder, organized inside a client-specific subfolder.
- * Filename is organized as: PO_[PONumber]_[Filename]
+ * Verifies if a given ID is a valid Folder (in My Drive or Shared Drive) or a Shared Drive Root.
+ */
+export async function verifyDriveFolderOrSharedDrive(
+  token: string,
+  targetInput: string
+): Promise<DriveTargetVerification> {
+  const cleanId = extractDriveFolderId(targetInput);
+  if (!cleanId) {
+    throw new Error("Please provide a valid Google Drive Folder ID or Shared Drive ID.");
+  }
+
+  let lastErrorDetail = "";
+
+  // 1. Try checking as a Root Shared Drive (Team Drive) via drives.get
+  try {
+    const driveUrl = `https://www.googleapis.com/drive/v3/drives/${cleanId}`;
+    const res = await fetch(driveUrl, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (res.ok) {
+      const driveData = await res.json();
+      return {
+        valid: true,
+        id: driveData.id,
+        name: driveData.name,
+        type: "shared_drive",
+        description: `Google Shared Drive "${driveData.name}" (Root Team Drive)`,
+      };
+    } else {
+      const errText = await res.text();
+      if (res.status === 403 || res.status === 401) {
+        lastErrorDetail = errText;
+      }
+    }
+  } catch (e: any) {
+    console.warn("drives.get check failed:", e);
+  }
+
+  // 2. Try checking via drives.list (in case direct get requires listing)
+  try {
+    const drivesListUrl = `https://www.googleapis.com/drive/v3/drives?pageSize=100`;
+    const res = await fetch(drivesListUrl, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      const listData = await res.json();
+      const matched = (listData.drives || []).find((d: any) => d.id === cleanId);
+      if (matched) {
+        return {
+          valid: true,
+          id: matched.id,
+          name: matched.name,
+          type: "shared_drive",
+          description: `Google Shared Drive "${matched.name}" (Root Team Drive)`,
+        };
+      }
+    }
+  } catch (e) {
+    console.warn("drives.list check failed:", e);
+  }
+
+  // 3. Try checking as a file/folder in My Drive or inside a Shared Drive via files.get
+  try {
+    const fileUrl = `https://www.googleapis.com/drive/v3/files/${cleanId}?supportsAllDrives=true&fields=id,name,mimeType,driveId,capabilities`;
+    const res = await fetch(fileUrl, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.mimeType === "application/vnd.google-apps.folder") {
+        const isInsideSharedDrive = Boolean(data.driveId);
+        return {
+          valid: true,
+          id: data.id,
+          name: data.name,
+          type: isInsideSharedDrive ? "shared_folder" : "my_drive",
+          description: isInsideSharedDrive
+            ? `Folder "${data.name}" inside Google Shared Drive`
+            : `Folder "${data.name}" in My Drive`,
+        };
+      } else {
+        return {
+          valid: true,
+          id: data.id,
+          name: data.name,
+          type: "unknown",
+          description: `Target is file "${data.name}". It is recommended to specify a Folder or Shared Drive ID.`,
+        };
+      }
+    } else {
+      const errText = await res.text();
+      if (!lastErrorDetail && (res.status === 403 || res.status === 401)) {
+        lastErrorDetail = errText;
+      }
+    }
+  } catch (e: any) {
+    console.warn("files.get check failed:", e);
+  }
+
+  if (lastErrorDetail) {
+    if (lastErrorDetail.includes("ACCESS_TOKEN_SCOPE_INSUFFICIENT") || lastErrorDetail.includes("insufficientPermissions") || lastErrorDetail.includes("Insufficient Permission")) {
+      throw new Error(`Google Drive permission needs to be refreshed. Please click "Re-authorize Google Drive" below to grant access to Shared Drives.`);
+    }
+    if (isDriveApiDisabledError(lastErrorDetail)) {
+      throw parseDriveApiError(lastErrorDetail, "Google Drive API verification failed");
+    }
+  }
+
+  throw new Error(`Google Drive ID "${cleanId}" not found or unauthorized for this account. Ensure your Google account has member access to this Shared Drive/Folder, or click "Re-authorize Google Drive".`);
+}
+
+/**
+ * Helper to get formatted YYYY-MM-DD date string
+ */
+export function getFormattedDateString(dateInput?: string | Date): string {
+  if (dateInput) {
+    if (typeof dateInput === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateInput.trim())) {
+      return dateInput.trim();
+    }
+    const d = new Date(dateInput);
+    if (!isNaN(d.getTime())) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+    if (typeof dateInput === "string" && dateInput.trim() !== "") {
+      return dateInput.trim().replace(/[^a-zA-Z0-9_\-]/g, "-");
+    }
+  }
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Uploads a file to the shared Google Drive parent folder or Shared Drive, organized inside a client-specific subfolder.
+ * Filename format: PO_{{Customer PO Number}}_{{Current Date}}.pdf
  */
 export async function uploadPOToDrive(
   file: File, 
   clientName?: string, 
   poNumber?: string
 ): Promise<{ id: string; name: string; webViewLink: string; isLocalFallback?: boolean; fallbackReason?: string }> {
-  let finalFileName = file.name;
-  if (poNumber && poNumber.trim() !== "") {
-    const cleanPo = poNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_");
-    finalFileName = `PO_${cleanPo}_${file.name}`;
-  }
+  const ext = file.name.includes(".") ? file.name.substring(file.name.lastIndexOf(".")) : ".pdf";
+  const cleanPo = (poNumber && poNumber.trim() !== "") 
+    ? poNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") 
+    : "NA";
+  const currentDateStr = getFormattedDateString();
+  const finalFileName = `PO_${cleanPo}_${currentDateStr}${ext}`;
 
   try {
     // 1. Get access token
@@ -369,8 +591,8 @@ export async function uploadPOToDrive(
     );
     formData.append("file", file);
 
-    // 6. Perform upload
-    const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink";
+    // 6. Perform upload with supportsAllDrives=true
+    const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink";
     const uploadRes = await fetch(uploadUrl, {
       method: "POST",
       headers: {
@@ -402,19 +624,21 @@ export async function uploadPOToDrive(
 }
 
 /**
- * Uploads an invoice file to the shared Google Drive parent folder, organized inside a client-specific subfolder.
- * Filename is organized as: INV_[InvoiceNumber]_[Filename]
+ * Uploads an invoice file to the shared Google Drive parent folder or Shared Drive, organized inside a client-specific subfolder.
+ * Filename format: PO_{{Invoice Number}}_{{Invoice Date}}.pdf
  */
 export async function uploadInvoiceToDrive(
   file: File, 
   clientName?: string, 
-  invoiceNumber?: string
+  invoiceNumber?: string,
+  invoiceDate?: string
 ): Promise<{ id: string; name: string; webViewLink: string; isLocalFallback?: boolean; fallbackReason?: string }> {
-  let finalFileName = file.name;
-  if (invoiceNumber && invoiceNumber.trim() !== "") {
-    const cleanInv = invoiceNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_");
-    finalFileName = `INV_${cleanInv}_${file.name}`;
-  }
+  const ext = file.name.includes(".") ? file.name.substring(file.name.lastIndexOf(".")) : ".pdf";
+  const cleanInv = (invoiceNumber && invoiceNumber.trim() !== "") 
+    ? invoiceNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") 
+    : "NA";
+  const invDateStr = getFormattedDateString(invoiceDate);
+  const finalFileName = `PO_${cleanInv}_${invDateStr}${ext}`;
 
   try {
     // 1. Get access token
@@ -446,8 +670,8 @@ export async function uploadInvoiceToDrive(
     );
     formData.append("file", file);
 
-    // 6. Perform upload
-    const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink";
+    // 6. Perform upload with supportsAllDrives=true
+    const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink";
     const uploadRes = await fetch(uploadUrl, {
       method: "POST",
       headers: {

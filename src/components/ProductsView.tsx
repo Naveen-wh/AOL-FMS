@@ -351,43 +351,32 @@ export default function ProductsView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {activeUser.role === Role.Admin && (
+            <button
+              type="button"
+              onClick={() => setIsImportOpen(true)}
+              className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer"
+            >
+              <FileSpreadsheet size={14} className="text-emerald-400" />
+              <span>Import (Sheets / CSV)</span>
+            </button>
+          )}
+
           {teamCanAdd ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setIsImportOpen(true)}
-                className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              >
-                <FileSpreadsheet size={14} className="text-emerald-400" />
-                <span>Import (Sheets / CSV)</span>
-              </button>
-
-              <button
-                onClick={handleOpenAdd}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              >
-                <Plus size={14} /> Add Product
-              </button>
-            </>
+            <button
+              onClick={handleOpenAdd}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer"
+            >
+              <Plus size={14} /> Add Product
+            </button>
           ) : (
-            <>
-              <button
-                disabled
-                title="Your team does not have add permission."
-                className="bg-slate-100 text-slate-400 border border-slate-200 text-xs font-bold px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 shadow-xs cursor-not-allowed"
-              >
-                <Lock size={14} />
-                <span>Import</span>
-              </button>
-
-              <button
-                disabled
-                title="Your team does not have add permission."
-                className="bg-slate-100 text-slate-400 border border-slate-200 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 shadow-xs cursor-not-allowed"
-              >
-                <Lock size={14} /> Add Product
-              </button>
-            </>
+            <button
+              disabled
+              title="Your team does not have add permission."
+              className="bg-slate-100 text-slate-400 border border-slate-200 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 shadow-xs cursor-not-allowed"
+            >
+              <Lock size={14} /> Add Product
+            </button>
           )}
         </div>
       </div>

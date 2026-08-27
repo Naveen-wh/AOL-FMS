@@ -226,7 +226,7 @@ export default function WarehouseManagementView({
         </div>
 
         <div className="flex items-center gap-2">
-          {canManageWarehouses && (
+          {isAdmin && (
             <button
               type="button"
               onClick={() => setIsImportOpen(true)}

@@ -179,7 +179,7 @@ export default function TeamDatabaseRegistryView({
         </div>
 
         <div className="flex items-center gap-2">
-          {canManageTeams && (
+          {isAdmin && (
             <button
               type="button"
               onClick={() => setIsImportOpen(true)}

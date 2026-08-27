@@ -364,14 +364,16 @@ export default function ClientsView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => setIsImportOpen(true)}
-            className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-          >
-            <FileSpreadsheet size={14} className="text-emerald-400" />
-            <span>Import (Sheets / CSV)</span>
-          </button>
+          {activeUser.role === Role.Admin && (
+            <button
+              type="button"
+              onClick={() => setIsImportOpen(true)}
+              className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+            >
+              <FileSpreadsheet size={14} className="text-emerald-400" />
+              <span>Import (Sheets / CSV)</span>
+            </button>
+          )}
 
           <button
             onClick={() => {

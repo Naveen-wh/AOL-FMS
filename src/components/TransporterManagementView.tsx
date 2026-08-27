@@ -36,6 +36,7 @@ export default function TransporterManagementView({
   const [isImportOpen, setIsImportOpen] = useState(false);
 
   const transporterImportFields: ImportFieldDefinition[] = [
+    { key: "transporterId", label: "Transporter ID", sampleValue: "TR-001" },
     { key: "name", label: "Transporter / Courier Name", required: true, sampleValue: "BlueDart Express" },
     { key: "contactPerson", label: "Contact Person Name", sampleValue: "Suresh Kumar" },
     { key: "emailId", label: "Email Address", sampleValue: "dispatch@bluedart.com" },
@@ -49,6 +50,7 @@ export default function TransporterManagementView({
     for (const row of rows) {
       if (row.name && row.name.trim()) {
         await onAddTransporter({
+          transporterId: row.transporterId?.trim() || undefined,
           name: row.name.trim(),
           contactPerson: row.contactPerson?.trim() || undefined,
           emailId: row.emailId?.trim() || undefined,
@@ -62,6 +64,7 @@ export default function TransporterManagementView({
   };
 
   // Create Transporter form state
+  const [newTransporterId, setNewTransporterId] = useState("");
   const [newName, setNewName] = useState("");
   const [contactPerson, setContactPerson] = useState("");
   const [emailId, setEmailId] = useState("");
@@ -73,6 +76,7 @@ export default function TransporterManagementView({
 
   // Edit Transporter Modal state
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTransporterId, setEditTransporterId] = useState("");
   const [editName, setEditName] = useState("");
   const [editContactPerson, setEditContactPerson] = useState("");
   const [editEmailId, setEditEmailId] = useState("");
@@ -83,6 +87,7 @@ export default function TransporterManagementView({
   const [editMsg, setEditMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const resetCreateForm = () => {
+    setNewTransporterId("");
     setNewName("");
     setContactPerson("");
     setEmailId("");
@@ -109,6 +114,7 @@ export default function TransporterManagementView({
       }
 
       const payload: Omit<TransporterName, "id" | "createdAt"> = {
+        transporterId: newTransporterId.trim() || undefined,
         name: trimmedName,
         contactPerson: contactPerson.trim() || undefined,
         emailId: emailId.trim() || undefined,
@@ -134,6 +140,7 @@ export default function TransporterManagementView({
 
   const handleStartEdit = (item: TransporterName) => {
     setEditingId(item.id);
+    setEditTransporterId(item.transporterId || "");
     setEditName(item.name || "");
     setEditContactPerson(item.contactPerson || "");
     setEditEmailId(item.emailId || "");
@@ -155,6 +162,7 @@ export default function TransporterManagementView({
 
       const updatedObj: TransporterName = {
         ...existing,
+        transporterId: editTransporterId.trim() || undefined,
         name: editName.trim(),
         contactPerson: editContactPerson.trim() || undefined,
         emailId: editEmailId.trim() || undefined,
@@ -185,6 +193,7 @@ export default function TransporterManagementView({
     const q = searchTerm.toLowerCase();
     return (
       (t.name && t.name.toLowerCase().includes(q)) ||
+      (t.transporterId && t.transporterId.toLowerCase().includes(q)) ||
       (t.contactPerson && t.contactPerson.toLowerCase().includes(q)) ||
       (t.emailId && t.emailId.toLowerCase().includes(q)) ||
       (t.phone && t.phone.toLowerCase().includes(q)) ||
@@ -210,7 +219,7 @@ export default function TransporterManagementView({
         </div>
 
         <div className="flex items-center gap-2">
-          {canManageTransporters && (
+          {isAdmin && (
             <button
               type="button"
               onClick={() => setIsImportOpen(true)}
@@ -271,6 +280,20 @@ export default function TransporterManagementView({
 
             {canManageTransporters ? (
               <form onSubmit={handleCreateSubmit} className="space-y-3">
+                {/* Transporter ID */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-700 uppercase block">
+                    Transporter ID
+                  </label>
+                  <input
+                    type="text"
+                    value={newTransporterId}
+                    onChange={(e) => setNewTransporterId(e.target.value)}
+                    placeholder="e.g. TR-001, BD-EXP-01"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                  />
+                </div>
+
                 {/* Transporter / Courier Name */}
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-700 uppercase block">
@@ -433,8 +456,8 @@ export default function TransporterManagementView({
                           <Truck size={15} className="text-blue-600 shrink-0" />
                           <div>
                             <span className="block font-extrabold text-slate-900">{item.name}</span>
-                            <span className="text-[9px] font-mono text-slate-400 block">
-                              ID: {item.id}
+                            <span className="text-[9px] font-mono text-slate-500 block">
+                              ID: <span className="text-blue-700 font-semibold">{item.transporterId || item.id}</span>
                             </span>
                           </div>
                         </div>
@@ -583,6 +606,20 @@ export default function TransporterManagementView({
             )}
 
             <form onSubmit={handleSaveEdit} className="p-4 space-y-3 overflow-y-auto">
+              {/* Transporter ID */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-700 uppercase block">
+                  Transporter ID
+                </label>
+                <input
+                  type="text"
+                  value={editTransporterId}
+                  onChange={(e) => setEditTransporterId(e.target.value)}
+                  placeholder="e.g. TR-001, BD-EXP-01"
+                  className="w-full bg-slate-50 border border-slate-300 rounded px-3 py-1.5 text-xs text-slate-900 font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-700 uppercase block">
                   Transporter / Courier Name <span className="text-rose-500">*</span>

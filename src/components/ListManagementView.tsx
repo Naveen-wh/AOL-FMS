@@ -9,7 +9,8 @@ import WarehouseManagementView from "./WarehouseManagementView";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
 
 // PaymentBank type needs to be imported, assuming it is in types.ts
-import { User, Team, Product, Client, PaymentBank, ProductCategory, ProductGroup, Manufacturer, SalesLead, ProjectWorkflow, SalesTask, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, Role, AccessLevel, PaymentTerm, PaymentCreditPeriod } from "../types";
+import { User, Team, Product, Client, PaymentBank, ProductCategory, ProductGroup, Manufacturer, SalesLead, ProjectWorkflow, SalesTask, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, Role, AccessLevel, PaymentTerm, PaymentCreditPeriod, TaxRate } from "../types";
+import { INITIAL_TAX_RATES } from "../data";
 
 interface ListManagementViewProps {
   activeUserId: string;
@@ -79,6 +80,10 @@ interface ListManagementViewProps {
   onAddPaymentCreditPeriod?: (data: Omit<PaymentCreditPeriod, "id" | "createdAt">) => void;
   onEditPaymentCreditPeriod?: (id: string, name: string) => void;
   onDeletePaymentCreditPeriod?: (id: string) => void;
+  taxRates?: TaxRate[];
+  onAddTaxRate?: (data: Omit<TaxRate, "id" | "createdAt">) => void;
+  onEditTaxRate?: (id: string, name: string) => void;
+  onDeleteTaxRate?: (id: string) => void;
 }
 
 export default function ListManagementView({
@@ -97,6 +102,7 @@ export default function ListManagementView({
   dispatchLocations,
   paymentTerms = [],
   paymentCreditPeriods = [],
+  taxRates = [],
   leads,
   workflows,
   tasks,
@@ -130,6 +136,9 @@ export default function ListManagementView({
   onAddPaymentCreditPeriod,
   onEditPaymentCreditPeriod,
   onDeletePaymentCreditPeriod,
+  onAddTaxRate,
+  onEditTaxRate,
+  onDeleteTaxRate,
   onAddClient,
   onEditClient,
   onDeleteClient,
@@ -420,6 +429,18 @@ export default function ListManagementView({
               canEdit={canEditDropdowns}
               canDelete={canDeleteDropdowns}
             />
+            <LocalDropdownSection
+              title="Taxes (Fixed)"
+              icon={Percent}
+              items={taxRates && taxRates.length > 0 ? taxRates : INITIAL_TAX_RATES}
+              onAdd={onAddTaxRate || (() => {})}
+              onEdit={onEditTaxRate}
+              onDelete={onDeleteTaxRate || (() => {})}
+              placeholder="e.g. 18%, 12%, 5%, 3%, 0%..."
+              canAdd={canAddDropdowns}
+              canEdit={canEditDropdowns}
+              canDelete={canDeleteDropdowns}
+            />
           </div>
         </div>
       )}
@@ -428,7 +449,7 @@ export default function ListManagementView({
            <div className="flex items-center justify-between mb-4">
              <h2 className="text-sm font-bold text-slate-800 uppercase font-mono">Payment Banks</h2>
              <div className="flex items-center gap-2">
-               {isManagerOrAdmin && (
+               {activeUser.role === Role.Admin && (
                  <button
                    type="button"
                    onClick={() => setIsImportBankOpen(true)}

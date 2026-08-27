@@ -22,3 +22,19 @@
     background: #94a3b8;
   }
 }
+
+/* Font Size Scaling Rules */
+html[data-font-size="small"] {
+  zoom: 100%;
+  font-size: 100%;
+}
+
+html[data-font-size="medium"] {
+  zoom: 110%;
+  font-size: 110%;
+}
+
+html[data-font-size="large"] {
+  zoom: 122%;
+  font-size: 122%;
+}

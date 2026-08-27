@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { User, SalesLead, ProjectWorkflow, SalesTask, ActionLog, Role, AccessLevel, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, PaymentDetails, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest } from "./types";
+import { User, SalesLead, ProjectWorkflow, SalesTask, ActionLog, Role, AccessLevel, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, TaxRate, BadDebtor } from "./types";
 import {
   canViewLead,
   canEditLead,
@@ -13,6 +13,7 @@ import {
   canDeleteClient,
   canDeleteOrderOffer,
   canDeleteProduct,
+  INITIAL_TAX_RATES,
 } from "./data";
 
 // Firebase imports
@@ -61,6 +62,8 @@ import {
   deletePaymentTermDoc,
   savePaymentCreditPeriod,
   deletePaymentCreditPeriodDoc,
+  subscribeTaxRates,
+  saveTaxRatesList,
   saveFAQ,
   deleteFAQDoc,
   saveBugRequest,
@@ -99,7 +102,8 @@ import {
   ShoppingBag,
   Receipt,
   CreditCard,
-  HelpCircle
+  HelpCircle,
+  Type
 } from "lucide-react";
 
 export default function App() {
@@ -133,10 +137,24 @@ export default function App() {
   const [paymentDetailsList, setPaymentDetailsList] = useState<PaymentDetails[]>([]);
   const [paymentTerms, setPaymentTerms] = useState<PaymentTerm[]>([]);
   const [paymentCreditPeriods, setPaymentCreditPeriods] = useState<PaymentCreditPeriod[]>([]);
+  const [taxRates, setTaxRates] = useState<TaxRate[]>(INITIAL_TAX_RATES);
   const [faqs, setFaqs] = useState<FAQItem[]>([]);
   const [bugRequests, setBugRequests] = useState<BugRequest[]>([]);
+  const [badDebtors, setBadDebtors] = useState<BadDebtor[]>([]);
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [isAuditLogEnabledState, setIsAuditLogEnabledState] = useState<boolean>(true);
+
+  // Application Font Size state (small = default current size, medium = increased, large = large size)
+  type AppFontSize = "small" | "medium" | "large";
+  const [fontSize, setFontSize] = useState<AppFontSize>(() => {
+    const saved = localStorage.getItem("app_font_size");
+    return (saved === "medium" || saved === "large" || saved === "small") ? saved : "small";
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-font-size", fontSize);
+    localStorage.setItem("app_font_size", fontSize);
+  }, [fontSize]);
 
   useEffect(() => {
     async function fetchStatus() {
@@ -237,8 +255,10 @@ export default function App() {
     const unsubPaymentDetails = subscribeCollection<PaymentDetails>("payment_details", setPaymentDetailsList);
     const unsubPaymentTerms = subscribeCollection<PaymentTerm>("payment_terms", setPaymentTerms, "createdAt");
     const unsubPaymentCreditPeriods = subscribeCollection<PaymentCreditPeriod>("payment_credit_periods", setPaymentCreditPeriods, "createdAt");
+    const unsubTaxRates = subscribeTaxRates(setTaxRates);
     const unsubFaqs = subscribeCollection<FAQItem>("faqs", setFaqs, "createdAt");
     const unsubBugs = subscribeCollection<BugRequest>("bug_requests", setBugRequests, "createdAt");
+    const unsubBadDebtors = subscribeCollection<BadDebtor>("bad_debtors", setBadDebtors, "createdAt");
 
     return () => {
       unsubUsers();
@@ -263,8 +283,10 @@ export default function App() {
       unsubPaymentDetails();
       unsubPaymentTerms();
       unsubPaymentCreditPeriods();
+      unsubTaxRates();
       unsubFaqs();
       unsubBugs();
+      unsubBadDebtors();
     };
   }, [isAuthenticated]);
 
@@ -359,13 +381,14 @@ export default function App() {
   };
 
   // State handlers for orders
-  const handleAddOrder = async (newOrderData: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId">) => {
-    const orderId = `order-${Date.now()}`;
+  const handleAddOrder = async (newOrderData: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId"> | OrderOffer) => {
+    const passedId = (newOrderData as any).id;
+    const orderId = passedId || `order-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const newOrder: OrderOffer = {
       ...newOrderData,
       id: orderId,
-      createdAt: new Date().toISOString(),
-      createdByUserId: activeUser.id,
+      createdAt: (newOrderData as any).createdAt || new Date().toISOString(),
+      createdByUserId: (newOrderData as any).createdByUserId || activeUser.id,
     };
     
     await saveOrder(newOrder);
@@ -375,11 +398,13 @@ export default function App() {
       timestamp: new Date().toISOString(),
       userId: activeUser.id,
       userName: activeUser.name,
-      actionType: "Create Order",
+      actionType: newOrder.billingDetails?.invoiceNumber ? "Map Invoice" : "Create Order",
       targetType: "Order",
       targetId: orderId,
       targetName: newOrder.companyName,
-      details: `${activeUser.name} created sales order/offer for client "${newOrder.clientName}" at "${newOrder.companyName}" with total value of $${newOrder.totalValue.toLocaleString()}`
+      details: newOrder.billingDetails?.invoiceNumber
+        ? `${activeUser.name} imported historical order with invoice #${newOrder.billingDetails.invoiceNumber} for "${newOrder.companyName}" (Total: ₹${newOrder.totalValue.toLocaleString()})`
+        : `${activeUser.name} created sales order/offer for client "${newOrder.clientName}" at "${newOrder.companyName}" with total value of ₹${newOrder.totalValue.toLocaleString()}`
     });
   };
 
@@ -796,6 +821,58 @@ export default function App() {
     });
   };
 
+  const handleAddTaxRate = async (data: Omit<TaxRate, "id" | "createdAt">) => {
+    const taxId = `tax-${Date.now()}`;
+    const newRate: TaxRate = { ...data, id: taxId, createdAt: new Date().toISOString() };
+    const currentList = taxRates && taxRates.length > 0 ? taxRates : INITIAL_TAX_RATES;
+    const updatedList = [...currentList, newRate];
+    await saveTaxRatesList(updatedList);
+    await saveLog({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userId: activeUser.id,
+      userName: activeUser.name,
+      actionType: "Create Tax Rate",
+      targetType: "Tax Rate",
+      targetId: taxId,
+      targetName: data.name,
+      details: `${activeUser.name} added new tax rate: "${data.name}"`
+    });
+  };
+  const handleEditTaxRate = async (id: string, name: string) => {
+    const currentList = taxRates && taxRates.length > 0 ? taxRates : INITIAL_TAX_RATES;
+    const updatedList = currentList.map(t => t.id === id ? { ...t, name } : t);
+    await saveTaxRatesList(updatedList);
+    await saveLog({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userId: activeUser.id,
+      userName: activeUser.name,
+      actionType: "Edit Tax Rate",
+      targetType: "Tax Rate",
+      targetId: id,
+      targetName: name,
+      details: `${activeUser.name} edited tax rate: "${name}"`
+    });
+  };
+  const handleDeleteTaxRate = async (id: string) => {
+    const currentList = taxRates && taxRates.length > 0 ? taxRates : INITIAL_TAX_RATES;
+    const target = currentList.find(t => t.id === id);
+    const updatedList = currentList.filter(t => t.id !== id);
+    await saveTaxRatesList(updatedList);
+    await saveLog({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userId: activeUser.id,
+      userName: activeUser.name,
+      actionType: "Delete Tax Rate",
+      targetType: "Tax Rate",
+      targetId: id,
+      targetName: target?.name || id,
+      details: `${activeUser.name} deleted tax rate: "${target?.name || id}"`
+    });
+  };
+
   const handleAddPaymentBank = async (newBankData: Omit<PaymentBank, "id" | "createdAt">) => {
     const bankId = `bank-${Date.now()}`;
     const newBank: PaymentBank = {
@@ -1105,9 +1182,9 @@ export default function App() {
   // Admin hierarchy editor
   const handleUpdateUser = async (userId: string, updates: Partial<User>) => {
     try {
-      await updateUserDetails(userId, updates);
+      const targetUser = users.find((u) => u.id.toLowerCase() === userId.toLowerCase());
+      await updateUserDetails(userId, updates, targetUser);
       
-      const targetUser = users.find((u) => u.id === userId);
       const targetName = targetUser?.name || userId;
 
       await saveLog({
@@ -1238,6 +1315,31 @@ export default function App() {
               </div>
             </div>
 
+            {/* Font Size Option - Just left to Log Out icon */}
+            <div className="flex items-center bg-slate-100/90 border border-slate-200/90 p-0.5 rounded-lg text-[10px] font-mono shadow-2xs">
+              <span className="px-1.5 text-slate-400 font-bold flex items-center gap-1 text-[9px] uppercase tracking-wider select-none" title="Adjust application font size">
+                <Type size={12} className="text-slate-500" />
+                <span className="hidden md:inline">Font</span>
+              </span>
+              <div className="flex items-center gap-0.5">
+                {(["small", "medium", "large"] as const).map((size) => (
+                  <button
+                    key={size}
+                    type="button"
+                    onClick={() => setFontSize(size)}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold capitalize transition-all cursor-pointer ${
+                      fontSize === size
+                        ? "bg-white text-emerald-700 shadow-xs border border-slate-200/90 font-black"
+                        : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/60"
+                    }`}
+                    title={`Set font size to ${size} (${size === "small" ? "Default / Current size" : size === "medium" ? "Medium (+10%)" : "Large (+22%)"})`}
+                  >
+                    {size}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Logout trigger */}
             <button
               onClick={handleSignOut}
@@ -1288,6 +1390,7 @@ export default function App() {
               tasks={tasks}
               orders={orders}
               clients={clients}
+              teams={teams}
               visibleSubTabs={userTeamSetting?.visibleSubTabs}
               levelWiseFilters={userTeamSetting?.levelWiseFilters}
             />
@@ -1326,6 +1429,7 @@ export default function App() {
               dispatchLocations={dispatchLocations}
               paymentTerms={paymentTerms}
               paymentCreditPeriods={paymentCreditPeriods}
+              taxRates={taxRates}
               onAddOrder={handleAddOrder}
               onEditOrder={handleEditOrder}
               onDeleteOrder={handleDeleteOrder}
@@ -1346,6 +1450,10 @@ export default function App() {
               onEditOrder={handleEditOrder}
               onAddOrder={handleAddOrder}
               paymentBanks={paymentBanks}
+              freightTerms={freightTerms}
+              transporters={transporters}
+              warehouses={warehouses}
+              dispatchLocations={dispatchLocations}
               visibleSubTabs={userTeamSetting?.visibleSubTabs}
               emailTemplates={emailTemplates}
               teamPermissions={userTeamSetting?.teamPermissions}
@@ -1358,6 +1466,7 @@ export default function App() {
               activeUserId={activeUserId}
               users={users}
               orders={orders}
+              badDebtors={badDebtors}
               onEditOrder={handleEditOrder}
               paymentBanks={paymentBanks}
               visibleSubTabs={userTeamSetting?.visibleSubTabs}
@@ -1408,6 +1517,7 @@ export default function App() {
               dispatchLocations={dispatchLocations}
               paymentTerms={paymentTerms}
               paymentCreditPeriods={paymentCreditPeriods}
+              taxRates={taxRates}
               leads={leads}
               workflows={workflows}
               tasks={tasks}
@@ -1441,6 +1551,9 @@ export default function App() {
               onAddPaymentCreditPeriod={handleAddPaymentCreditPeriod}
               onEditPaymentCreditPeriod={handleEditPaymentCreditPeriod}
               onDeletePaymentCreditPeriod={handleDeletePaymentCreditPeriod}
+              onAddTaxRate={handleAddTaxRate}
+              onEditTaxRate={handleEditTaxRate}
+              onDeleteTaxRate={handleDeleteTaxRate}
               onAddClient={handleAddClient}
               onEditClient={handleEditClient}
               onDeleteClient={handleDeleteClient}

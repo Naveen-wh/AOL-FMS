@@ -4,13 +4,27 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { User, OrderOffer, Role, BillingDetails, EmailTemplate, EmailAutoSelectSettings, Client } from "../types";
+import { 
+  User, 
+  OrderOffer, 
+  OrderItem, 
+  Role, 
+  BillingDetails, 
+  EmailTemplate, 
+  EmailAutoSelectSettings, 
+  Client, 
+  FreightTerm, 
+  TransporterName, 
+  WarehouseManagedBy, 
+  DispatchLocation 
+} from "../types";
 import { canViewOrderOffer } from "../data";
 import { 
   uploadInvoiceToDrive, 
   hasDriveConnection, 
   ensureGoogleDriveAccess, 
   getSharedDriveSettings, 
+  isUserTeamAllowedForDrive,
   DriveSettings,
   openOrDownloadDocument
 } from "../lib/googleDriveService";
@@ -46,7 +60,12 @@ import {
   User2,
   Info,
   ListOrdered,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Plus,
+  Trash2,
+  Edit3,
+  Save,
+  X
 } from "lucide-react";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
 import { PaymentBank } from "../types";
@@ -105,6 +124,10 @@ interface IndentViewProps {
   onEditOrder: (order: OrderOffer) => void;
   onAddOrder?: (order: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId">) => void;
   paymentBanks?: PaymentBank[];
+  freightTerms?: FreightTerm[];
+  transporters?: TransporterName[];
+  warehouses?: WarehouseManagedBy[];
+  dispatchLocations?: DispatchLocation[];
   visibleSubTabs?: { [key: string]: string[] };
   emailTemplates?: EmailTemplate[];
   teamPermissions?: { [tabId: string]: { view: boolean; edit: boolean; add: boolean } };
@@ -119,6 +142,10 @@ export default function IndentView({
   onEditOrder,
   onAddOrder,
   paymentBanks = [],
+  freightTerms = [],
+  transporters = [],
+  warehouses = [],
+  dispatchLocations = [],
   visibleSubTabs,
   emailTemplates = [],
   teamPermissions,
@@ -137,7 +164,8 @@ export default function IndentView({
 
   // Sub-tabs config & state
   const allSubTabs = [
-    { id: "billing", label: "Billing (Invoice Mapping)", icon: FileCheck },
+    { id: "logistics", label: "Logistic", icon: Truck },
+    { id: "billing", label: "Billing", icon: FileCheck },
     { id: "invoice_attached", label: "Invoice Attached", icon: FileText }
   ];
 
@@ -146,7 +174,7 @@ export default function IndentView({
     return allSubTabs.filter(t => visibleTabsForIndent.includes(t.id));
   }, [JSON.stringify(visibleTabsForIndent)]);
 
-  const [activeSubTab, setActiveSubTab] = useState<string>(filteredSubTabs[0]?.id || "billing");
+  const [activeSubTab, setActiveSubTab] = useState<string>(filteredSubTabs[0]?.id || "logistics");
 
   // Keep activeSubTab in sync if permissions change
   useEffect(() => {
@@ -157,6 +185,31 @@ export default function IndentView({
 
   // Expanded order card state to view details
   const [expandedOrderIds, setExpandedOrderIds] = useState<{ [key: string]: boolean }>({});
+
+  // Logistics inline edit form state (for Logistic sub-tab)
+  const [editingLogisticsOrderId, setEditingLogisticsOrderId] = useState<string | null>(null);
+  const [logisticsForm, setLogisticsForm] = useState<{
+    [orderId: string]: {
+      dispatchDate: string;
+      dispatchLocation: string;
+      warehouseManagedBy: string;
+      transporterName: string;
+      vehicleNo: string;
+      freightTerm: string;
+      deliveryTerm: string;
+      cartageLabourCharges: string;
+      freightChargedInBill: string;
+      freightCostToAol: string;
+    };
+  }>({});
+  const [savingLogisticsId, setSavingLogisticsId] = useState<string | null>(null);
+  const [logisticsSuccessId, setLogisticsSuccessId] = useState<string | null>(null);
+
+  // Product items inline edit state (for Billing sub-tab)
+  const [editingProductOrderId, setEditingProductOrderId] = useState<string | null>(null);
+  const [productItemsForm, setProductItemsForm] = useState<{ [orderId: string]: OrderItem[] }>({});
+  const [savingProductId, setSavingProductId] = useState<string | null>(null);
+  const [productSuccessId, setProductSuccessId] = useState<string | null>(null);
 
   // Filter & Search state
   const [searchTerm, setSearchTerm] = useState("");
@@ -308,6 +361,7 @@ export default function IndentView({
   // Per-order forms state
   // We use the order.id as the key for storing inputs, selected files, error, success and loading states
   const [invoiceNumbers, setInvoiceNumbers] = useState<{ [key: string]: string }>({});
+  const [invoiceDates, setInvoiceDates] = useState<{ [key: string]: string }>({});
   const [actualDispatchDates, setActualDispatchDates] = useState<{ [key: string]: string }>({});
   const [selectedFiles, setSelectedFiles] = useState<{ [key: string]: File | null }>({});
   const [selectedTemplates, setSelectedTemplates] = useState<{ [key: string]: string }>({});
@@ -382,9 +436,15 @@ export default function IndentView({
   const mappedOrders = closedWonOrders.filter((order) => !!order.billingDetails?.invoiceNumber);
 
   // Filter based on active sub-tab and search term
-  const displayOrders = activeSubTab === "billing"
-    ? closedWonOrders.filter((order) => !order.billingDetails?.invoiceNumber || order.id === editingOrderId)
-    : mappedOrders;
+  const displayOrders = useMemo(() => {
+    if (activeSubTab === "logistics") {
+      return unmappedOrders;
+    }
+    if (activeSubTab === "billing") {
+      return closedWonOrders.filter((order) => !order.billingDetails?.invoiceNumber || order.id === editingOrderId);
+    }
+    return mappedOrders;
+  }, [activeSubTab, unmappedOrders, closedWonOrders, editingOrderId, mappedOrders]);
 
   const filteredOrders = displayOrders.filter((order) => {
     const matchCompany = order.companyName?.toLowerCase().includes(searchTerm.toLowerCase());
@@ -393,6 +453,179 @@ export default function IndentView({
     const matchPo = order.closedWonDetails?.customerPoNumber?.toLowerCase().includes(searchTerm.toLowerCase());
     return matchCompany || matchClient || matchInvoice || matchPo;
   });
+
+  // Logistics field helpers
+  const startEditingLogistics = (order: OrderOffer) => {
+    setLogisticsForm((prev) => ({
+      ...prev,
+      [order.id]: {
+        dispatchDate: order.closedWonDetails?.dispatchDate || "",
+        dispatchLocation: order.closedWonDetails?.dispatchLocation || "",
+        warehouseManagedBy: order.closedWonDetails?.warehouseManagedBy || "",
+        transporterName: order.closedWonDetails?.transporterName || "",
+        vehicleNo: order.closedWonDetails?.vehicleNo || "",
+        freightTerm: order.closedWonDetails?.freightTerm || "",
+        deliveryTerm: order.closedWonDetails?.deliveryTerm || "",
+        cartageLabourCharges: order.closedWonDetails?.cartageLabourCharges || "",
+        freightChargedInBill: order.closedWonDetails?.freightChargedInBill || "",
+        freightCostToAol: order.closedWonDetails?.freightCostToAol || "",
+      },
+    }));
+    setEditingLogisticsOrderId(order.id);
+  };
+
+  const cancelEditingLogistics = (orderId: string) => {
+    setEditingLogisticsOrderId(null);
+    setLogisticsForm((prev) => {
+      const copy = { ...prev };
+      delete copy[orderId];
+      return copy;
+    });
+  };
+
+  const getLogisticsValue = (
+    order: OrderOffer, 
+    field: "dispatchDate" | "dispatchLocation" | "warehouseManagedBy" | "transporterName" | "vehicleNo" | "freightTerm" | "deliveryTerm" | "cartageLabourCharges" | "freightChargedInBill" | "freightCostToAol"
+  ) => {
+    if (logisticsForm[order.id]?.[field] !== undefined) {
+      return logisticsForm[order.id][field];
+    }
+    return (order.closedWonDetails as any)?.[field] || "";
+  };
+
+  const updateLogisticsField = (
+    order: OrderOffer, 
+    field: "dispatchDate" | "dispatchLocation" | "warehouseManagedBy" | "transporterName" | "vehicleNo" | "freightTerm" | "deliveryTerm" | "cartageLabourCharges" | "freightChargedInBill" | "freightCostToAol", 
+    value: string
+  ) => {
+    setLogisticsForm((prev) => ({
+      ...prev,
+      [order.id]: {
+        dispatchDate: getLogisticsValue(order, "dispatchDate"),
+        dispatchLocation: getLogisticsValue(order, "dispatchLocation"),
+        warehouseManagedBy: getLogisticsValue(order, "warehouseManagedBy"),
+        transporterName: getLogisticsValue(order, "transporterName"),
+        vehicleNo: getLogisticsValue(order, "vehicleNo"),
+        freightTerm: getLogisticsValue(order, "freightTerm"),
+        deliveryTerm: getLogisticsValue(order, "deliveryTerm"),
+        cartageLabourCharges: getLogisticsValue(order, "cartageLabourCharges"),
+        freightChargedInBill: getLogisticsValue(order, "freightChargedInBill"),
+        freightCostToAol: getLogisticsValue(order, "freightCostToAol"),
+        ...prev[order.id],
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleSaveLogistics = async (order: OrderOffer) => {
+    setSavingLogisticsId(order.id);
+    try {
+      const updatedOrder: OrderOffer = {
+        ...order,
+        closedWonDetails: {
+          customerPoNumber: order.closedWonDetails?.customerPoNumber || "",
+          poDate: order.closedWonDetails?.poDate || "",
+          destinationAddress: order.closedWonDetails?.destinationAddress || "",
+          poAttachmentUrl: order.closedWonDetails?.poAttachmentUrl || "",
+          dispatchDate: getLogisticsValue(order, "dispatchDate"),
+          dispatchLocation: getLogisticsValue(order, "dispatchLocation"),
+          warehouseManagedBy: getLogisticsValue(order, "warehouseManagedBy"),
+          transporterName: getLogisticsValue(order, "transporterName"),
+          vehicleNo: getLogisticsValue(order, "vehicleNo"),
+          freightTerm: getLogisticsValue(order, "freightTerm"),
+          deliveryTerm: getLogisticsValue(order, "deliveryTerm"),
+          cartageLabourCharges: getLogisticsValue(order, "cartageLabourCharges"),
+          freightChargedInBill: getLogisticsValue(order, "freightChargedInBill"),
+          freightCostToAol: getLogisticsValue(order, "freightCostToAol"),
+        },
+      };
+      await onEditOrder(updatedOrder);
+      setEditingLogisticsOrderId(null);
+      setLogisticsSuccessId(order.id);
+      setTimeout(() => {
+        setLogisticsSuccessId(null);
+      }, 3500);
+    } catch (err: any) {
+      alert(err.message || "Failed to save logistics details.");
+    } finally {
+      setSavingLogisticsId(null);
+    }
+  };
+
+  // Format transporter name with ID combination
+  const getTransporterDisplayName = (name?: string) => {
+    if (!name || name === "N/A" || name === "TBD") return name || "N/A";
+    const found = transporters.find(
+      (t) => t.name.toLowerCase() === name.toLowerCase()
+    );
+    if (found) {
+      const idStr = found.transporterId || found.id;
+      if (name.includes(`(${idStr})`)) return name;
+      return `${found.name}${idStr ? ` (${idStr})` : ""}`;
+    }
+    return name;
+  };
+
+  // Product items edit helpers (for Billing sub-tab)
+  const startEditingProducts = (order: OrderOffer) => {
+    const currentItems = (order.items && order.items.length > 0)
+      ? order.items.map(it => ({ ...it }))
+      : [{ productId: `item-${Date.now()}`, productName: "", quantity: 1, rate: 0, amount: 0 }];
+    setProductItemsForm((prev) => ({ ...prev, [order.id]: currentItems }));
+    setEditingProductOrderId(order.id);
+  };
+
+  const cancelEditingProducts = (orderId: string) => {
+    setEditingProductOrderId(null);
+    setProductItemsForm((prev) => {
+      const copy = { ...prev };
+      delete copy[orderId];
+      return copy;
+    });
+  };
+
+  const updateProductItemField = (orderId: string, index: number, field: "quantity" | "rate", value: any) => {
+    setProductItemsForm((prev) => {
+      const current = [...(prev[orderId] || [])];
+      if (!current[index]) return prev;
+      const updated = { ...current[index], [field]: value };
+      const q = field === "quantity" ? parseFloat(value) || 0 : (parseFloat(String(current[index].quantity)) || 0);
+      const r = field === "rate" ? parseFloat(value) || 0 : (parseFloat(String(current[index].rate)) || 0);
+      updated.amount = q * r;
+      current[index] = updated;
+      return { ...prev, [orderId]: current };
+    });
+  };
+
+  const handleSaveProductDetails = async (order: OrderOffer) => {
+    const items = productItemsForm[order.id] || order.items || [];
+    const computedTotal = items.reduce((sum, it) => sum + ((Number(it.quantity) || 0) * (Number(it.rate) || 0)), 0);
+    const finalItems: OrderItem[] = items.map(it => ({
+      ...it,
+      quantity: Number(it.quantity) || 0,
+      rate: Number(it.rate) || 0,
+      amount: (Number(it.quantity) || 0) * (Number(it.rate) || 0)
+    }));
+
+    setSavingProductId(order.id);
+    try {
+      const updatedOrder: OrderOffer = {
+        ...order,
+        items: finalItems,
+        totalValue: computedTotal,
+      };
+      await onEditOrder(updatedOrder);
+      setProductSuccessId(order.id);
+      setEditingProductOrderId(null);
+      setTimeout(() => {
+        setProductSuccessId(null);
+      }, 3500);
+    } catch (err: any) {
+      alert(err.message || "Failed to update product details.");
+    } finally {
+      setSavingProductId(null);
+    }
+  };
 
   // Handle file drop
   const handleDragOver = (e: React.DragEvent, orderId: string) => {
@@ -440,6 +673,7 @@ export default function IndentView({
     const orderId = order.id;
     const invNum = invoiceNumbers[orderId]?.trim() || order.billingDetails?.invoiceNumber || "";
     const actDispatchDate = actualDispatchDates[orderId]?.trim() || order.billingDetails?.actualDispatchDate || "";
+    const invDate = invoiceDates[orderId]?.trim() || order.billingDetails?.invoiceDate || actDispatchDate || new Date().toISOString().split("T")[0];
     const file = selectedFiles[orderId];
     const sendEmail = sendEmails[orderId];
     const templateId = selectedTemplates[orderId];
@@ -465,14 +699,15 @@ export default function IndentView({
       if (file) {
         // Automatically check/verify access
         await ensureGoogleDriveAccess();
-        const uploadResult = await uploadInvoiceToDrive(file, order.companyName, invNum);
+        const uploadResult = await uploadInvoiceToDrive(file, order.companyName, invNum, invDate);
         fileUrl = uploadResult.webViewLink;
-        fileName = file.name;
+        fileName = uploadResult.name;
       }
 
       // Update the order object in Firestore
       const updatedBilling: BillingDetails = {
         invoiceNumber: invNum,
+        invoiceDate: invDate,
         invoiceFileUrl: fileUrl,
         invoiceFileName: fileName,
         mappedAt: new Date().toISOString(),
@@ -626,7 +861,18 @@ export default function IndentView({
           {hasDriveAccess ? (
             <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl text-[10px] font-bold">
               <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              Google Drive Active
+              <span>Google Drive Active</span>
+              {isUserTeamAllowedForDrive(activeUser, driveSettings) && (
+                <button
+                  type="button"
+                  onClick={handleConnectDrive}
+                  disabled={isConnecting}
+                  className="ml-1 text-[10px] text-emerald-800 hover:text-emerald-950 font-semibold underline cursor-pointer"
+                  title="Refresh / Re-authorize Google Drive Access"
+                >
+                  {isConnecting ? "Refreshing..." : "Re-auth"}
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex items-center gap-2">
@@ -634,19 +880,20 @@ export default function IndentView({
                 <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
                 Drive Unlinked
               </span>
-              {activeUser.role === Role.Admin ? (
+              {isUserTeamAllowedForDrive(activeUser, driveSettings) ? (
                 <button
                   type="button"
                   disabled={isConnecting}
                   onClick={handleConnectDrive}
                   className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-1.5 px-3 rounded-xl text-[10px] flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                  title="Connect / Re-authorize Google Drive"
                 >
                   {isConnecting ? (
                     <Loader2 size={10} className="animate-spin" />
                   ) : (
                     <Upload size={10} />
                   )}
-                  Link Drive
+                  <span>Connect Drive</span>
                 </button>
               ) : null}
             </div>
@@ -743,9 +990,603 @@ export default function IndentView({
         )}
 
         <div className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
-          Showing <b>{filteredOrders.length}</b> of <b>{activeSubTab === "billing" ? unmappedOrders.length : mappedOrders.length}</b> {activeSubTab === "billing" ? "pending" : "mapped"} orders
+          Showing <b>{filteredOrders.length}</b> of <b>{
+            activeSubTab === "logistics"
+              ? unmappedOrders.length
+              : activeSubTab === "billing"
+                ? unmappedOrders.length
+                : mappedOrders.length
+          }</b> {
+            activeSubTab === "logistics"
+              ? "pending dispatch / unmapped"
+              : activeSubTab === "billing"
+                ? "pending billing"
+                : "mapped"
+          } orders
         </div>
       </div>
+
+      {/* Logistics Sub-Tab Content */}
+      {activeSubTab === "logistics" && (
+        <div className="space-y-4">
+          {filteredOrders.length === 0 ? (
+            <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center">
+              <Truck className="mx-auto h-12 w-12 text-slate-300 mb-3" />
+              <p className="text-sm font-bold text-slate-600">No Pending Logistics Orders Found</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                Only unmapped orders (whose invoice has not yet been attached) are displayed for logistics details editing.
+              </p>
+            </div>
+          ) : (
+            <div className="w-full max-w-[90%] mx-auto space-y-6">
+              {filteredOrders.map((order, index) => {
+                const isExpanded = !!expandedOrderIds[order.id];
+
+                return (
+                  <div 
+                    key={order.id}
+                    className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-7 shadow-sm hover:shadow-md transition-all flex flex-col justify-between"
+                  >
+                    <div className="space-y-5">
+                      {/* Order Company & Client Info */}
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-100 pb-3.5">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2.5">
+                            <div className="p-2 bg-indigo-50 text-indigo-700 rounded-xl shrink-0">
+                              <Building2 size={22} />
+                            </div>
+                            <h2 className="text-lg sm:text-xl md:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
+                              <span className="inline-flex items-center justify-center min-w-[28px] h-7 px-2 bg-slate-900 text-white text-xs sm:text-sm font-mono font-black rounded-lg shrink-0 shadow-2xs">
+                                #{index + 1}
+                              </span>
+                              <span>{order.companyName || "Unspecified Company"}</span>
+                            </h2>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3 mt-2 pl-10">
+                            <span className="text-xs font-normal text-slate-600 flex items-center gap-1.5">
+                              <User2 size={13} className="text-slate-400 shrink-0" />
+                              <span className="text-slate-400 font-normal">Client:</span>
+                              <span className="text-slate-700 font-normal text-xs">{order.clientName}</span>
+                            </span>
+                            {order.phone && (
+                              <span className="text-xs font-normal text-slate-500 flex items-center gap-1 border-l border-slate-200 pl-3">
+                                <Phone size={12} className="text-slate-400" /> {order.phone}
+                              </span>
+                            )}
+                            {order.email && (
+                              <span className="text-xs font-normal text-slate-500 flex items-center gap-1 border-l border-slate-200 pl-3">
+                                <Mail size={12} className="text-slate-400" /> {order.email}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-left sm:text-right shrink-0 flex flex-col sm:items-end gap-1.5 bg-slate-50 sm:bg-transparent p-2.5 sm:p-0 rounded-xl border sm:border-0 border-slate-100">
+                          <span className="text-base sm:text-lg lg:text-xl font-black text-slate-950 block font-mono">
+                            ₹{order.totalValue?.toLocaleString()}
+                          </span>
+                          <span className="text-[11px] font-mono text-slate-400 block flex items-center sm:justify-end gap-1 font-semibold">
+                            <Calendar size={12} />
+                            {order.createdAt ? formatDate(order.createdAt) : ""}
+                          </span>
+                          {order.closedWonDetails?.poAttachmentUrl && (
+                            <button
+                              type="button"
+                              onClick={() => openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`)}
+                              className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-1 px-2.5 rounded-lg text-[10px] font-mono transition-all border border-indigo-200 shadow-2xs cursor-pointer mt-1"
+                              title="View Attached Customer PO Document"
+                            >
+                              <FileText size={12} className="text-indigo-600 shrink-0" />
+                              <span>View Attached PO ↗</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Items & PO overview */}
+                      <div className="bg-slate-50 border border-slate-150 rounded-xl p-3.5 text-[10px] space-y-1.5 font-mono">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 font-bold uppercase tracking-tight">Customer PO:</span>
+                          <span className="text-slate-700 font-bold">
+                            {order.closedWonDetails?.customerPoNumber || "N/A"} 
+                            {order.closedWonDetails?.poDate ? ` (${formatDate(order.closedWonDetails.poDate)})` : ""}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 font-bold uppercase tracking-tight">Items Included:</span>
+                          <span className="text-slate-700 font-bold bg-slate-200 px-1.5 py-0.5 rounded text-[9px]">
+                            {order.items?.length || 0} unique items
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-start gap-2 border-t border-slate-200/60 pt-1.5 mt-1">
+                          <span className="text-slate-400 font-bold uppercase tracking-tight shrink-0">Billing Address:</span>
+                          <span className="text-slate-700 font-semibold text-[9.5px] text-right line-clamp-2">
+                            {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "N/A"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center border-t border-slate-200/60 pt-1.5 mt-1.5">
+                          <span className="text-slate-400 font-bold uppercase tracking-tight">Attached PO File:</span>
+                          {order.closedWonDetails?.poAttachmentUrl ? (
+                            <button 
+                              type="button"
+                              onClick={() => openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`)}
+                              className="text-indigo-600 hover:text-indigo-800 font-bold underline flex items-center gap-1 text-[9.5px] cursor-pointer"
+                              title="Open Customer PO File"
+                            >
+                              <FileText size={11} className="text-indigo-600" /> View Customer PO ↗
+                            </button>
+                          ) : (
+                            <span className="text-slate-400 italic text-[9px]">No file attached</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Expanding Toggle for Logistics Details */}
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedOrderIds(prev => ({ ...prev, [order.id]: !prev[order.id] }))}
+                          className="w-full flex items-center justify-between py-2 px-3 bg-indigo-50/45 hover:bg-indigo-50 border border-indigo-100/65 rounded-xl text-[10px] font-bold text-indigo-700 transition-all cursor-pointer"
+                        >
+                          <span className="flex items-center gap-1.5 font-mono uppercase tracking-wider">
+                            <ListOrdered size={12} className="text-indigo-600" />
+                            {isExpanded ? "Hide Details for Logistics" : "Show Details for Logistics"}
+                          </span>
+                          {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+
+                        {isExpanded && (
+                          <div className="mt-4 space-y-4 text-[11px] animate-fadeIn">
+                            {/* Box 1: Customer PO & Terms (Read-Only) */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">1</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Customer PO & Terms</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-[10.5px]">
+                                <div className="space-y-1.5 font-mono">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Customer PO:</span>
+                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.customerPoNumber || "N/A"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">PO Date:</span>
+                                    <span className="text-slate-700 font-bold">
+                                      {order.closedWonDetails?.poDate ? formatDate(order.closedWonDetails.poDate) : "N/A"}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Total Items:</span>
+                                    <span className="text-slate-700 font-bold bg-slate-100 px-1.5 py-0.5 rounded text-[9.5px]">
+                                      {order.items?.length || 0} unique items
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="space-y-1.5 font-mono border-t sm:border-t-0 sm:border-l border-slate-100 pt-2 sm:pt-0 sm:pl-6">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Salesperson Name:</span>
+                                    <span className="text-slate-700 font-bold">
+                                      {users.find(u => u.id === order.assignedToUserId)?.name || "N/A"}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Payment Terms:</span>
+                                    <span className="text-slate-700 font-bold">{order.payment || "N/A"}</span>
+                                  </div>
+                                  {order.closedWonDetails?.poAttachmentUrl && (
+                                    <div className="flex justify-between items-center pt-1 border-t border-slate-100/50">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document:</span>
+                                      <a 
+                                        href="#"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl, `PO_${order.closedWonDetails!.customerPoNumber || "document"}.pdf`);
+                                        }}
+                                        className="text-indigo-600 hover:text-indigo-800 font-black underline flex items-center gap-1 text-[9.5px]"
+                                      >
+                                        <FileText size={10} /> View Customer PO ↗
+                                      </a>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Box 2: Logistics & Delivery Details (Option to EDIT) */}
+                            <div className={`rounded-xl p-4 relative space-y-3 shadow-sm border transition-all ${
+                              editingLogisticsOrderId === order.id 
+                                ? "bg-indigo-50/25 border-2 border-indigo-300" 
+                                : "bg-white border-slate-200"
+                            }`}>
+                              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">2</span>
+                                  <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Logistics & Delivery Details</span>
+                                  {editingLogisticsOrderId === order.id && (
+                                    <span className="bg-indigo-100 text-indigo-800 font-mono font-bold text-[8.5px] px-1.5 py-0.5 rounded uppercase">Editing</span>
+                                  )}
+                                </div>
+                                {teamCanEdit && (
+                                  <div>
+                                    {editingLogisticsOrderId === order.id ? (
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => cancelEditingLogistics(order.id)}
+                                          className="text-[9.5px] font-bold text-slate-600 hover:text-slate-800 font-mono uppercase px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 cursor-pointer"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={savingLogisticsId === order.id}
+                                          onClick={() => handleSaveLogistics(order)}
+                                          className="text-[9.5px] font-bold text-white font-mono uppercase px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 flex items-center gap-1.5 shadow-xs cursor-pointer disabled:bg-slate-300"
+                                        >
+                                          {savingLogisticsId === order.id ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
+                                          Save Logistics
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => startEditingLogistics(order)}
+                                        className="text-[9.5px] font-bold text-indigo-700 hover:text-indigo-900 font-mono uppercase flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-all cursor-pointer border border-indigo-200"
+                                      >
+                                        <Edit3 size={11} />
+                                        Edit Logistics Details
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              {editingLogisticsOrderId === order.id ? (
+                                /* Editable Logistics & Delivery Details Form */
+                                <div className="space-y-3 animate-fadeIn">
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[10.5px] font-mono">
+                                    <div className="space-y-2">
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Expected Dispatch Date
+                                        </label>
+                                        <input
+                                          type="date"
+                                          value={getLogisticsValue(order, "dispatchDate")}
+                                          onChange={(e) => updateLogisticsField(order, "dispatchDate", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-bold font-mono"
+                                        />
+                                      </div>
+
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Dispatch From
+                                        </label>
+                                        <select
+                                          value={getLogisticsValue(order, "dispatchLocation")}
+                                          onChange={(e) => updateLogisticsField(order, "dispatchLocation", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        >
+                                          <option value="">Select Location...</option>
+                                          {dispatchLocations.map((loc) => (
+                                            <option key={loc.id} value={loc.name}>{loc.name}</option>
+                                          ))}
+                                          {getLogisticsValue(order, "dispatchLocation") && !dispatchLocations.some(l => l.name === getLogisticsValue(order, "dispatchLocation")) && (
+                                            <option value={getLogisticsValue(order, "dispatchLocation")}>{getLogisticsValue(order, "dispatchLocation")}</option>
+                                          )}
+                                        </select>
+                                      </div>
+
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Warehouse Managed By
+                                        </label>
+                                        <select
+                                          value={getLogisticsValue(order, "warehouseManagedBy")}
+                                          onChange={(e) => updateLogisticsField(order, "warehouseManagedBy", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        >
+                                          <option value="">Select Warehouse...</option>
+                                          {warehouses.map((wh) => (
+                                            <option key={wh.id} value={wh.name}>{wh.name}</option>
+                                          ))}
+                                          {getLogisticsValue(order, "warehouseManagedBy") && !warehouses.some(w => w.name === getLogisticsValue(order, "warehouseManagedBy")) && (
+                                            <option value={getLogisticsValue(order, "warehouseManagedBy")}>{getLogisticsValue(order, "warehouseManagedBy")}</option>
+                                          )}
+                                        </select>
+                                      </div>
+
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Delivery / Booking Term
+                                        </label>
+                                        <input
+                                          type="text"
+                                          placeholder="e.g. Door Delivery / Ex-Godown"
+                                          value={getLogisticsValue(order, "deliveryTerm")}
+                                          onChange={(e) => updateLogisticsField(order, "deliveryTerm", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        />
+                                      </div>
+
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Cartage / Labour Charges
+                                        </label>
+                                        <input
+                                          type="text"
+                                          placeholder="e.g. 500 / Paid by AOL"
+                                          value={getLogisticsValue(order, "cartageLabourCharges")}
+                                          onChange={(e) => updateLogisticsField(order, "cartageLabourCharges", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Transporter Name
+                                        </label>
+                                        <select
+                                          value={getLogisticsValue(order, "transporterName")}
+                                          onChange={(e) => updateLogisticsField(order, "transporterName", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        >
+                                          <option value="">Select Transporter...</option>
+                                          {transporters.map((transporter) => (
+                                            <option key={transporter.id} value={transporter.name}>
+                                              {transporter.name}{transporter.transporterId ? ` (${transporter.transporterId})` : (transporter.id ? ` (${transporter.id})` : "")}
+                                            </option>
+                                          ))}
+                                          {getLogisticsValue(order, "transporterName") && !transporters.some(t => t.name === getLogisticsValue(order, "transporterName")) && (
+                                            <option value={getLogisticsValue(order, "transporterName")}>{getLogisticsValue(order, "transporterName")}</option>
+                                          )}
+                                        </select>
+                                      </div>
+
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Vehicle NO.
+                                        </label>
+                                        <input
+                                          type="text"
+                                          placeholder="e.g. MH-12-AB-1234"
+                                          value={getLogisticsValue(order, "vehicleNo")}
+                                          onChange={(e) => updateLogisticsField(order, "vehicleNo", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        />
+                                      </div>
+
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Freight Terms
+                                        </label>
+                                        <select
+                                          value={getLogisticsValue(order, "freightTerm")}
+                                          onChange={(e) => updateLogisticsField(order, "freightTerm", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        >
+                                          <option value="">Select Freight Term...</option>
+                                          {freightTerms.map((term) => (
+                                            <option key={term.id} value={term.name}>{term.name}</option>
+                                          ))}
+                                          {getLogisticsValue(order, "freightTerm") && !freightTerms.some(t => t.name === getLogisticsValue(order, "freightTerm")) && (
+                                            <option value={getLogisticsValue(order, "freightTerm")}>{getLogisticsValue(order, "freightTerm")}</option>
+                                          )}
+                                        </select>
+                                      </div>
+
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Freight Charged In Bill
+                                        </label>
+                                        <input
+                                          type="text"
+                                          placeholder="e.g. Extra / Included"
+                                          value={getLogisticsValue(order, "freightChargedInBill")}
+                                          onChange={(e) => updateLogisticsField(order, "freightChargedInBill", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        />
+                                      </div>
+
+                                      <div>
+                                        <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
+                                          Freight Cost To AOL
+                                        </label>
+                                        <input
+                                          type="text"
+                                          placeholder="e.g. 1200"
+                                          value={getLogisticsValue(order, "freightCostToAol")}
+                                          onChange={(e) => updateLogisticsField(order, "freightCostToAol", e.target.value)}
+                                          disabled={!teamCanEdit || savingLogisticsId === order.id}
+                                          className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                /* Read-Only Logistics Display */
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-[10.5px]">
+                                  <div className="space-y-1.5 font-mono">
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Expected Dispatch Date:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.dispatchDate ? formatDate(order.closedWonDetails.dispatchDate) : "N/A"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Dispatch From:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.dispatchLocation || "N/A"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Warehouse Managed By:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.warehouseManagedBy || "N/A"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Delivery / Booking Term:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.deliveryTerm || "N/A"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Cartage / Labour Charges:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.cartageLabourCharges || "N/A"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="space-y-1.5 font-mono border-t sm:border-t-0 sm:border-l border-slate-100 pt-2 sm:pt-0 sm:pl-6">
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Transporter Name:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {getTransporterDisplayName(order.closedWonDetails?.transporterName)}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Vehicle NO.:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.vehicleNo || "N/A"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Freight Terms:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.freightTerm || "N/A"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Freight Charged in Bill:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.freightChargedInBill || "N/A"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">Freight Cost to AOL:</span>
+                                      <span className="text-slate-700 font-bold">
+                                        {order.closedWonDetails?.freightCostToAol || "N/A"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {logisticsSuccessId === order.id && (
+                                <div className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2 font-bold font-mono flex items-center gap-1.5 animate-fadeIn">
+                                  <Check size={12} /> Logistics & delivery details updated and saved successfully!
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Box 3: Address & Contact Details (Read-Only) */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">3</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Address & Contact Details</span>
+                              </div>
+
+                              {/* Single line for Email & Contact */}
+                              <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 border border-slate-200/80 px-3 py-1.5 rounded-lg font-mono text-[10px]">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="text-slate-400 font-bold uppercase tracking-tight text-[8px]">Email:</span>
+                                  <span className="text-slate-700 font-semibold truncate" title={order.email || "N/A"}>{order.email || "N/A"}</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <span className="text-slate-400 font-bold uppercase tracking-tight text-[8px]">Contact:</span>
+                                  <span className="text-slate-700 font-bold">{order.phone || "N/A"}</span>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[10.5px]">
+                                <div className="space-y-1 font-mono">
+                                  <span className="text-slate-400 font-bold block text-[8px] uppercase tracking-tight mb-0.5">
+                                    Billing Address: <span className="text-indigo-600 font-bold tracking-normal">({order.billingGstin || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.gst) || (clients?.find(c => c.companyName === order.companyName)?.gst) || "N/A"})</span>
+                                  </span>
+                                  <p className="text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-2 rounded text-[10px] min-h-[44px]">
+                                    {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "No billing address provided"}
+                                  </p>
+                                </div>
+                                <div className="space-y-1 font-mono">
+                                  <span className="text-slate-400 font-bold block text-[8px] uppercase tracking-tight mb-0.5">
+                                    Destination Address: <span className="text-indigo-600 font-bold tracking-normal">({order.closedWonDetails?.gstin || order.billingGstin || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.gst) || (clients?.find(c => c.companyName === order.companyName)?.gst) || "N/A"})</span>
+                                  </span>
+                                  <p className="text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-2 rounded text-[10px] min-h-[44px]">
+                                    {order.closedWonDetails?.destinationAddress || "N/A"}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Box 4: Product Details (Read-Only) */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">4</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Product Details</span>
+                              </div>
+                              <div className="border border-slate-200 rounded-lg overflow-x-auto scrollbar-thin bg-white">
+                                <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full font-mono">
+                                  <thead>
+                                    <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 font-mono font-bold uppercase tracking-tight">
+                                      <th className="p-2">Product</th>
+                                      <th className="p-2 text-right">Qty</th>
+                                      <th className="p-2 text-right">Rate</th>
+                                      <th className="p-2 text-right">Amount</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100 text-slate-600">
+                                    {order.items?.map((item, idx) => (
+                                      <tr key={idx} className="hover:bg-slate-50/50">
+                                        <td className="p-2 font-semibold text-slate-800">{item.productName}</td>
+                                        <td className="p-2 text-right font-bold">{item.quantity}</td>
+                                        <td className="p-2 text-right text-slate-500">₹{item.rate?.toLocaleString()}</td>
+                                        <td className="p-2 text-right font-black text-slate-700">₹{item.amount?.toLocaleString()}</td>
+                                      </tr>
+                                    ))}
+                                    <tr className="bg-slate-50/50 font-black border-t border-slate-200">
+                                      <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
+                                      <td className="p-2 text-right text-slate-900 text-xs font-mono" colSpan={2}>
+                                        ₹{order.totalValue?.toLocaleString()}
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+
+                            {/* Box 5: Special Instructions / Remarks (Read-Only) */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">5</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Special Instructions / Remarks</span>
+                              </div>
+                              <p className="text-[10.5px] text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-3 rounded-lg whitespace-pre-wrap">
+                                {order.notes || "No special instructions/remarks provided."}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Billing Sub-Tab Content */}
       {activeSubTab === "billing" && (
@@ -761,15 +1602,17 @@ export default function IndentView({
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {filteredOrders.map((order) => {
+            <div className="w-full max-w-[90%] mx-auto space-y-6">
+              {filteredOrders.map((order, index) => {
                 const isEditing = editingOrderId === order.id;
                 const mappedInv = order.billingDetails?.invoiceNumber;
+                const mappedInvDate = order.billingDetails?.invoiceDate;
                 const fileAttached = order.billingDetails?.invoiceFileUrl;
                 const mappedActualDispatchDate = order.billingDetails?.actualDispatchDate;
                 const hasDetails = mappedInv || fileAttached;
                 const isDragging = dragOverOrderId === order.id;
                 const localInvVal = invoiceNumbers[order.id] !== undefined ? invoiceNumbers[order.id] : (mappedInv || "");
+                const localInvoiceDateVal = invoiceDates[order.id] !== undefined ? invoiceDates[order.id] : (mappedInvDate || "");
                 const localActualDispatchDateVal = actualDispatchDates[order.id] !== undefined ? actualDispatchDates[order.id] : (mappedActualDispatchDate || "");
                 const isExpanded = !!expandedOrderIds[order.id];
 
@@ -779,7 +1622,7 @@ export default function IndentView({
                 return (
                   <div 
                     key={order.id}
-                    className={`bg-white border rounded-2xl p-6 shadow-sm hover:shadow-md transition-all flex flex-col justify-between ${
+                    className={`bg-white border rounded-2xl p-6 sm:p-7 shadow-sm hover:shadow-md transition-all flex flex-col justify-between ${
                       isDragging ? "border-emerald-500 bg-emerald-50/10 scale-[1.01]" : "border-slate-200"
                     }`}
                     onDragOver={(e) => handleDragOver(e, order.id)}
@@ -787,25 +1630,57 @@ export default function IndentView({
                     onDrop={(e) => handleDrop(e, order.id)}
                   >
                     <div className="space-y-5">
-                      {/* Order Client Info */}
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-md font-mono font-bold mb-1.5 border border-slate-200">
-                            <Building2 size={10} className="text-slate-500" />
-                            {order.companyName}
-                          </span>
-                          <h3 className="text-sm font-black text-slate-800 truncate">
-                            {order.clientName}
-                          </h3>
+                      {/* Order Company & Client Info */}
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-100 pb-3.5">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2.5">
+                            <div className="p-2 bg-emerald-50 text-emerald-700 rounded-xl shrink-0">
+                              <Building2 size={22} />
+                            </div>
+                            <h2 className="text-lg sm:text-xl md:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
+                              <span className="inline-flex items-center justify-center min-w-[28px] h-7 px-2 bg-slate-900 text-white text-xs sm:text-sm font-mono font-black rounded-lg shrink-0 shadow-2xs">
+                                #{index + 1}
+                              </span>
+                              <span>{order.companyName || "Unspecified Company"}</span>
+                            </h2>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3 mt-2 pl-10">
+                            <span className="text-xs font-normal text-slate-600 flex items-center gap-1.5">
+                              <User2 size={13} className="text-slate-400 shrink-0" />
+                              <span className="text-slate-400 font-normal">Client:</span>
+                              <span className="text-slate-700 font-normal text-xs">{order.clientName}</span>
+                            </span>
+                            {order.phone && (
+                              <span className="text-xs font-normal text-slate-500 flex items-center gap-1 border-l border-slate-200 pl-3">
+                                <Phone size={12} className="text-slate-400" /> {order.phone}
+                              </span>
+                            )}
+                            {order.email && (
+                              <span className="text-xs font-normal text-slate-500 flex items-center gap-1 border-l border-slate-200 pl-3">
+                                <Mail size={12} className="text-slate-400" /> {order.email}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <span className="text-sm font-black text-slate-900 block font-mono">
+                        <div className="text-left sm:text-right shrink-0 flex flex-col sm:items-end gap-1.5 bg-slate-50 sm:bg-transparent p-2.5 sm:p-0 rounded-xl border sm:border-0 border-slate-100">
+                          <span className="text-base sm:text-lg lg:text-xl font-black text-slate-950 block font-mono">
                             ₹{order.totalValue?.toLocaleString()}
                           </span>
-                          <span className="text-[10px] font-mono text-slate-400 block mt-0.5 flex items-center justify-end gap-1">
-                            <Calendar size={10} />
+                          <span className="text-[11px] font-mono text-slate-400 block flex items-center sm:justify-end gap-1 font-semibold">
+                            <Calendar size={12} />
                             {order.createdAt ? formatDate(order.createdAt) : ""}
                           </span>
+                          {order.closedWonDetails?.poAttachmentUrl && (
+                            <button
+                              type="button"
+                              onClick={() => openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`)}
+                              className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-1 px-2.5 rounded-lg text-[10px] font-mono transition-all border border-indigo-200 shadow-2xs cursor-pointer mt-1"
+                              title="View Attached Customer PO Document"
+                            >
+                              <FileText size={12} className="text-indigo-600 shrink-0" />
+                              <span>View Attached PO ↗</span>
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -837,21 +1712,21 @@ export default function IndentView({
                             {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "N/A"}
                           </span>
                         </div>
-                        {order.closedWonDetails?.poAttachmentUrl && (
-                          <div className="flex justify-between items-center border-t border-slate-200/60 pt-1.5 mt-1.5">
-                            <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document:</span>
-                            <a 
-                              href="#"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                openOrDownloadDocument(order.closedWonDetails.poAttachmentUrl, `PO_${order.closedWonDetails.customerPoNumber || "document"}.pdf`);
-                              }}
-                              className="text-indigo-600 hover:text-indigo-800 font-bold underline flex items-center gap-1 text-[9px]"
+                        <div className="flex justify-between items-center border-t border-slate-200/60 pt-1.5 mt-1.5">
+                          <span className="text-slate-400 font-bold uppercase tracking-tight">Attached PO File:</span>
+                          {order.closedWonDetails?.poAttachmentUrl ? (
+                            <button 
+                              type="button"
+                              onClick={() => openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`)}
+                              className="text-indigo-600 hover:text-indigo-800 font-bold underline flex items-center gap-1 text-[9.5px] cursor-pointer"
+                              title="Open Customer PO File"
                             >
-                              <FileText size={10} /> View Customer PO ↗
-                            </a>
-                          </div>
-                        )}
+                              <FileText size={11} className="text-indigo-600" /> View Customer PO ↗
+                            </button>
+                          ) : (
+                            <span className="text-slate-400 italic text-[9px]">No file attached</span>
+                          )}
+                        </div>
                       </div>
 
                       {/* Expanding Toggle for Billing Office details */}
@@ -965,7 +1840,7 @@ export default function IndentView({
                                 <div className="space-y-1.5 font-mono border-t sm:border-t-0 sm:border-l border-slate-100 pt-2 sm:pt-0 sm:pl-6">
                                   <div className="flex justify-between items-center">
                                     <span className="text-slate-400 font-bold uppercase tracking-tight">Transporter Name:</span>
-                                    <span className="text-slate-700 font-bold">{order.closedWonDetails?.transporterName || "N/A"}</span>
+                                    <span className="text-slate-700 font-bold">{getTransporterDisplayName(order.closedWonDetails?.transporterName)}</span>
                                   </div>
                                   <div className="flex justify-between items-center">
                                     <span className="text-slate-400 font-bold uppercase tracking-tight">Vehicle NO.:</span>
@@ -985,68 +1860,186 @@ export default function IndentView({
                                 <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">3</span>
                                 <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Address & Contact Details</span>
                               </div>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-[10.5px]">
-                                <div className="space-y-2 font-mono">
-                                  <div>
-                                    <span className="text-slate-400 font-bold block text-[8px] uppercase tracking-tight mb-0.5">Billing Address:</span>
-                                    <p className="text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-2 rounded text-[10px]">
-                                      {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "No billing address provided"}
-                                    </p>
-                                  </div>
-                                  <div>
-                                    <span className="text-slate-400 font-bold block text-[8px] uppercase tracking-tight mb-0.5">Destination Address:</span>
-                                    <p className="text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-2 rounded text-[10px]">
-                                      {order.closedWonDetails?.destinationAddress || "N/A"}
-                                    </p>
-                                  </div>
+
+                              {/* Single line for Email & Contact */}
+                              <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 border border-slate-200/80 px-3 py-1.5 rounded-lg font-mono text-[10px]">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="text-slate-400 font-bold uppercase tracking-tight text-[8px]">Email:</span>
+                                  <span className="text-slate-700 font-semibold truncate" title={order.email || "N/A"}>{order.email || "N/A"}</span>
                                 </div>
-                                <div className="space-y-1.5 font-mono border-t sm:border-t-0 sm:border-l border-slate-100 pt-2 sm:pt-0 sm:pl-6 flex flex-col justify-center">
-                                  <div className="flex justify-between items-center">
-                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Email:</span>
-                                    <span className="text-slate-700 font-semibold break-all text-right">{order.email || "N/A"}</span>
-                                  </div>
-                                  <div className="flex justify-between items-center mt-1">
-                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Contact:</span>
-                                    <span className="text-slate-700 font-bold">{order.phone || "N/A"}</span>
-                                  </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <span className="text-slate-400 font-bold uppercase tracking-tight text-[8px]">Contact:</span>
+                                  <span className="text-slate-700 font-bold">{order.phone || "N/A"}</span>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[10.5px]">
+                                <div className="space-y-1 font-mono">
+                                  <span className="text-slate-400 font-bold block text-[8px] uppercase tracking-tight mb-0.5">
+                                    Billing Address: <span className="text-indigo-600 font-bold tracking-normal">({order.billingGstin || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.gst) || (clients?.find(c => c.companyName === order.companyName)?.gst) || "N/A"})</span>
+                                  </span>
+                                  <p className="text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-2 rounded text-[10px] min-h-[44px]">
+                                    {order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "No billing address provided"}
+                                  </p>
+                                </div>
+                                <div className="space-y-1 font-mono">
+                                  <span className="text-slate-400 font-bold block text-[8px] uppercase tracking-tight mb-0.5">
+                                    Destination Address: <span className="text-indigo-600 font-bold tracking-normal">({order.closedWonDetails?.gstin || order.billingGstin || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.gst) || (clients?.find(c => c.companyName === order.companyName)?.gst) || "N/A"})</span>
+                                  </span>
+                                  <p className="text-slate-700 font-semibold leading-relaxed bg-slate-50 border border-slate-150 p-2 rounded text-[10px] min-h-[44px]">
+                                    {order.closedWonDetails?.destinationAddress || "N/A"}
+                                  </p>
                                 </div>
                               </div>
                             </div>
 
-                            {/* Box 4: Product Details */}
-                            <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
-                              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
-                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">4</span>
-                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Product Details</span>
+                            {/* Box 4: Product Details (Option to EDIT) */}
+                            <div className={`rounded-xl p-4 relative space-y-3 shadow-sm border transition-all ${
+                              editingProductOrderId === order.id 
+                                ? "bg-emerald-50/20 border-2 border-emerald-300" 
+                                : "bg-white border-slate-200"
+                            }`}>
+                              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">4</span>
+                                  <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Product Details</span>
+                                  {editingProductOrderId === order.id && (
+                                    <span className="bg-emerald-100 text-emerald-800 font-mono font-bold text-[8.5px] px-1.5 py-0.5 rounded uppercase">Editing</span>
+                                  )}
+                                </div>
+                                {teamCanEdit && (
+                                  <div>
+                                    {editingProductOrderId === order.id ? (
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => cancelEditingProducts(order.id)}
+                                          className="text-[9.5px] font-bold text-slate-600 hover:text-slate-800 font-mono uppercase px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 cursor-pointer"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={savingProductId === order.id}
+                                          onClick={() => handleSaveProductDetails(order)}
+                                          className="text-[9.5px] font-bold text-white font-mono uppercase px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 flex items-center gap-1.5 shadow-xs cursor-pointer"
+                                        >
+                                          {savingProductId === order.id ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
+                                          Save Products
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => startEditingProducts(order)}
+                                        className="text-[9.5px] font-bold text-indigo-700 hover:text-indigo-900 font-mono uppercase flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-all cursor-pointer border border-indigo-200"
+                                      >
+                                        <Edit3 size={11} />
+                                        Edit Product Details
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
                               </div>
-                              <div className="border border-slate-200 rounded-lg overflow-x-auto scrollbar-thin bg-white">
-                                <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full font-mono">
-                                  <thead>
-                                    <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 font-mono font-bold uppercase tracking-tight">
-                                      <th className="p-2">Product</th>
-                                      <th className="p-2 text-right">Qty</th>
-                                      <th className="p-2 text-right">Rate</th>
-                                      <th className="p-2 text-right">Amount</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-100 text-slate-600">
-                                    {order.items?.map((item, idx) => (
-                                      <tr key={idx} className="hover:bg-slate-50/50">
-                                        <td className="p-2 font-semibold text-slate-800">{item.productName}</td>
-                                        <td className="p-2 text-right font-bold">{item.quantity}</td>
-                                        <td className="p-2 text-right text-slate-500">₹{item.rate?.toLocaleString()}</td>
-                                        <td className="p-2 text-right font-black text-slate-700">₹{item.amount?.toLocaleString()}</td>
-                                      </tr>
-                                    ))}
-                                    <tr className="bg-slate-50/50 font-black border-t border-slate-200">
-                                      <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
-                                      <td className="p-2 text-right text-slate-900 text-xs font-mono" colSpan={2}>
-                                        ₹{order.totalValue?.toLocaleString()}
-                                      </td>
-                                    </tr>
-                                  </tbody>
-                                </table>
-                              </div>
+
+                              {editingProductOrderId === order.id ? (
+                                /* Editable Products Table (Quantity & Rate Only) */
+                                <div className="space-y-3 animate-fadeIn">
+                                  <div className="border border-slate-200 rounded-lg overflow-x-auto bg-white">
+                                    <table className="w-full text-left text-[10px] min-w-[380px] font-mono">
+                                      <thead>
+                                        <tr className="bg-slate-100/70 text-slate-600 border-b border-slate-200 font-mono font-bold uppercase tracking-tight">
+                                          <th className="p-2">Product Name</th>
+                                          <th className="p-2 text-right w-28">Qty (Edit)</th>
+                                          <th className="p-2 text-right w-32">Rate (₹) (Edit)</th>
+                                          <th className="p-2 text-right w-28">Amount</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100 text-slate-700">
+                                        {(productItemsForm[order.id] || []).map((item, idx) => (
+                                          <tr key={idx} className="hover:bg-slate-50">
+                                            <td className="p-2 font-bold text-slate-800">
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
+                                                <span className="truncate max-w-[200px]">{item.productName || "Unnamed Item"}</span>
+                                              </div>
+                                            </td>
+                                            <td className="p-2 text-right">
+                                              <input
+                                                type="number"
+                                                min="0"
+                                                step="any"
+                                                value={item.quantity}
+                                                onChange={(e) => updateProductItemField(order.id, idx, "quantity", e.target.value)}
+                                                className="w-full text-right text-xs text-slate-900 bg-slate-50/80 border border-slate-300 rounded px-2 py-1 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 font-bold"
+                                              />
+                                            </td>
+                                            <td className="p-2 text-right">
+                                              <input
+                                                type="number"
+                                                min="0"
+                                                step="any"
+                                                value={item.rate}
+                                                onChange={(e) => updateProductItemField(order.id, idx, "rate", e.target.value)}
+                                                className="w-full text-right text-xs text-slate-900 bg-slate-50/80 border border-slate-300 rounded px-2 py-1 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 font-mono font-bold"
+                                              />
+                                            </td>
+                                            <td className="p-2 text-right font-black text-slate-900 text-xs">
+                                              ₹{((Number(item.quantity) || 0) * (Number(item.rate) || 0)).toLocaleString()}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+
+                                  <div className="flex items-center justify-between font-mono pt-1 text-[10px]">
+                                    <span className="text-slate-500 italic">
+                                      * Only Quantity & Rate can be modified during billing.
+                                    </span>
+                                    <div className="text-[12px] font-black text-slate-900 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-lg">
+                                      Computed Total: ₹{(productItemsForm[order.id] || []).reduce((s, it) => s + ((Number(it.quantity) || 0) * (Number(it.rate) || 0)), 0).toLocaleString()}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                /* Read-Only Products Table */
+                                <div>
+                                  <div className="border border-slate-200 rounded-lg overflow-x-auto scrollbar-thin bg-white">
+                                    <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full font-mono">
+                                      <thead>
+                                        <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 font-mono font-bold uppercase tracking-tight">
+                                          <th className="p-2">Product</th>
+                                          <th className="p-2 text-right">Qty</th>
+                                          <th className="p-2 text-right">Rate</th>
+                                          <th className="p-2 text-right">Amount</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100 text-slate-600">
+                                        {order.items?.map((item, idx) => (
+                                          <tr key={idx} className="hover:bg-slate-50/50">
+                                            <td className="p-2 font-semibold text-slate-800">{item.productName}</td>
+                                            <td className="p-2 text-right font-bold">{item.quantity}</td>
+                                            <td className="p-2 text-right text-slate-500">₹{item.rate?.toLocaleString()}</td>
+                                            <td className="p-2 text-right font-black text-slate-700">₹{item.amount?.toLocaleString()}</td>
+                                          </tr>
+                                        ))}
+                                        <tr className="bg-slate-50/50 font-black border-t border-slate-200">
+                                          <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
+                                          <td className="p-2 text-right text-slate-900 text-xs font-mono" colSpan={2}>
+                                            ₹{order.totalValue?.toLocaleString()}
+                                          </td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                  {productSuccessId === order.id && (
+                                    <div className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2 font-bold font-mono flex items-center gap-1.5 mt-2 animate-fadeIn">
+                                      <Check size={12} /> Product details updated and order total recalculation saved!
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
 
                             {/* Box 5: Delivery Terms */}
@@ -1098,7 +2091,7 @@ export default function IndentView({
                       {hasDetails && !isEditing ? (
                         <div className="bg-emerald-50/50 border border-emerald-150 rounded-xl p-3.5 space-y-2">
                           <div className="flex items-center justify-between gap-2">
-                            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-4 flex-wrap">
                               <div className="flex items-center gap-2">
                                 <span className="bg-emerald-100 text-emerald-800 p-1 rounded-lg">
                                   <Check size={12} className="stroke-[3]" />
@@ -1108,6 +2101,18 @@ export default function IndentView({
                                   <p className="text-xs font-extrabold text-slate-800 font-mono">{mappedInv}</p>
                                 </div>
                               </div>
+
+                              {mappedInvDate && (
+                                <div className="flex items-center gap-2">
+                                  <span className="bg-indigo-100 text-indigo-800 p-1 rounded-lg">
+                                    <Calendar size={12} className="stroke-[3]" />
+                                  </span>
+                                  <div>
+                                    <p className="text-[9px] text-indigo-700 font-mono font-bold uppercase tracking-wider">Invoice Date</p>
+                                    <p className="text-xs font-extrabold text-slate-800 font-mono">{formatDate(mappedInvDate)}</p>
+                                  </div>
+                                </div>
+                              )}
 
                               {mappedActualDispatchDate && (
                                 <div className="flex items-center gap-2">
@@ -1130,6 +2135,9 @@ export default function IndentView({
                                 }
                                 if (actualDispatchDates[order.id] === undefined) {
                                   setActualDispatchDates(prev => ({ ...prev, [order.id]: mappedActualDispatchDate || "" }));
+                                }
+                                if (invoiceDates[order.id] === undefined) {
+                                  setInvoiceDates(prev => ({ ...prev, [order.id]: mappedInvDate || "" }));
                                 }
                               }}
                               className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 font-mono uppercase cursor-pointer underline decoration-dotted"
@@ -1162,6 +2170,35 @@ export default function IndentView({
                       ) : (
                         // Form Block
                         <div className="space-y-3 pt-1 border-t border-slate-100 pt-3.5">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
+                                Invoice Number *
+                              </label>
+                              <input
+                                type="text"
+                                placeholder="e.g. INV-2026-001"
+                                value={localInvVal}
+                                onChange={(e) => setInvoiceNumbers(prev => ({ ...prev, [order.id]: e.target.value }))}
+                                disabled={uploadProgress[order.id]}
+                                className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono font-semibold"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
+                                Invoice Date
+                              </label>
+                              <input
+                                type="date"
+                                value={localInvoiceDateVal}
+                                onChange={(e) => setInvoiceDates(prev => ({ ...prev, [order.id]: e.target.value }))}
+                                disabled={uploadProgress[order.id]}
+                                className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono font-semibold"
+                              />
+                            </div>
+                          </div>
+
                           <div className="space-y-1">
                             <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
                               Actual Dispatch Date
@@ -1170,20 +2207,6 @@ export default function IndentView({
                               type="date"
                               value={localActualDispatchDateVal}
                               onChange={(e) => setActualDispatchDates(prev => ({ ...prev, [order.id]: e.target.value }))}
-                              disabled={uploadProgress[order.id]}
-                              className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono font-semibold"
-                            />
-                          </div>
-
-                          <div className="space-y-1">
-                            <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
-                              Invoice Number *
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="e.g. INV-2026-001"
-                              value={localInvVal}
-                              onChange={(e) => setInvoiceNumbers(prev => ({ ...prev, [order.id]: e.target.value }))}
                               disabled={uploadProgress[order.id]}
                               className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono font-semibold"
                             />
@@ -1365,7 +2388,7 @@ export default function IndentView({
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-mono font-bold uppercase tracking-wider text-[10px]">
                       <th className="p-4 text-center w-12"></th>
-                      <th className="p-4">Client / Company</th>
+                      <th className="p-4">Company / Client</th>
                       <th className="p-4">Customer PO</th>
                       <th className="p-4 text-right">PO Amount</th>
                       <th className="p-4">Invoice Number</th>
@@ -1394,23 +2417,26 @@ export default function IndentView({
                               </button>
                             </td>
                             <td className="p-4">
-                              <div className="font-extrabold text-slate-800">{order.clientName}</div>
-                              <div className="text-[10px] text-slate-500 font-mono mt-0.5">{order.companyName}</div>
+                              <div className="text-sm font-black text-slate-900 leading-tight">{order.companyName || "N/A"}</div>
+                              <div className="text-[10.5px] text-slate-500 font-semibold mt-0.5">{order.clientName}</div>
                             </td>
                             <td className="p-4 font-mono font-bold text-slate-700">
-                              {order.closedWonDetails?.customerPoNumber || "N/A"}
-                              {order.closedWonDetails?.poAttachmentUrl && (
-                                <a
-                                  href="#"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    openOrDownloadDocument(order.closedWonDetails.poAttachmentUrl, `PO_${order.closedWonDetails.customerPoNumber || "document"}.pdf`);
+                              <div>{order.closedWonDetails?.customerPoNumber || "N/A"}</div>
+                              {order.closedWonDetails?.poAttachmentUrl ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`);
                                   }}
-                                  className="text-indigo-600 hover:text-indigo-800 font-medium block text-[9px] underline mt-0.5"
+                                  className="inline-flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-1 px-2 rounded-lg text-[9.5px] font-mono transition-all border border-indigo-200 shadow-2xs mt-1 cursor-pointer"
                                   id={`view-po-${order.id}`}
+                                  title="View / Download Customer PO Document"
                                 >
-                                  View PO ↗
-                                </a>
+                                  <FileText size={11} className="text-indigo-600" />
+                                  <span>View PO ↗</span>
+                                </button>
+                              ) : (
+                                <span className="text-[9px] text-slate-400 font-normal italic block mt-0.5">No PO file</span>
                               )}
                             </td>
                             <td className="p-4 text-right font-mono font-extrabold text-slate-800">
@@ -1578,6 +2604,23 @@ export default function IndentView({
                                             {order.items?.length || 0} unique items
                                           </span>
                                         </div>
+                                        <div className="flex justify-between items-center border-t border-slate-100 pt-1.5 mt-1">
+                                          <span className="text-slate-400 font-bold uppercase tracking-tight">Attached PO File:</span>
+                                          {order.closedWonDetails?.poAttachmentUrl ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`);
+                                              }}
+                                              className="text-indigo-600 hover:text-indigo-800 font-bold underline flex items-center gap-1 text-[9.5px] cursor-pointer"
+                                              title="Open / Download Customer PO Document"
+                                            >
+                                              <FileText size={11} className="text-indigo-600" /> View Customer PO ↗
+                                            </button>
+                                          ) : (
+                                            <span className="text-slate-400 italic text-[9.5px]">No file attached</span>
+                                          )}
+                                        </div>
                                       </div>
                                     </div>
 
@@ -1603,7 +2646,7 @@ export default function IndentView({
                                         <div>
                                           <span className="text-slate-400 font-bold block text-[8px] uppercase font-mono">Transporter Name</span>
                                           <span className="text-slate-700 font-medium">
-                                            {order.closedWonDetails?.transporterName || "N/A"}
+                                            {getTransporterDisplayName(order.closedWonDetails?.transporterName)}
                                           </span>
                                         </div>
                                         <div>
