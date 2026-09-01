@@ -1,5 +1,7 @@
 /**
  * Google Drive integration service using Google Drive API v3.
+ * Handles direct Google Drive OAuth authentication, folder/Shared Drive resolution,
+ * client subfolder organization, and multipart file uploads.
  */
 
 import { auth, getGoogleProvider, signInWithPopup, db, doc, getDoc, setDoc } from "../firebase";
@@ -15,6 +17,7 @@ export interface DriveSettings {
   tokenExpiry?: number;
   allowAllTeams?: boolean;
   allowedTeamIds?: string[];
+  uploadMode?: "google_drive_oauth";
 }
 
 /**
@@ -96,9 +99,8 @@ export function isUserTeamAllowedForDrive(
 
 /**
  * Ensures we have a valid Google Drive access token.
- * If not cached, prompts the user via pop-up to authorize/sign in.
- * CRITICAL: When saving the refreshed token to Firestore, it NEVER overwrites
- * or changes the pre-configured folderId or folderName.
+ * If not cached or stored, prompts the user via Google pop-up to authorize.
+ * When saving the refreshed token to Firestore, it preserves the pre-configured folderId and folderName.
  */
 export async function ensureGoogleDriveAccess(forcePrompt = false): Promise<string> {
   // 1. If we have a system-injected token from AI Studio, ALWAYS prefer it as it requires zero popups.
@@ -128,16 +130,14 @@ export async function ensureGoogleDriveAccess(forcePrompt = false): Promise<stri
     }
   }
 
-  // 3. Prompt if required
+  // 3. User initiated action or forcePrompt is true: prompt via popup
   try {
-    // Triggers signInWithPopup. Since user is already authenticated in Firebase,
-    // this will request/verify permissions and retrieve a fresh credential.
     const result = await signInWithPopup(auth, getGoogleProvider());
     const credential = GoogleAuthProvider.credentialFromResult(result);
     const token = credential?.accessToken;
 
     if (!token) {
-      throw new Error("No access token returned from Google Auth.");
+      throw new Error("No access token returned from Google Auth. Please ensure Drive permissions were approved.");
     }
 
     cachedAccessToken = token;
@@ -148,10 +148,12 @@ export async function ensureGoogleDriveAccess(forcePrompt = false): Promise<stri
       const updatedSettings: DriveSettings = {
         folderName: currentSettings?.folderName || "SMS_PO",
         folderId: currentSettings?.folderId || "",
+        driveType: currentSettings?.driveType || "shared_folder",
         allowAllTeams: currentSettings?.allowAllTeams ?? true,
         allowedTeamIds: currentSettings?.allowedTeamIds || [],
         adminAccessToken: token,
         tokenExpiry: Date.now() + 3500 * 1000, // expires in ~1 hour
+        uploadMode: "google_drive_oauth",
       };
       await saveSharedDriveSettings(updatedSettings);
     } catch (e) {
@@ -159,7 +161,12 @@ export async function ensureGoogleDriveAccess(forcePrompt = false): Promise<stri
     }
 
     return token;
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === "auth/popup-blocked" || error?.message?.includes("popup-blocked")) {
+      const msg = "Google authorization pop-up was blocked by your browser. Please allow pop-ups for this site and try again.";
+      console.warn(msg);
+      throw new Error(msg);
+    }
     console.error("Error securing Google Drive OAuth Token:", error);
     throw error;
   }
@@ -310,7 +317,8 @@ export async function resolveSharedParentFolder(token: string): Promise<DriveSet
     allowAllTeams: stored?.allowAllTeams ?? true,
     allowedTeamIds: stored?.allowedTeamIds || [],
     adminAccessToken: stored?.adminAccessToken || token,
-    tokenExpiry: stored?.tokenExpiry || (Date.now() + 3500 * 1000)
+    tokenExpiry: stored?.tokenExpiry || (Date.now() + 3500 * 1000),
+    uploadMode: "google_drive_oauth",
   };
 
   try {
@@ -339,7 +347,8 @@ export async function updateSharedParentFolder(token: string, newFolderName: str
     allowAllTeams: currentSettings?.allowAllTeams ?? true,
     allowedTeamIds: currentSettings?.allowedTeamIds || [],
     adminAccessToken: token,
-    tokenExpiry: Date.now() + 3500 * 1000 // 1 hour minus buffer
+    tokenExpiry: Date.now() + 3500 * 1000, // 1 hour minus buffer
+    uploadMode: "google_drive_oauth",
   };
   await saveSharedDriveSettings(settings);
   return settings;
@@ -509,14 +518,14 @@ export async function verifyDriveFolderOrSharedDrive(
 
   if (lastErrorDetail) {
     if (lastErrorDetail.includes("ACCESS_TOKEN_SCOPE_INSUFFICIENT") || lastErrorDetail.includes("insufficientPermissions") || lastErrorDetail.includes("Insufficient Permission")) {
-      throw new Error(`Google Drive permission needs to be refreshed. Please click "Re-authorize Google Drive" below to grant access to Shared Drives.`);
+      throw new Error(`Google Drive permission needs to be refreshed or granted for this folder.`);
     }
     if (isDriveApiDisabledError(lastErrorDetail)) {
       throw parseDriveApiError(lastErrorDetail, "Google Drive API verification failed");
     }
   }
 
-  throw new Error(`Google Drive ID "${cleanId}" not found or unauthorized for this account. Ensure your Google account has member access to this Shared Drive/Folder, or click "Re-authorize Google Drive".`);
+  throw new Error(`Google Drive ID "${cleanId}" not found or unauthorized for this account. Ensure your Google account has access to this Shared Drive/Folder.`);
 }
 
 /**
@@ -546,8 +555,9 @@ export function getFormattedDateString(dateInput?: string | Date): string {
 }
 
 /**
- * Uploads a file to the shared Google Drive parent folder or Shared Drive, organized inside a client-specific subfolder.
- * Filename format: PO_{{Customer PO Number}}_{{Current Date}}.pdf
+ * Uploads a file to Google Drive via direct Google Drive OAuth API v3,
+ * organized inside the configured folder/Shared Drive and a client-specific subfolder.
+ * Filename format: PO_{{Customer PO Number}}_{{Current Date}}_{{Original File Name}}.pdf
  */
 export async function uploadPOToDrive(
   file: File, 
@@ -559,11 +569,19 @@ export async function uploadPOToDrive(
     ? poNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") 
     : "NA";
   const currentDateStr = getFormattedDateString();
-  const finalFileName = `PO_${cleanPo}_${currentDateStr}${ext}`;
+  const rawBaseName = file.name.includes(".") ? file.name.substring(0, file.name.lastIndexOf(".")) : file.name;
+  const cleanBaseName = rawBaseName.replace(/[^a-zA-Z0-9_\-]/g, "_");
+  const finalFileName = `PO_${cleanPo}_${currentDateStr}_${cleanBaseName}${ext}`;
 
   try {
     // 1. Get access token
-    const token = await ensureGoogleDriveAccess();
+    let token = "";
+    try {
+      token = await ensureGoogleDriveAccess(false);
+    } catch (tokenErr) {
+      // If token not available silently, prompt user since this is a direct upload click action
+      token = await ensureGoogleDriveAccess(true);
+    }
 
     // 2. Resolve the shared parent folder setting
     const parentFolder = await resolveSharedParentFolder(token);
@@ -578,7 +596,7 @@ export async function uploadPOToDrive(
       }
     }
 
-    // 5. Create multipart upload body
+    // 4. Create multipart upload body
     const metadata = {
       name: finalFileName,
       parents: [targetFolderId],
@@ -591,7 +609,7 @@ export async function uploadPOToDrive(
     );
     formData.append("file", file);
 
-    // 6. Perform upload with supportsAllDrives=true
+    // 5. Perform upload with supportsAllDrives=true
     const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink";
     const uploadRes = await fetch(uploadUrl, {
       method: "POST",
@@ -603,6 +621,18 @@ export async function uploadPOToDrive(
 
     if (!uploadRes.ok) {
       const errText = await uploadRes.text();
+      // If token expired (401), try one force refresh
+      if (uploadRes.status === 401) {
+        const freshToken = await ensureGoogleDriveAccess(true);
+        const retryRes = await fetch(uploadUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${freshToken}` },
+          body: formData,
+        });
+        if (retryRes.ok) {
+          return await retryRes.json();
+        }
+      }
       throw parseDriveApiError(errText, "Failed to upload PO file to Google Drive");
     }
 
@@ -624,8 +654,9 @@ export async function uploadPOToDrive(
 }
 
 /**
- * Uploads an invoice file to the shared Google Drive parent folder or Shared Drive, organized inside a client-specific subfolder.
- * Filename format: PO_{{Invoice Number}}_{{Invoice Date}}.pdf
+ * Uploads an invoice file to Google Drive via direct Google Drive OAuth API v3,
+ * organized inside the configured folder/Shared Drive and a client-specific subfolder.
+ * Filename format: PO_{{Invoice Number}}_{{Invoice Date}}_{{Original File Name}}.pdf
  */
 export async function uploadInvoiceToDrive(
   file: File, 
@@ -638,11 +669,19 @@ export async function uploadInvoiceToDrive(
     ? invoiceNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") 
     : "NA";
   const invDateStr = getFormattedDateString(invoiceDate);
-  const finalFileName = `PO_${cleanInv}_${invDateStr}${ext}`;
+  const rawBaseName = file.name.includes(".") ? file.name.substring(0, file.name.lastIndexOf(".")) : file.name;
+  const cleanBaseName = rawBaseName.replace(/[^a-zA-Z0-9_\-]/g, "_");
+  const finalFileName = `PO_${cleanInv}_${invDateStr}_${cleanBaseName}${ext}`;
 
   try {
     // 1. Get access token
-    const token = await ensureGoogleDriveAccess();
+    let token = "";
+    try {
+      token = await ensureGoogleDriveAccess(false);
+    } catch (tokenErr) {
+      // If token not available silently, prompt user
+      token = await ensureGoogleDriveAccess(true);
+    }
 
     // 2. Resolve the shared parent folder setting
     const parentFolder = await resolveSharedParentFolder(token);
@@ -657,7 +696,7 @@ export async function uploadInvoiceToDrive(
       }
     }
 
-    // 5. Create multipart upload body
+    // 4. Create multipart upload body
     const metadata = {
       name: finalFileName,
       parents: [targetFolderId],
@@ -670,7 +709,7 @@ export async function uploadInvoiceToDrive(
     );
     formData.append("file", file);
 
-    // 6. Perform upload with supportsAllDrives=true
+    // 5. Perform upload with supportsAllDrives=true
     const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink";
     const uploadRes = await fetch(uploadUrl, {
       method: "POST",
@@ -682,7 +721,19 @@ export async function uploadInvoiceToDrive(
 
     if (!uploadRes.ok) {
       const errText = await uploadRes.text();
-      throw parseDriveApiError(errText, "Failed to upload Invoice file to Google Drive");
+      // If token expired (401), try one force refresh
+      if (uploadRes.status === 401) {
+        const freshToken = await ensureGoogleDriveAccess(true);
+        const retryRes = await fetch(uploadUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${freshToken}` },
+          body: formData,
+        });
+        if (retryRes.ok) {
+          return await retryRes.json();
+        }
+      }
+      throw parseDriveApiError(errText, "Failed to upload invoice file to Google Drive");
     }
 
     return await uploadRes.json();
@@ -747,5 +798,3 @@ export function openOrDownloadDocument(url: string | undefined, filename: string
     window.open(url, "_blank", "noopener,noreferrer");
   }
 }
-
-

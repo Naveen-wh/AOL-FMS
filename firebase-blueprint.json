@@ -319,6 +319,28 @@
         "updatedAt": { "type": "string", "maxLength": 64, "description": "Update timestamp" }
       },
       "required": ["id", "companyName", "invoiceNumber", "invoiceAmount", "dueDate"]
+    },
+    "EmailSentLog": {
+      "title": "EmailSentLog",
+      "description": "Log record for outgoing system emails including recipient list, delivery status, category, and audit details.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "description": "Log identifier" },
+        "orderId": { "type": "string", "maxLength": 128, "description": "Associated order ID" },
+        "companyName": { "type": "string", "maxLength": 256, "description": "Company name" },
+        "clientName": { "type": "string", "maxLength": 128, "description": "Client contact name" },
+        "to": { "type": "string", "maxLength": 512, "description": "Recipient email address(es)" },
+        "cc": { "type": "string", "maxLength": 512, "description": "CC email address(es)" },
+        "bcc": { "type": "string", "maxLength": 512, "description": "BCC email address(es)" },
+        "subject": { "type": "string", "maxLength": 512, "description": "Email subject" },
+        "category": { "type": "string", "maxLength": 64, "description": "Email category (e.g. create_order, invoice_issuance, payment_reminder)" },
+        "status": { "type": "string", "maxLength": 32, "enum": ["Sent", "Failed", "Simulated", "Sending"], "description": "Delivery status" },
+        "timestamp": { "type": "string", "maxLength": 64, "description": "Timestamp ISO string" },
+        "senderUserId": { "type": "string", "maxLength": 128, "description": "Sender user ID" },
+        "senderUserName": { "type": "string", "maxLength": 128, "description": "Sender display name" },
+        "error": { "type": "string", "maxLength": 2000, "description": "Error message if failed" }
+      },
+      "required": ["id", "to", "subject", "category", "status", "timestamp"]
     }
   },
   "firestore": {
@@ -328,6 +350,7 @@
     "/products/{productId}": { "schema": { "$ref": "Product" }, "description": "Product catalog" },
     "/tasks/{taskId}": { "schema": { "$ref": "SalesTask" }, "description": "Sales action tasks" },
     "/logs/{logId}": { "schema": { "$ref": "ActionLog" }, "description": "Audit trail log records" },
+    "/email_sent_logs/{logId}": { "schema": { "$ref": "EmailSentLog" }, "description": "Sent email tracking records" },
     "/tabSettings/{settingId}": { "schema": { "$ref": "TeamTabSettings" }, "description": "Team-level tab permissions" },
     "/clients/{clientId}": { "schema": { "$ref": "Client" }, "description": "Clients directory" },
     "/teams/{teamId}": { "schema": { "$ref": "Team" }, "description": "Teams and departments" },

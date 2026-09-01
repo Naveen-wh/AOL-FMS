@@ -1,6 +1,6 @@
 {
   "name": "Sales Management System",
-  "description": "A comprehensive Sales Management System featuring role-based access control (Admin, Senior Manager, Manager, Team Lead, and Sales User) with hierarchical permissions (Editor, Contributor, Manager) for managing leads and workflows.",
+  "description": "A comprehensive Sales & Operations Management System with Firebase Firestore integration, featuring role-based access control with hierarchical permissions for managing orders, offers, clients, indents, and billing workflows.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

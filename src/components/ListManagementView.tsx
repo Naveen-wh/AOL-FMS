@@ -9,7 +9,7 @@ import WarehouseManagementView from "./WarehouseManagementView";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
 
 // PaymentBank type needs to be imported, assuming it is in types.ts
-import { User, Team, Product, Client, PaymentBank, ProductCategory, ProductGroup, Manufacturer, SalesLead, ProjectWorkflow, SalesTask, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, Role, AccessLevel, PaymentTerm, PaymentCreditPeriod, TaxRate } from "../types";
+import { User, Team, Product, Client, PaymentBank, ProductCategory, ProductGroup, Manufacturer, ProjectWorkflow, SalesTask, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, Role, AccessLevel, PaymentTerm, PaymentCreditPeriod, TaxRate } from "../types";
 import { INITIAL_TAX_RATES } from "../data";
 
 interface ListManagementViewProps {
@@ -23,10 +23,10 @@ interface ListManagementViewProps {
   groups: ProductGroup[];
   manufacturers: Manufacturer[];
   freightTerms: FreightTerm[];
+  deliveryTerms?: DeliveryTerm[];
   transporters: TransporterName[];
   warehouses: WarehouseManagedBy[];
   dispatchLocations: DispatchLocation[];
-  leads: SalesLead[];
   workflows: ProjectWorkflow[];
   tasks: SalesTask[];
   onAddProduct: (product: Omit<Product, "id" | "createdAt" | "createdByUserId">) => void;
@@ -44,6 +44,9 @@ interface ListManagementViewProps {
   onAddFreightTerm: (data: Omit<FreightTerm, "id" | "createdAt">) => void;
   onEditFreightTerm?: (id: string, name: string) => void;
   onDeleteFreightTerm: (id: string) => void;
+  onAddDeliveryTerm?: (data: Omit<DeliveryTerm, "id" | "createdAt">) => void;
+  onEditDeliveryTerm?: (id: string, name: string) => void;
+  onDeleteDeliveryTerm?: (id: string) => void;
   onAddTransporter: (data: Omit<TransporterName, "id" | "createdAt">) => void;
   onEditTransporter?: (id: string, name: string) => void;
   onDeleteTransporter: (id: string) => void;
@@ -97,13 +100,13 @@ export default function ListManagementView({
   groups,
   manufacturers,
   freightTerms,
+  deliveryTerms = [],
   transporters,
   warehouses,
   dispatchLocations,
   paymentTerms = [],
   paymentCreditPeriods = [],
   taxRates = [],
-  leads,
   workflows,
   tasks,
   onAddProduct,
@@ -121,6 +124,9 @@ export default function ListManagementView({
   onAddFreightTerm,
   onEditFreightTerm,
   onDeleteFreightTerm,
+  onAddDeliveryTerm,
+  onEditDeliveryTerm,
+  onDeleteDeliveryTerm,
   onAddTransporter,
   onEditTransporter,
   onDeleteTransporter,
@@ -365,6 +371,22 @@ export default function ListManagementView({
               onEdit={onEditFreightTerm}
               onDelete={onDeleteFreightTerm}
               placeholder="e.g. FOB, CIF, EXW..."
+              canAdd={canAddDropdowns}
+              canEdit={canEditDropdowns}
+              canDelete={canDeleteDropdowns}
+            />
+            <LocalDropdownSection
+              title="Delivery / Booking Term"
+              icon={Truck}
+              items={deliveryTerms && deliveryTerms.length > 0 ? deliveryTerms : [
+                { id: "dt-1", name: "Door Delivery", createdAt: "" },
+                { id: "dt-2", name: "Transporter Godown Delivery at Destination", createdAt: "" },
+                { id: "dt-3", name: "Party Vehicle (self Pickup)", createdAt: "" }
+              ]}
+              onAdd={onAddDeliveryTerm || (() => {})}
+              onEdit={onEditDeliveryTerm}
+              onDelete={onDeleteDeliveryTerm || (() => {})}
+              placeholder="e.g. Door Delivery, Party Vehicle (self Pickup)..."
               canAdd={canAddDropdowns}
               canEdit={canEditDropdowns}
               canDelete={canDeleteDropdowns}

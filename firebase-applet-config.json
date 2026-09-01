@@ -1,10 +1,10 @@
 {
-  "projectId": "aol-fms",
-  "appId": "1:53991941843:web:8b9c30eecc6f6cc8e59626",
-  "apiKey": "AIzaSyBMK0YFXAx7TAve7ZANpRjJHRtLQXfRrqg",
-  "authDomain": "aol-fms.firebaseapp.com",
-  "storageBucket": "aol-fms.firebasestorage.app",
-  "messagingSenderId": "53991941843",
-  "measurementId": "",
-  "firestoreDatabaseId": "aol-fms"
+"projectId": "aolfms-p",
+"appId":"1:842624825819:web:25cdf1069eef4147600ffe",
+"apiKey": "AIzaSyArsCzU-IPL6tsTtrRa4jE8Ygk9HQnW3Ys",
+"authDomain": "aolfms-p.firebaseapp.com",
+"storageBucket": "aolfms-p.firebasestorage.app",
+"messagingSenderId": "842624825819",
+"measurementId" : " ",
+"firestoreDatabaseId": "fmsdb"
 }

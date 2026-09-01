@@ -4,13 +4,14 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { User, OrderOffer, Role, PaymentBank, EmailTemplate, PaymentDetails, PaymentReceiptRecord, BadDebtor } from "../types";
-import { saveLog, savePaymentDetails, saveBadDebtor, deleteBadDebtorDoc } from "../lib/firebaseService";
+import { User, OrderOffer, Role, PaymentBank, EmailTemplate, PaymentDetails, PaymentReceiptRecord, BadDebtor, EmailSentLog, EmailSentStatusSummary, EmailDeliveryStatus } from "../types";
+import { saveLog, savePaymentDetails, saveBadDebtor, deleteBadDebtorDoc, saveEmailSentLog } from "../lib/firebaseService";
 import { auth } from "../firebase";
 import { openOrDownloadDocument } from "../lib/googleDriveService";
-import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
+import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
 import { formatDate } from "../utils";
 import { canViewOrderOffer } from "../data";
+import EmailSentStatusCell from "./EmailSentStatusCell";
 import Papa from "papaparse";
 import {
   Search,
@@ -89,10 +90,11 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
     const totalAmt = o.totalValue || 0;
     const receivedAmt = pDet ? pDet.amountReceived : 0;
     const pendingAmt = pDet ? pDet.pendingAmount : Math.max(0, totalAmt - receivedAmt);
-    const dueInfo = calculateDueDate(o.closedWonDetails?.dispatchDate, o.payment);
+    const actualDispatchDate = getOrderActualDispatchDate(o);
+    const dueInfo = calculateDueDate(actualDispatchDate, o.payment);
     const invNum = o.billingDetails?.invoiceNumber || "N/A";
     const poNum = o.closedWonDetails?.customerPoNumber || "N/A";
-    const dispDate = o.closedWonDetails?.dispatchDate ? formatDate(o.closedWonDetails.dispatchDate) : "N/A";
+    const dispDate = actualDispatchDate ? formatDate(actualDispatchDate) : "N/A";
     const dueDateColor = dueInfo.isOverdue ? "#dc2626" : "#1e293b";
 
     return `<tr style="background-color:#ffffff;">` +
@@ -124,7 +126,7 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
         `<tr style="background-color:#065f46; color:#ffffff; font-weight:bold; font-family:monospace; font-size:11px; text-transform:uppercase;">` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">INVOICE #</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">CUSTOMER PO #</th>` +
-          `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">EXPECTED DISPATCH DATE</th>` +
+          `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">ACTUAL DISPATCH DATE</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">DUE DATE</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:right; color:#ffffff; background-color:#065f46;">INVOICE AMOUNT</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:right; color:#ffffff; background-color:#065f46;">PAYMENT RECEIVED</th>` +
@@ -165,6 +167,13 @@ export function isOrderFullyPaid(order: OrderOffer, pDetails?: PaymentDetails): 
     return true;
   }
   return false;
+}
+
+/**
+ * Helper to get the Actual Dispatch Date filled by the billing team
+ */
+export function getOrderActualDispatchDate(order: OrderOffer): string | undefined {
+  return order.billingDetails?.actualDispatchDate || order.billingDetails?.dispatchDate;
 }
 
 /**
@@ -253,6 +262,7 @@ interface PaymentListViewProps {
   paymentBanks?: PaymentBank[];
   visibleSubTabs?: { [key: string]: string[] };
   emailTemplates?: EmailTemplate[];
+  emailSentLogs?: EmailSentLog[];
   paymentDetailsList?: PaymentDetails[];
   onNavigateToBilling?: (orderId: string) => void;
   teamPermissions?: { [tabId: string]: { view: boolean; edit: boolean; add: boolean } };
@@ -268,6 +278,7 @@ export default function PaymentListView({
   paymentBanks = [],
   visibleSubTabs,
   emailTemplates = [],
+  emailSentLogs = [],
   paymentDetailsList = [],
   onNavigateToBilling,
   teamPermissions,
@@ -279,6 +290,28 @@ export default function PaymentListView({
     role: Role.User,
     teamName: "Sales",
     email: "",
+  };
+
+  const getEffectivePaymentReminderStatus = (order: OrderOffer): EmailSentStatusSummary | undefined => {
+    if (emailSentLogs && emailSentLogs.length > 0) {
+      const logsForOrder = emailSentLogs
+        .filter((l) => l.orderId === order.id && (l.category === "payment_reminder" || l.category === "payment_reminder_consolidated"))
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      if (logsForOrder.length > 0) {
+        const latest = logsForOrder[0];
+        return {
+          to: latest.to,
+          cc: latest.cc,
+          bcc: latest.bcc,
+          status: latest.status,
+          timestamp: latest.timestamp,
+          subject: latest.subject,
+          error: latest.error,
+          sentByUserName: latest.senderUserName,
+        };
+      }
+    }
+    return order.paymentReminderEmailStatus;
   };
 
   const teamCanAdd = activeUser.role === Role.Admin || teamPermissions?.["payment_list"]?.add !== false;
@@ -735,7 +768,8 @@ export default function PaymentListView({
 
   // Helper to check if an order's payment due status is today or overdue (1 or more days)
   const isOrderDueTodayOrOverdue = (order: OrderOffer) => {
-    const dueInfo = calculateDueDate(order.closedWonDetails?.dispatchDate, order.payment);
+    const actualDispatchDate = getOrderActualDispatchDate(order);
+    const dueInfo = calculateDueDate(actualDispatchDate, order.payment);
     // daysRemaining is <= 0 when due today (0) or overdue (< 0, i.e. 1+ days overdue)
     return dueInfo.daysRemaining !== null && dueInfo.daysRemaining <= 0;
   };
@@ -774,6 +808,7 @@ export default function PaymentListView({
       const totalAmt = order.totalValue || 0;
       const receivedAmt = pDetails ? pDetails.amountReceived : 0;
       const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt - receivedAmt);
+      const actualDispatchDate = getOrderActualDispatchDate(order);
       const dueInfo = order.isBadDebtor && order.badDebtorRecord
         ? {
             dueDateFormatted: formatDate(order.badDebtorRecord.dueDate),
@@ -782,7 +817,7 @@ export default function PaymentListView({
             isOverdue: true,
             statusLabel: `${order.badDebtorRecord.overdueDays} Days Overdue (Bad Debt)`
           }
-        : calculateDueDate(order.closedWonDetails?.dispatchDate, order.payment);
+        : calculateDueDate(actualDispatchDate, order.payment);
 
       if (!map.has(key)) {
         map.set(key, {
@@ -861,6 +896,7 @@ export default function PaymentListView({
           billingDetails: {
             invoiceNumber: bd.invoiceNumber,
             invoiceDate: bd.invoiceDate,
+            actualDispatchDate: bd.invoiceDate,
             dispatchDate: bd.invoiceDate,
           },
           closedWonDetails: {
@@ -1033,6 +1069,8 @@ export default function PaymentListView({
       const ccClean = consolidatedCc ? cleanEmailList(consolidatedCc) : undefined;
       const bccClean = consolidatedBcc ? cleanEmailList(consolidatedBcc) : undefined;
 
+      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(consolidatedBody);
+
       const idToken = await auth.currentUser?.getIdToken();
       const res = await fetch("/api/send-order-email", {
         method: "POST",
@@ -1045,7 +1083,10 @@ export default function PaymentListView({
           cc: ccClean,
           bcc: bccClean,
           subject: consolidatedSubject,
-          text: consolidatedBody,
+          text: formattedHtml,
+          html: formattedHtml,
+          htmlBody: formattedHtml,
+          plainText: formattedText,
           senderUserId: activeUser?.id,
           category: "payment_reminder_consolidated"
         }),
@@ -1058,6 +1099,39 @@ export default function PaymentListView({
 
       for (let i = 0; i < consolidatedEmailParty.orders.length; i++) {
         const order = consolidatedEmailParty.orders[i];
+        const newSummary: EmailSentStatusSummary = {
+          to: toClean,
+          cc: ccClean,
+          bcc: bccClean,
+          status: "Sent",
+          timestamp: new Date().toISOString(),
+          subject: consolidatedSubject,
+          sentByUserName: activeUser?.name,
+        };
+
+        if (onEditOrder) {
+          await onEditOrder({
+            ...order,
+            paymentReminderEmailStatus: newSummary,
+          });
+        }
+
+        await saveEmailSentLog({
+          id: `log-consolidated-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
+          orderId: order.id,
+          companyName: order.companyName,
+          clientName: order.clientName,
+          to: toClean,
+          cc: ccClean,
+          bcc: bccClean,
+          subject: consolidatedSubject,
+          category: "payment_reminder_consolidated",
+          status: "Sent",
+          timestamp: new Date().toISOString(),
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+        });
+
         await saveLog({
           id: `log-consolidated-${Date.now()}-${i}`,
           timestamp: new Date().toISOString(),
@@ -1281,6 +1355,8 @@ export default function PaymentListView({
           continue;
         }
 
+        const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(body);
+
         const idToken = await auth.currentUser?.getIdToken();
         const res = await fetch("/api/send-order-email", {
           method: "POST",
@@ -1293,7 +1369,10 @@ export default function PaymentListView({
             cc: ccClean,
             bcc: bccClean,
             subject: subject,
-            text: body,
+            text: formattedHtml,
+            html: formattedHtml,
+            htmlBody: formattedHtml,
+            plainText: formattedText,
             senderUserId: activeUser?.id,
             category: "payment_reminder_consolidated"
           }),
@@ -1306,6 +1385,39 @@ export default function PaymentListView({
 
         for (let j = 0; j < party.orders.length; j++) {
           const order = party.orders[j];
+          const newSummary: EmailSentStatusSummary = {
+            to: toClean,
+            cc: ccClean,
+            bcc: bccClean,
+            status: "Sent",
+            timestamp: new Date().toISOString(),
+            subject: subject,
+            sentByUserName: activeUser?.name,
+          };
+
+          if (onEditOrder) {
+            await onEditOrder({
+              ...order,
+              paymentReminderEmailStatus: newSummary,
+            });
+          }
+
+          await saveEmailSentLog({
+            id: `log-bulk-consolidated-${Date.now()}-${i}-${j}-${Math.random().toString(36).substring(2, 6)}`,
+            orderId: order.id,
+            companyName: order.companyName,
+            clientName: order.clientName,
+            to: toClean,
+            cc: ccClean,
+            bcc: bccClean,
+            subject: subject,
+            category: "payment_reminder_consolidated",
+            status: "Sent",
+            timestamp: new Date().toISOString(),
+            senderUserId: activeUser?.id,
+            senderUserName: activeUser?.name,
+          });
+
           await saveLog({
             id: `log-bulk-consolidated-${Date.now()}-${i}-${j}`,
             timestamp: new Date().toISOString(),
@@ -1652,8 +1764,9 @@ export default function PaymentListView({
     try {
       for (let i = 0; i < selectedList.length; i++) {
         const order = selectedList[i];
+        const actualDispatchDate = getOrderActualDispatchDate(order);
         const dueInfo = calculateDueDate(
-          order.closedWonDetails?.dispatchDate,
+          actualDispatchDate,
           order.payment
         );
 
@@ -1693,7 +1806,7 @@ export default function PaymentListView({
             payment: order.payment || "",
             paymentTermsOffer: order.paymentTermsOffer || "",
             paymentCreditPeriod: order.paymentCreditPeriod || "",
-            dispatchDate: order.closedWonDetails?.dispatchDate ? formatDate(order.closedWonDetails.dispatchDate) : "",
+            dispatchDate: actualDispatchDate ? formatDate(actualDispatchDate) : "",
             ...hierarchy,
           });
         };
@@ -1713,6 +1826,8 @@ export default function PaymentListView({
           throw new Error(`No recipient email found for client ${order.clientName || order.companyName}`);
         }
 
+        const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(body);
+
         const idToken = await auth.currentUser?.getIdToken();
         const res = await fetch("/api/send-order-email", {
           method: "POST",
@@ -1721,19 +1836,62 @@ export default function PaymentListView({
             "Authorization": `Bearer ${idToken || ""}`
           },
           body: JSON.stringify({
+            orderId: order.id,
+            companyName: order.companyName,
+            clientName: order.clientName,
             to: dynamicTo,
             cc: dynamicCc,
             bcc: dynamicBcc,
             subject,
-            text: body,
+            text: formattedHtml,
+            html: formattedHtml,
+            htmlBody: formattedHtml,
+            plainText: formattedText,
             senderUserId: activeUser?.id,
+            senderUserName: activeUser?.name,
             category: "payment_reminder"
           }),
         });
 
+        const resData = await res.json().catch(() => ({}));
+        const deliveryStatus: EmailDeliveryStatus = res.ok ? "Sent" : "Failed";
+
+        const newSummary: EmailSentStatusSummary = {
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          status: deliveryStatus,
+          timestamp: new Date().toISOString(),
+          subject,
+          error: res.ok ? undefined : resData.message,
+          sentByUserName: activeUser?.name,
+        };
+
+        onEditOrder({
+          ...order,
+          paymentReminderEmailStatus: newSummary,
+        });
+
+        const logId = `log-remind-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
+        await saveEmailSentLog({
+          id: logId,
+          orderId: order.id,
+          companyName: order.companyName,
+          clientName: order.clientName,
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          subject,
+          category: "payment_reminder",
+          status: deliveryStatus,
+          timestamp: new Date().toISOString(),
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          error: res.ok ? undefined : resData.message,
+        });
+
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.message || "Failed to send payment reminder email.");
+          throw new Error(resData.message || "Failed to send payment reminder email.");
         }
 
         await saveLog({
@@ -2319,7 +2477,7 @@ export default function PaymentListView({
                                           <th className="p-2.5">Invoice #</th>
                                           <th className="p-2.5">PO #</th>
                                           <th className="p-2.5">Sales Person</th>
-                                          <th className="p-2.5">Expected Dispatch Date</th>
+                                          <th className="p-2.5">Actual Dispatch Date</th>
                                           <th className="p-2.5">Due Date & Status</th>
                                           <th className="p-2.5 text-right">Invoice Amount</th>
                                           <th className="p-2.5 text-right">Payment Received</th>
@@ -2334,7 +2492,8 @@ export default function PaymentListView({
                                           const tot = o.totalValue || 0;
                                           const rec = pDet ? pDet.amountReceived : 0;
                                           const pend = pDet ? pDet.pendingAmount : Math.max(0, tot - rec);
-                                          const due = calculateDueDate(o.closedWonDetails?.dispatchDate, o.payment);
+                                          const actualDispatchDate = getOrderActualDispatchDate(o);
+                                          const due = calculateDueDate(actualDispatchDate, o.payment);
 
                                           return (
                                             <tr key={o.id} className="hover:bg-slate-50">
@@ -2350,8 +2509,10 @@ export default function PaymentListView({
                                                   <span className="font-semibold text-slate-800">{getAssignedUserName(o.assignedToUserId)}</span>
                                                 </div>
                                               </td>
-                                              <td className="p-2.5 text-slate-500 text-[11px]">
-                                                {o.closedWonDetails?.dispatchDate ? formatDate(o.closedWonDetails.dispatchDate) : "N/A"}
+                                              <td className="p-2.5 text-slate-600 text-[11px] font-mono">
+                                                {actualDispatchDate ? formatDate(actualDispatchDate) : (
+                                                  <span className="text-slate-400 italic text-[10px]">Pending Dispatch</span>
+                                                )}
                                               </td>
                                               <td className="p-2.5 font-mono">
                                                 <span className={due.isOverdue ? "text-rose-600 font-bold" : "text-slate-800 font-semibold"}>
@@ -2365,7 +2526,22 @@ export default function PaymentListView({
                                               <td className="p-2.5 text-right font-mono font-bold text-emerald-700">₹{rec.toLocaleString()}</td>
                                               <td className="p-2.5 text-right font-mono font-extrabold text-rose-600">₹{pend.toLocaleString()}</td>
                                               <td className="p-2.5 text-center">
-                                                {o.billingDetails?.invoiceFileUrl ? (
+                                                {o.billingDetails?.invoiceAttachments && o.billingDetails.invoiceAttachments.length > 0 ? (
+                                                  <div className="flex flex-wrap justify-center gap-1">
+                                                    {o.billingDetails.invoiceAttachments.map((att, attIdx) => (
+                                                      <button
+                                                        key={attIdx}
+                                                        type="button"
+                                                        onClick={() => openOrDownloadDocument(att.url, att.name || `invoice_${attIdx + 1}.pdf`)}
+                                                        className="inline-flex items-center gap-1 text-[9.5px] font-mono font-bold text-emerald-700 hover:text-emerald-900 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 cursor-pointer"
+                                                        title={att.name}
+                                                      >
+                                                        <ExternalLink size={9} />
+                                                        <span className="truncate max-w-[80px]">{att.name || `Invoice ${attIdx + 1}`}</span>
+                                                      </button>
+                                                    ))}
+                                                  </div>
+                                                ) : o.billingDetails?.invoiceFileUrl ? (
                                                   <button
                                                     type="button"
                                                     onClick={() => openOrDownloadDocument(o.billingDetails?.invoiceFileUrl, o.billingDetails?.invoiceFileName || "invoice.pdf")}
@@ -2982,7 +3158,7 @@ export default function PaymentListView({
                                           <th className="p-2.5">Invoice #</th>
                                           <th className="p-2.5">PO #</th>
                                           <th className="p-2.5">Sales Person</th>
-                                          <th className="p-2.5">Expected Dispatch Date</th>
+                                          <th className="p-2.5">Actual Dispatch Date</th>
                                           <th className="p-2.5">Due Date</th>
                                           <th className="p-2.5 text-right">Invoice Amount</th>
                                           <th className="p-2.5 text-right">Payment Received</th>
@@ -2996,7 +3172,8 @@ export default function PaymentListView({
                                           const tot = o.totalValue || 0;
                                           const rec = pDet ? pDet.amountReceived : 0;
                                           const pend = pDet ? pDet.pendingAmount : Math.max(0, tot - rec);
-                                          const due = calculateDueDate(o.closedWonDetails?.dispatchDate, o.payment);
+                                          const actualDispatchDate = getOrderActualDispatchDate(o);
+                                          const due = calculateDueDate(actualDispatchDate, o.payment);
 
                                           return (
                                             <tr key={o.id} className="hover:bg-slate-50">
@@ -3012,8 +3189,10 @@ export default function PaymentListView({
                                                   <span className="font-semibold text-slate-800">{getAssignedUserName(o.assignedToUserId)}</span>
                                                 </div>
                                               </td>
-                                              <td className="p-2.5 text-slate-500 text-[11px]">
-                                                {o.closedWonDetails?.dispatchDate ? formatDate(o.closedWonDetails.dispatchDate) : "N/A"}
+                                              <td className="p-2.5 text-slate-600 text-[11px] font-mono">
+                                                {actualDispatchDate ? formatDate(actualDispatchDate) : (
+                                                  <span className="text-slate-400 italic text-[10px]">Pending Dispatch</span>
+                                                )}
                                               </td>
                                               <td className="p-2.5 font-mono font-semibold">
                                                 <span className={due.isOverdue ? "text-rose-600 font-bold" : "text-slate-800"}>
@@ -3435,17 +3614,18 @@ export default function PaymentListView({
                       <th className="p-4 text-right">Order Amount</th>
                       <th className="p-4 text-right">Amount Received</th>
                       <th className="p-4 text-right">Pending Amount</th>
-                      <th className="p-4">Expected Dispatch Date</th>
+                      <th className="p-4">Actual Dispatch Date</th>
                       <th className="p-4">Payment Terms / Days</th>
                       <th className="p-4">Calculated Due Date</th>
                       <th className="p-4 text-center">Due Status</th>
+                      <th className="p-4">Email Sent Status</th>
                       <th className="p-4 text-center">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-sans">
                     {reminderOrders.map((order) => {
                       const isSelected = !!selectedOrderIds[order.id];
-                      const dispatchDateStr = order.closedWonDetails?.dispatchDate;
+                      const dispatchDateStr = getOrderActualDispatchDate(order);
                       const paymentTermsStr = order.payment;
                       const dueInfo = calculateDueDate(dispatchDateStr, paymentTermsStr);
 
@@ -3590,6 +3770,14 @@ export default function PaymentListView({
                             )}
                           </td>
 
+                          {/* Email Sent Status (Read-only for payment reminders) */}
+                          <td className="p-4 min-w-[200px]">
+                            <EmailSentStatusCell
+                              statusSummary={getEffectivePaymentReminderStatus(order)}
+                              tableType="payment_reminder"
+                            />
+                          </td>
+
                           {/* Action button for single row */}
                           <td className="p-4 text-center">
                             <button
@@ -3676,9 +3864,10 @@ export default function PaymentListView({
                       const receivedAmt = paymentRec ? paymentRec.amountReceived : totalAmt;
                       const utr = paymentRec?.utrId || "N/A";
                       const pDate = paymentRec?.paymentReceivedDate ? formatDate(new Date(paymentRec.paymentReceivedDate)) : "N/A";
+                      const actualDispatchDate = getOrderActualDispatchDate(order);
 
                       const dueInfo = calculateDueDate(
-                        order.closedWonDetails?.dispatchDate,
+                        actualDispatchDate,
                         order.payment
                       );
 
@@ -3762,7 +3951,28 @@ export default function PaymentListView({
 
                             {/* Invoice File */}
                             <td className="p-4">
-                              {order.billingDetails?.invoiceFileUrl ? (
+                              {order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {order.billingDetails.invoiceAttachments.map((att, attIdx) => (
+                                    <a
+                                      key={attIdx}
+                                      href="#"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        openOrDownloadDocument(att.url, att.name || `invoice_${attIdx + 1}.pdf`);
+                                      }}
+                                      className="inline-flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-0.5 px-2 rounded-lg text-[9.5px] font-mono transition-all border border-indigo-100"
+                                      title={att.name}
+                                    >
+                                      <FileText size={10} />
+                                      <span className="truncate max-w-[90px] inline-block align-bottom">
+                                        {att.name || `Invoice ${attIdx + 1}`}
+                                      </span>
+                                      <ExternalLink size={9} />
+                                    </a>
+                                  ))}
+                                </div>
+                              ) : order.billingDetails?.invoiceFileUrl ? (
                                 <a
                                   href="#"
                                   onClick={(e) => {
@@ -3917,7 +4127,7 @@ export default function PaymentListView({
                                         <span>Dispatch & Transporter Info</span>
                                       </div>
                                       <div className="text-xs space-y-1 font-mono text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-150">
-                                        <div><strong>Expected Dispatch Date:</strong> {order.closedWonDetails?.dispatchDate || "N/A"}</div>
+                                        <div><strong>Actual Dispatch Date:</strong> {getOrderActualDispatchDate(order) ? formatDate(getOrderActualDispatchDate(order)!) : (order.closedWonDetails?.dispatchDate ? `${formatDate(order.closedWonDetails.dispatchDate)} (Expected)` : "N/A")}</div>
                                         <div><strong>Transporter:</strong> {order.closedWonDetails?.transporterName || "N/A"}</div>
                                         <div><strong>LR / Bilty #:</strong> {order.closedWonDetails?.lrNumber || "N/A"}</div>
                                         <div><strong>Payment Terms:</strong> {order.payment || "N/A"}</div>

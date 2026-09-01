@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { User, Role, AccessLevel, SalesLead, ProjectWorkflow, SalesTask, ActionLog, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, EmailSendingConfig, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, EmailLimitsConfig, EmailDailyCounts, TaxRate, BadDebtor } from "../types";
+import { User, Role, AccessLevel, ProjectWorkflow, SalesTask, ActionLog, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, EmailSendingConfig, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, EmailLimitsConfig, EmailDailyCounts, TaxRate, BadDebtor, EmailSentLog } from "../types";
 import {
   auth,
   db,
@@ -20,14 +20,14 @@ import {
 } from "../firebase";
 import {
   INITIAL_USERS,
-  INITIAL_LEADS,
   INITIAL_WORKFLOWS,
-  INITIAL_TASKS,
-  INITIAL_LOGS,
   INITIAL_PRODUCTS,
   INITIAL_ORDERS,
   INITIAL_TAX_RATES
 } from "../data";
+
+const INITIAL_TASKS: SalesTask[] = [];
+const INITIAL_LOGS: ActionLog[] = [];
 
 // --- Firestore Error Handling per Firebase Integration Skill ---
 
@@ -79,30 +79,36 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 /**
- * Remove properties with undefined values from a flat object,
- * so Firestore doesn't throw unsupported field errors.
+ * Recursively removes properties with undefined values from objects and arrays,
+ * so Firestore never encounters unsupported undefined field values in nested structures.
  */
-export function cleanUndefined<T extends Record<string, any>>(obj: T): T {
-  const result = { ...obj };
-  Object.keys(result).forEach((key) => {
-    if (result[key] === undefined) {
-      delete result[key];
+export function cleanUndefined<T>(val: T): T {
+  if (val === null || val === undefined) {
+    return val;
+  }
+  if (Array.isArray(val)) {
+    return val
+      .filter((item) => item !== undefined)
+      .map((item) => cleanUndefined(item)) as unknown as T;
+  }
+  if (typeof val === "object" && !(val instanceof Date)) {
+    const result: Record<string, any> = {};
+    for (const key of Object.keys(val as Record<string, any>)) {
+      const v = (val as Record<string, any>)[key];
+      if (v !== undefined) {
+        result[key] = cleanUndefined(v);
+      }
     }
-  });
-  return result;
+    return result as T;
+  }
+  return val;
 }
 
 // Mapping from old string IDs to email keys to implement "role assigned to email id"
 const ID_TO_EMAIL: Record<string, string> = {
-  "admin-1": "robert.sterling@apex.com",
-  "sr-mgr-1": "sarah.jenkins@apex.com",
-  "mgr-1": "michael.chang@apex.com",
-  "mgr-2": "elena.rostova@apex.com",
-  "tl-1": "tina.lopez@apex.com",
-  "tl-2": "tom.harris@apex.com",
-  "user-1": "john.doe@apex.com",
-  "user-2": "jane.smith@apex.com",
-  "user-3": "jack.wilson@apex.com"
+  "admin-1": "naveen@chsurya.in",
+  "admin-2": "gcp@aromaorganic.in",
+  "admin-3": "velu@aromaorganic.in"
 };
 
 // Helper: map a user ID or email to email
@@ -179,38 +185,13 @@ export async function seedDropdownsIfEmpty(): Promise<void> {
     const collectionsToSeed = [
       {
         col: "freight_terms",
-        items: ["FOB (Free on Board)", "CIF (Cost, Insurance, Freight)", "EXW (Ex Works)", "DDP (Delivered Duty Paid)"],
+        items: ["FOR Destination", "Ex-Works Factory", "FOB", "CIF"],
         prefix: "ft"
       },
       {
-        col: "transporters",
-        items: ["DHL Express", "FedEx", "UPS", "Apex Logistics"],
-        prefix: "tr"
-      },
-      {
-        col: "warehouses",
-        items: ["In-House Team", "Partner 3PL (Apex Hub)", "West Coast Fulfillment"],
-        prefix: "wh"
-      },
-      {
-        col: "dispatch_locations",
-        items: ["Chicago Hub", "Los Angeles Facility", "New York Depot", "Dallas Distribution Center"],
-        prefix: "dl"
-      },
-      {
-        col: "product_categories",
-        items: ["Cloud Services", "Software", "AI Solutions", "Hardware"],
-        prefix: "cat"
-      },
-      {
-        col: "product_groups",
-        items: ["Infrastructure", "Applications", "Analytics", "Devices"],
-        prefix: "grp"
-      },
-      {
-        col: "manufacturers",
-        items: ["Apex Systems", "Apex AI Labs", "External Partner Corp"],
-        prefix: "man"
+        col: "delivery_terms",
+        items: ["Door Delivery", "Transporter Godown Delivery at Destination", "Party Vehicle (self Pickup)"],
+        prefix: "dt"
       }
     ];
 
@@ -218,7 +199,7 @@ export async function seedDropdownsIfEmpty(): Promise<void> {
       collectionsToSeed.map(async ({ col, items, prefix }) => {
         try {
           const snap = await getDocs(collection(db, col));
-          if (snap.empty) {
+          if (snap.empty && items.length > 0) {
             await Promise.all(
               items.map((name, idx) =>
                 setDoc(doc(db, col, `${prefix}-${idx + 1}`), {
@@ -234,124 +215,6 @@ export async function seedDropdownsIfEmpty(): Promise<void> {
         }
       })
     );
-
-    // Seed Clients in parallel
-    try {
-      const clientsSnap = await getDocs(collection(db, "clients"));
-      if (clientsSnap.empty) {
-        const defaultClients: Client[] = [
-          {
-            id: "client-1",
-            fullName: "Amanda Ramirez",
-            companyName: "Vanguard Tech Solutions",
-            email: "amanda@vanguardtech.com",
-            phone: "+1 (555) 234-5678",
-            gst: "29AABCT1332L1ZS",
-            city: "San Francisco",
-            pincode: "94105",
-            address: "100 Market St, Suite 400",
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: "client-2",
-            fullName: "Marcus Sterling",
-            companyName: "Horizon Digital",
-            email: "msterling@horizondigital.org",
-            phone: "+1 (555) 876-5432",
-            gst: "27AABCH4451M1ZT",
-            city: "Seattle",
-            pincode: "98101",
-            address: "500 5th Ave, Floor 12",
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: "client-3",
-            fullName: "Sarah Peterson",
-            companyName: "BioMedical Systems Corp",
-            email: "speterson@biomedicalsys.com",
-            phone: "+1 (555) 432-1098",
-            gst: "33AABCX9921K1ZU",
-            city: "Boston",
-            pincode: "02108",
-            address: "200 Technology Square",
-            createdAt: new Date().toISOString()
-          }
-        ];
-        await Promise.all(
-          defaultClients.map((client) =>
-            setDoc(doc(db, "clients", client.id), cleanUndefined(client))
-          )
-        );
-      }
-    } catch (err) {
-      console.error("[FirebaseService] Error seeding clients:", err);
-    }
-
-    // Seed Payment Banks in parallel
-    try {
-      const pbSnap = await getDocs(collection(db, "payment_banks"));
-      if (pbSnap.empty) {
-        const defaultBanks: PaymentBank[] = [
-          {
-            id: "bank-1",
-            bankName: "JPMorgan Chase Bank",
-            accountHolderName: "Apex Sales Corp",
-            accountNumber: "123456789012",
-            ifscCode: "CHASUS33XXX",
-            branch: "Wall Street Main Branch",
-            address: "270 Park Ave, New York, NY",
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: "bank-2",
-            bankName: "Bank of America",
-            accountHolderName: "Apex Sales Corp",
-            accountNumber: "987654321098",
-            ifscCode: "BOFAUS3NXXX",
-            branch: "Financial District Branch",
-            address: "100 Federal St, Boston, MA",
-            createdAt: new Date().toISOString()
-          }
-        ];
-        await Promise.all(
-          defaultBanks.map((b) =>
-            setDoc(doc(db, "payment_banks", b.id), cleanUndefined(b))
-          )
-        );
-      }
-    } catch (err) {
-      console.error("[FirebaseService] Error seeding payment_banks:", err);
-    }
-
-    // Seed Email Templates in parallel
-    try {
-      const etSnap = await getDocs(collection(db, "email_templates"));
-      if (etSnap.empty) {
-        const defaultTemplates: EmailTemplate[] = [
-          {
-            id: "tmpl-1",
-            name: "Lead Introduction & Welcome",
-            subject: "Welcome to Apex Solutions - Introduction & Next Steps",
-            body: "Dear {{clientName}},\n\nThank you for reaching out to Apex Solutions! We received your inquiry regarding {{companyName}}.\n\nWe are excited to learn more about your requirements and explore how our services can help streamline your operations.\n\nBest regards,\nSales Team",
-            createdAt: new Date().toISOString()
-          },
-          {
-            id: "tmpl-2",
-            name: "Proposal & Quotation Follow-up",
-            subject: "Proposal Update for {{companyName}}",
-            body: "Hello {{clientName}},\n\nI hope this email finds you well. I wanted to follow up on the proposal we shared recently.\n\nPlease let us know if you have any questions or need adjustments to the commercial terms.\n\nWarm regards,\nSales Team",
-            createdAt: new Date().toISOString()
-          }
-        ];
-        await Promise.all(
-          defaultTemplates.map((et) =>
-            setDoc(doc(db, "email_templates", et.id), cleanUndefined(et))
-          )
-        );
-      }
-    } catch (err) {
-      console.error("[FirebaseService] Error seeding email_templates:", err);
-    }
   } catch (err) {
     console.error("[FirebaseService] Error seeding dropdowns:", err);
   }
@@ -378,7 +241,7 @@ export async function seedDatabaseIfEmpty(): Promise<void> {
     await seedProductsIfEmpty();
     await seedFaqsIfEmpty();
 
-    // 1. Seed Users (document key is lowercase email)
+    // 1. Seed Initial Users (document key is lowercase email)
     const seededUsers: User[] = INITIAL_USERS.map((user) => {
       const email = user.email.toLowerCase();
       return {
@@ -393,55 +256,12 @@ export async function seedDatabaseIfEmpty(): Promise<void> {
       await setDoc(doc(db, "users", u.email), cleanUndefined(u));
     }
 
-    // 2. Seed Workflows
+    // 2. Seed Workflows if available
     for (const w of INITIAL_WORKFLOWS) {
       await setDoc(doc(db, "workflows", w.id), cleanUndefined(w));
     }
 
-    // 3. Seed Leads (with mapped user references)
-    const seededLeads: SalesLead[] = INITIAL_LEADS.map((lead) => ({
-      ...lead,
-      assignedToUserId: mapIdToEmail(lead.assignedToUserId),
-      createdByUserId: mapIdToEmail(lead.createdByUserId)
-    }));
-
-    for (const l of seededLeads) {
-      await setDoc(doc(db, "leads", l.id), cleanUndefined(l));
-    }
-
-    // 4. Seed Tasks
-    const seededTasks: SalesTask[] = INITIAL_TASKS.map((task) => ({
-      ...task,
-      assignedToUserId: mapIdToEmail(task.assignedToUserId),
-      createdByUserId: mapIdToEmail(task.createdByUserId)
-    }));
-
-    for (const t of seededTasks) {
-      await setDoc(doc(db, "tasks", t.id), cleanUndefined(t));
-    }
-
-    // 5. Seed Action Logs
-    const seededLogs: ActionLog[] = INITIAL_LOGS.map((log) => ({
-      ...log,
-      userId: mapIdToEmail(log.userId)
-    }));
-
-    for (const log of seededLogs) {
-      await setDoc(doc(db, "logs", log.id), cleanUndefined(log));
-    }
-
-    // 6. Seed Orders
-    const seededOrders: OrderOffer[] = INITIAL_ORDERS.map((order) => ({
-      ...order,
-      assignedToUserId: mapIdToEmail(order.assignedToUserId),
-      createdByUserId: mapIdToEmail(order.createdByUserId)
-    }));
-
-    for (const ord of seededOrders) {
-      await setDoc(doc(db, "orders", ord.id), cleanUndefined(ord));
-    }
-
-    console.log("[FirebaseService] Seeding completed successfully!");
+    console.log("[FirebaseService] Initial database seeding completed successfully!");
   } catch (err) {
     console.error("[FirebaseService] Error during seeding:", err);
     handleFirestoreError(err, OperationType.WRITE, path);
@@ -496,7 +316,6 @@ export async function syncUserProfile(email: string, displayName: string, avatar
     normalizedEmail === "naveen@chsurya.in" ||
     normalizedEmail === "whirlpoolveen@gmail.com" ||
     normalizedEmail === "velu@aromaorganic.in" ||
-    normalizedEmail === "robert.sterling@apex.com" ||
     normalizedEmail === "gcp@aromaorganic.in"
   ) {
     const adminUser: User = {
@@ -544,22 +363,6 @@ export function subscribeCollection<T>(
 }
 
 // Custom specialized writers/updaters
-
-export async function saveLead(lead: SalesLead): Promise<void> {
-  try {
-    await setDoc(doc(db, "leads", lead.id), cleanUndefined(lead));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `leads/${lead.id}`);
-  }
-}
-
-export async function deleteLeadDoc(leadId: string): Promise<void> {
-  try {
-    await deleteDoc(doc(db, "leads", leadId));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `leads/${leadId}`);
-  }
-}
 
 export async function saveTask(task: SalesTask): Promise<void> {
   try {
@@ -822,6 +625,22 @@ export async function deleteFreightTermDoc(id: string): Promise<void> {
   }
 }
 
+export async function saveDeliveryTerm(item: DeliveryTerm): Promise<void> {
+  try {
+    await setDoc(doc(db, "delivery_terms", item.id), cleanUndefined(item));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `delivery_terms/${item.id}`);
+  }
+}
+
+export async function deleteDeliveryTermDoc(id: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, "delivery_terms", id));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `delivery_terms/${id}`);
+  }
+}
+
 export async function saveTransporter(item: TransporterName): Promise<void> {
   try {
     await setDoc(doc(db, "transporters", item.id), cleanUndefined(item));
@@ -924,6 +743,7 @@ export async function getEmailSendingConfig(): Promise<EmailSendingConfig> {
       const data = docSnap.data();
       return {
         mode: data.mode || "single_setted_id",
+        gasWebUrl: data.gasWebUrl || "",
         singleConfig: data.singleConfig || {},
         userConfigs: data.userConfigs || {},
         updatedAt: data.updatedAt,
@@ -932,6 +752,7 @@ export async function getEmailSendingConfig(): Promise<EmailSendingConfig> {
     }
     return {
       mode: "single_setted_id",
+      gasWebUrl: "",
       singleConfig: {},
       userConfigs: {},
     };
@@ -939,6 +760,7 @@ export async function getEmailSendingConfig(): Promise<EmailSendingConfig> {
     console.error("Error getting email_sending_config settings:", err);
     return {
       mode: "single_setted_id",
+      gasWebUrl: "",
       singleConfig: {},
       userConfigs: {},
     };
@@ -1143,93 +965,46 @@ export async function getEmailDailyCounts(dateStr: string): Promise<EmailDailyCo
   }
 }
 
-// Bad Debtors Firestore CRUD with LocalStorage Fallback & Event Sync
-const LOCAL_BAD_DEBTORS_KEY = "AOL_FMS_BAD_DEBTORS_CACHE";
-
-function getLocalBadDebtors(): BadDebtor[] {
-  try {
-    const raw = localStorage.getItem(LOCAL_BAD_DEBTORS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    return [];
-  }
-}
-
-function setLocalBadDebtors(list: BadDebtor[]) {
-  try {
-    localStorage.setItem(LOCAL_BAD_DEBTORS_KEY, JSON.stringify(list));
-    window.dispatchEvent(new CustomEvent("bad_debtors_updated", { detail: list }));
-  } catch (e) {
-    console.error("Failed to save local bad debtors cache:", e);
-  }
-}
-
+// Bad Debtors Firestore CRUD
 export function subscribeBadDebtors(onUpdate: (data: BadDebtor[]) => void) {
-  // Pass initial local cache immediately for responsive UX
-  const initialLocal = getLocalBadDebtors();
-  if (initialLocal.length > 0) {
-    onUpdate(initialLocal);
-  }
-
-  const handleLocalUpdate = (e: Event) => {
-    const customEvt = e as CustomEvent<BadDebtor[]>;
-    if (customEvt.detail) {
-      onUpdate(customEvt.detail);
-    }
-  };
-  window.addEventListener("bad_debtors_updated", handleLocalUpdate);
-
-  const unsubFirestore = subscribeCollection<BadDebtor>("bad_debtors", (firestoreList) => {
-    const currentLocal = getLocalBadDebtors();
-    if (firestoreList && firestoreList.length > 0) {
-      const localMap = new Map<string, BadDebtor>();
-      currentLocal.forEach((bd) => localMap.set(bd.id, bd));
-      firestoreList.forEach((bd) => localMap.set(bd.id, bd));
-      const merged = Array.from(localMap.values());
-      setLocalBadDebtors(merged);
-      onUpdate(merged);
-    } else {
-      onUpdate(currentLocal);
-    }
-  }, "createdAt");
-
-  return () => {
-    window.removeEventListener("bad_debtors_updated", handleLocalUpdate);
-    unsubFirestore();
-  };
+  return subscribeCollection<BadDebtor>("bad_debtors", onUpdate, "createdAt");
 }
 
 export async function saveBadDebtor(debtor: BadDebtor): Promise<void> {
-  // 1. Save to local cache immediately
-  const localList = getLocalBadDebtors();
-  const existingIdx = localList.findIndex((b) => b.id === debtor.id);
-  if (existingIdx >= 0) {
-    localList[existingIdx] = { ...localList[existingIdx], ...debtor };
-  } else {
-    localList.unshift(debtor);
-  }
-  setLocalBadDebtors(localList);
-
-  // 2. Persist to Firestore
   try {
     await setDoc(doc(db, "bad_debtors", debtor.id), cleanUndefined(debtor), { merge: true });
-  } catch (err: any) {
-    console.warn(`[FirebaseService] Firestore save for bad_debtor '${debtor.id}' fallback to local cache:`, err?.message || err);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `bad_debtors/${debtor.id}`);
   }
 }
 
 export async function deleteBadDebtorDoc(id: string): Promise<void> {
-  // 1. Remove from local cache immediately
-  const localList = getLocalBadDebtors().filter((b) => b.id !== id);
-  setLocalBadDebtors(localList);
-
-  // 2. Remove from Firestore
   try {
     await deleteDoc(doc(db, "bad_debtors", id));
-  } catch (err: any) {
-    console.warn(`[FirebaseService] Firestore delete for bad_debtor '${id}' fallback:`, err?.message || err);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `bad_debtors/${id}`);
   }
 }
+
+// Email Sent Logs Firestore CRUD
+export function subscribeEmailSentLogs(onUpdate: (data: EmailSentLog[]) => void) {
+  return subscribeCollection<EmailSentLog>("email_sent_logs", onUpdate, "timestamp");
+}
+
+export async function saveEmailSentLog(log: EmailSentLog): Promise<void> {
+  try {
+    const cleaned = cleanUndefined(log);
+    await setDoc(doc(db, "email_sent_logs", log.id), cleaned, { merge: true });
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.warn(`[FirebaseService] Could not save email sent log to Firestore (${log.id}):`, msg);
+    if (msg.includes("permission") || msg.includes("Missing or insufficient permissions") || err?.code === "permission-denied") {
+      console.warn(`[FirebaseService] Permission restricted on remote database for email_sent_logs/${log.id}.`);
+      return;
+    }
+  }
+}
+
 
 
 

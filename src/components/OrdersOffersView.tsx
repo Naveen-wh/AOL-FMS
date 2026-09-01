@@ -4,20 +4,22 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { User, OrderOffer, OrderItem, Product, Client, Team, AccessLevel, Role, PaymentBank, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, PaymentTerm, PaymentCreditPeriod, TaxRate, BillingDetails, ClosedWonDetails, PaymentReceiptRecord, PaymentDetails } from "../types";
+import { User, OrderOffer, OrderItem, Product, Client, Team, AccessLevel, Role, PaymentBank, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, PaymentTerm, PaymentCreditPeriod, TaxRate, BillingDetails, ClosedWonDetails, PaymentReceiptRecord, PaymentDetails, EmailSentLog, EmailSentStatusSummary, EmailDeliveryStatus, PoAttachment } from "../types";
 import { canEditOrderOffer, canDeleteOrderOffer, canViewOrderOffer, getReportingTreeUsers, INITIAL_TAX_RATES } from "../data";
-import { uploadPOToDrive, hasDriveConnection, ensureGoogleDriveAccess, getSharedDriveSettings, isUserTeamAllowedForDrive, DriveSettings, openOrDownloadDocument } from "../lib/googleDriveService";
+import { uploadPOToDrive, getSharedDriveSettings, isUserTeamAllowedForDrive, DriveSettings, openOrDownloadDocument } from "../lib/googleDriveService";
 import {
   getEmailAutoSelectSettings,
   saveEmailAutoSelectSettings,
   savePaymentDetails,
+  saveEmailSentLog,
 } from "../lib/firebaseService";
 import { auth } from "../firebase";
-import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
-import { Plus, Search, Edit2, Trash2, ShieldAlert, Lock, Unlock, Filter, IndianRupee, Calendar, X, Check, HelpCircle, Building2, ShoppingCart, Percent, ShoppingBag, Upload, FileText, Loader2, Mail, FileSpreadsheet, Eye, Phone, User as UserIcon, RefreshCw } from "lucide-react";
+import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
+import { Plus, Search, Edit2, Trash2, ShieldAlert, Lock, Unlock, Filter, IndianRupee, Calendar, X, Check, HelpCircle, Building2, ShoppingCart, Percent, ShoppingBag, Upload, FileText, Loader2, Mail, FileSpreadsheet, Eye, Phone, User as UserIcon, RefreshCw, ChevronDown, Layers, TrendingUp, BarChart3, Clock, CheckCircle2, CalendarDays, ArrowUpDown } from "lucide-react";
 import InlineDeleteConfirm from "./InlineDeleteConfirm";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
-import { formatDate } from "../utils";
+import { formatDate, formatCompactRupees, formatQuantityMT } from "../utils";
+import { EmailSentStatusCell } from "./EmailSentStatusCell";
 
 const resolveReportingEmails = (creatorUserId: string, assignedToUserId: string, users: User[]) => {
   const creatorUser = users.find(u => u.id === creatorUserId);
@@ -74,6 +76,7 @@ interface OrdersOffersViewProps {
   clients?: Client[];
   teams?: Team[];
   freightTerms?: FreightTerm[];
+  deliveryTerms?: DeliveryTerm[];
   transporters?: TransporterName[];
   warehouses?: WarehouseManagedBy[];
   dispatchLocations?: DispatchLocation[];
@@ -81,6 +84,7 @@ interface OrdersOffersViewProps {
   paymentCreditPeriods?: PaymentCreditPeriod[];
   taxRates?: TaxRate[];
   emailTemplates?: EmailTemplate[];
+  emailSentLogs?: EmailSentLog[];
   onAddOrder: (order: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId">) => void;
   onEditOrder: (order: OrderOffer) => void;
   onDeleteOrder: (orderId: string) => void;
@@ -99,6 +103,7 @@ export default function OrdersOffersView({
   clients = [],
   teams = [],
   freightTerms = [],
+  deliveryTerms = [],
   transporters = [],
   warehouses = [],
   dispatchLocations = [],
@@ -106,6 +111,7 @@ export default function OrdersOffersView({
   paymentCreditPeriods = [],
   taxRates = [],
   emailTemplates = [],
+  emailSentLogs = [],
   onAddOrder,
   onEditOrder,
   onDeleteOrder,
@@ -140,6 +146,72 @@ export default function OrdersOffersView({
   // Search & Filter state
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
+  const [dateFilterType, setDateFilterType] = useState<"createdAt" | "invoiceDate">("createdAt");
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
+  const [activeDatePreset, setActiveDatePreset] = useState<string>("All Time");
+  const [recordsLimit, setRecordsLimit] = useState<number>(100);
+
+  const getOrderCreateDate = (order: OrderOffer): string => {
+    if (order.createdAt) return order.createdAt.slice(0, 10);
+    if ((order as any).orderDate) return String((order as any).orderDate).slice(0, 10);
+    return "";
+  };
+
+  const getOrderInvoiceDate = (order: OrderOffer): string => {
+    if (order.billingDetails?.invoiceDate) {
+      return order.billingDetails.invoiceDate.trim().slice(0, 10);
+    }
+    return "";
+  };
+
+  const applyDatePreset = (preset: string) => {
+    setActiveDatePreset(preset);
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    if (preset === "All Time") {
+      setStartDate("");
+      setEndDate("");
+    } else if (preset === "Today") {
+      setStartDate(todayStr);
+      setEndDate(todayStr);
+    } else if (preset === "This Week") {
+      const day = now.getDay();
+      const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+      const monday = new Date(now.setDate(diff));
+      const mondayStr = monday.toISOString().slice(0, 10);
+      setStartDate(mondayStr);
+      setEndDate(todayStr);
+    } else if (preset === "This Month") {
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const firstDay = `${year}-${month}-01`;
+      setStartDate(firstDay);
+      setEndDate(todayStr);
+    } else if (preset === "Last Month") {
+      const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const year = prevMonthDate.getFullYear();
+      const month = String(prevMonthDate.getMonth() + 1).padStart(2, "0");
+      const firstDay = `${year}-${month}-01`;
+      const lastDayDate = new Date(now.getFullYear(), now.getMonth(), 0);
+      const lastDay = `${lastDayDate.getFullYear()}-${String(lastDayDate.getMonth() + 1).padStart(2, "0")}-${String(lastDayDate.getDate()).padStart(2, "0")}`;
+      setStartDate(firstDay);
+      setEndDate(lastDay);
+    } else if (preset === "This FY") {
+      const curYear = now.getFullYear();
+      const curMonth = now.getMonth();
+      const fyStartYear = curMonth >= 3 ? curYear : curYear - 1;
+      setStartDate(`${fyStartYear}-04-01`);
+      setEndDate(`${fyStartYear + 1}-03-31`);
+    }
+  };
+
+  const clearDateFilter = () => {
+    setActiveDatePreset("All Time");
+    setStartDate("");
+    setEndDate("");
+  };
 
   // Modals state
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -147,6 +219,13 @@ export default function OrdersOffersView({
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<OrderOffer | null>(null);
   const [selectedOrderDetails, setSelectedOrderDetails] = useState<OrderOffer | null>(null);
+  const [resendingOrderId, setResendingOrderId] = useState<string | null>(null);
+  const [emailBanner, setEmailBanner] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  const showEmailBanner = (type: "success" | "error", message: string) => {
+    setEmailBanner({ type, message });
+    setTimeout(() => setEmailBanner(null), 5000);
+  };
 
   // Import fields config for Orders & Offers + Historical Invoices & Payment Details
   const orderImportFields: ImportFieldDefinition[] = [
@@ -156,32 +235,77 @@ export default function OrdersOffersView({
     { key: "email", label: "Client Email", sampleValue: "rahul@hul.com", description: "Primary client email address" },
     { key: "phone", label: "Client Phone", sampleValue: "+91 9876543210", description: "Contact phone number" },
     { key: "billingAddress", label: "Client Billing Address", sampleValue: "42 Industrial Estate, Sector 5, Kolkata", description: "Billing address for invoices" },
+    { key: "billingGstin", label: "Client GSTIN", sampleValue: "19AAAAA0000A1Z5", description: "Client GSTIN Number" },
+    { key: "assignedToUserName", label: "Order Assigned To (Sales Person Name)", sampleValue: "Anish Sharma", description: "Sales person or user name assigned to this order" },
     { key: "status", label: "Pipeline Status", sampleValue: "Closed Won", description: "New, Contacted, Proposal, Negotiation, Closed Won, Closed Lost" },
-    { key: "productName", label: "Product Name", sampleValue: "Hydrogen Peroxide 50%", description: "Item description or product name" },
-    { key: "quantity", label: "Quantity", sampleValue: "100", description: "Quantity of items" },
-    { key: "rate", label: "Rate (₹)", sampleValue: "250", description: "Unit rate / price per item" },
-    { key: "totalValue", label: "Total Order Value (₹)", sampleValue: "25000", description: "Total order or offer amount" },
-    { key: "notes", label: "Notes / Details", sampleValue: "Urgent dispatch", description: "Internal notes or instructions" },
+    { key: "orderDate", label: "Order / Offer Date", sampleValue: "2025-08-20", description: "Order creation date (YYYY-MM-DD)" },
     { key: "payment", label: "Payment Terms", sampleValue: "30 Days Credit", description: "Payment terms" },
-    { key: "delivery", label: "Delivery Terms", sampleValue: "FOB Plant", description: "Delivery terms" },
+    { key: "paymentCreditPeriod", label: "Payment Credit Period (Days)", sampleValue: "30 Days", description: "Credit period in number of days" },
+    { key: "notes", label: "Notes / Details", sampleValue: "Urgent dispatch", description: "Internal notes or instructions" },
+
+    // Product 1
+    { key: "product1Name", label: "Product 1 Name", sampleValue: "Hydrogen Peroxide 50%", description: "First item description or product name (or use productName)" },
+    { key: "product1Qty", label: "Product 1 Qty", sampleValue: "100", description: "Quantity of Product 1" },
+    { key: "product1Rate", label: "Product 1 Rate (₹)", sampleValue: "250", description: "Unit rate for Product 1" },
+    { key: "product1Amount", label: "Product 1 Amount (₹)", sampleValue: "25000", description: "Total amount for Product 1 (Auto-calculated if omitted)" },
+    { key: "product1HsnCode", label: "Product 1 HSN Code", sampleValue: "28470000", description: "HSN / SAC Code for Product 1" },
+
+    // Product 2
+    { key: "product2Name", label: "Product 2 Name", sampleValue: "Sodium Hydroxide 48%", description: "Second item description (optional)" },
+    { key: "product2Qty", label: "Product 2 Qty", sampleValue: "50", description: "Quantity of Product 2" },
+    { key: "product2Rate", label: "Product 2 Rate (₹)", sampleValue: "400", description: "Unit rate for Product 2" },
+    { key: "product2Amount", label: "Product 2 Amount (₹)", sampleValue: "20000", description: "Total amount for Product 2" },
+    { key: "product2HsnCode", label: "Product 2 HSN Code", sampleValue: "28151100", description: "HSN / SAC Code for Product 2" },
+
+    // Product 3
+    { key: "product3Name", label: "Product 3 Name", sampleValue: "", description: "Third item description (optional)" },
+    { key: "product3Qty", label: "Product 3 Qty", sampleValue: "", description: "Quantity of Product 3" },
+    { key: "product3Rate", label: "Product 3 Rate (₹)", sampleValue: "", description: "Unit rate for Product 3" },
+    { key: "product3Amount", label: "Product 3 Amount (₹)", sampleValue: "", description: "Total amount for Product 3" },
+    { key: "product3HsnCode", label: "Product 3 HSN Code", sampleValue: "", description: "HSN / SAC Code for Product 3" },
+
+    // Product 4
+    { key: "product4Name", label: "Product 4 Name", sampleValue: "", description: "Fourth item description (optional)" },
+    { key: "product4Qty", label: "Product 4 Qty", sampleValue: "", description: "Quantity of Product 4" },
+    { key: "product4Rate", label: "Product 4 Rate (₹)", sampleValue: "", description: "Unit rate for Product 4" },
+    { key: "product4Amount", label: "Product 4 Amount (₹)", sampleValue: "", description: "Total amount for Product 4" },
+    { key: "product4HsnCode", label: "Product 4 HSN Code", sampleValue: "", description: "HSN / SAC Code for Product 4" },
+
+    // Product 5
+    { key: "product5Name", label: "Product 5 Name", sampleValue: "", description: "Fifth item description (optional)" },
+    { key: "product5Qty", label: "Product 5 Qty", sampleValue: "", description: "Quantity of Product 5" },
+    { key: "product5Rate", label: "Product 5 Rate (₹)", sampleValue: "", description: "Unit rate for Product 5" },
+    { key: "product5Amount", label: "Product 5 Amount (₹)", sampleValue: "", description: "Total amount for Product 5" },
+    { key: "product5HsnCode", label: "Product 5 HSN Code", sampleValue: "", description: "HSN / SAC Code for Product 5" },
+
+    { key: "totalValue", label: "Total Order Value (₹)", sampleValue: "45000", description: "Total order value (Auto-calculated from products if omitted)" },
 
     // Invoicing & System Mapping Fields
-    { key: "invoiceNumber", label: "Invoice Number", sampleValue: "INV-2025-001", description: "Maps historical invoice into system billing & dispatch" },
+    { key: "invoiceNumber", label: "Invoice Number", sampleValue: "INV-2025-001", description: "Maps historical invoice into billing & dispatch" },
     { key: "invoiceDate", label: "Invoice Date", sampleValue: "2025-08-20", description: "Date of invoice issuance (YYYY-MM-DD)" },
+    { key: "actualDispatchDate", label: "Actual Dispatch Date", sampleValue: "2025-08-22", description: "Actual date of goods dispatch in billing sub-section (YYYY-MM-DD)" },
+    { key: "invoiceFileUrl", label: "Invoice Link / URL", sampleValue: "https://drive.google.com/file/d/sample/view", description: "Direct URL link to uploaded invoice PDF/doc" },
+
+    // Closed Won Details (Full Closed Won Section Fields)
     { key: "customerPoNumber", label: "Customer PO Number", sampleValue: "PO-99481", description: "Customer Purchase Order number" },
     { key: "poDate", label: "Customer PO Date", sampleValue: "2025-08-15", description: "Customer PO Date (YYYY-MM-DD)" },
-    { key: "piNumber", label: "PI Number (Proforma)", sampleValue: "PI-2025-88", description: "Proforma Invoice (PI) reference number" },
-    { key: "ebillNo", label: "E-Way Bill Number", sampleValue: "EWB12345678", description: "E-Way Bill number" },
+    { key: "poAttachmentUrl", label: "Customer PO Document Link / URL", sampleValue: "https://drive.google.com/file/d/sample-po/view", description: "Direct URL link to uploaded customer PO PDF/document" },
+    { key: "freightTerm", label: "Freight Term", sampleValue: "FOR Destination", description: "Freight term (e.g. FOR Destination, Ex-Works Factory)" },
+    { key: "transporterName", label: "Transporter Name", sampleValue: "VRL Logistics", description: "Logistics or transport carrier company name" },
     { key: "vehicleNo", label: "Vehicle Number", sampleValue: "WB 02 AB 1234", description: "Vehicle / Transport vehicle number" },
-    { key: "transportName", label: "Transporter Name", sampleValue: "VRL Logistics", description: "Logistics or transport carrier company" },
-    { key: "lrNo", label: "LR / Bilty Number", sampleValue: "LR-55443", description: "Transporter LR or Bilty number" },
-    { key: "dispatchDate", label: "Dispatch Date", sampleValue: "2025-08-22", description: "Date of goods dispatch (YYYY-MM-DD)" },
+    { key: "freightChargedInBill", label: "Freight Charged in Bill", sampleValue: "Fixed", description: "Freight to be charged in bill (e.g. Fixed / Actuals)" },
+    { key: "freightCostToAol", label: "Freight Cost to AOL", sampleValue: "1500", description: "Freight cost incurred by company" },
+    { key: "cartageLabourCharges", label: "Cartage / Labour Charges", sampleValue: "500", description: "Cartage or labour charges if any" },
+    { key: "deliveryTerm", label: "Delivery / Booking Term", sampleValue: "Door Delivery", description: "Delivery or booking term (e.g. Door Delivery)" },
+    { key: "warehouseManagedBy", label: "Warehouse Managed By", sampleValue: "Kolkata Central WH", description: "Warehouse or warehouse manager name" },
+    { key: "destinationAddress", label: "Destination Address", sampleValue: "42 Industrial Estate, Sector 5, Kolkata", description: "Delivery destination address" },
+    { key: "gstin", label: "GSTIN", sampleValue: "19AAAAA0000A1Z5", description: "GSTIN Number for Closed Won" },
+    { key: "dispatchDate", label: "Expected Dispatch Date", sampleValue: "2025-08-22", description: "Expected date of dispatch (YYYY-MM-DD)" },
+    { key: "dispatchLocation", label: "Dispatch Location", sampleValue: "Factory Silvassa", description: "Dispatch location / warehouse" },
 
-    // Historical Payment Details
-    { key: "amountReceived", label: "Amount Received (₹)", sampleValue: "15000", description: "Amount paid so far against this invoice" },
-    { key: "paymentStatus", label: "Payment Status", sampleValue: "Partial paid", description: "Unpaid, Partial paid, or Fully paid (Auto-calculated if omitted)" },
-    { key: "paymentReceivedDate", label: "Payment Receipt Date", sampleValue: "2025-08-25", description: "Date payment was received (YYYY-MM-DD)" },
-    { key: "utrId", label: "UTR / Transaction Ref", sampleValue: "UTR987654321", description: "Bank UTR or Transaction reference number" },
+    // Mail Sent Status
+    { key: "mailSentStatus", label: "Mail Sent Status", sampleValue: "Sent", description: "Sent, Simulated, Failed, or Pending" },
+    { key: "mailSentTimestamp", label: "Mail Sent Timestamp", sampleValue: "2025-08-20 10:30:00", description: "Date/time email was sent (YYYY-MM-DD HH:MM:SS)" },
   ];
 
   const handleImportOrders = async (rows: Record<string, any>[]) => {
@@ -198,148 +322,233 @@ export default function OrdersOffersView({
         continue;
       }
 
-      const qty = parseFloat(row.quantity) || 1;
-      const rateVal = parseFloat(row.rate) || 0;
-      const totalVal = parseFloat(row.totalValue) || (qty * rateVal);
+      const billingGstin = (row.billingGstin || row.gstin)?.trim() || "";
 
-      const itemsList = row.productName ? [{
-        productId: products[0]?.id || `prod-import-${Date.now()}-${i}`,
-        productName: row.productName.trim(),
-        quantity: qty,
-        rate: rateVal,
-        amount: qty * rateVal
-      }] : [{
-        productId: products[0]?.id || "proj-1",
-        productName: products[0]?.name || "Default Product",
-        quantity: 1,
-        rate: totalVal,
-        amount: totalVal
-      }];
+      // Extract up to 5 products per row (with fallback to single productName/quantity/rate/hsnCode)
+      const itemsList: OrderItem[] = [];
+      for (let pIdx = 1; pIdx <= 5; pIdx++) {
+        const pName = (row[`product${pIdx}Name`] || (pIdx === 1 ? row.productName : ""))?.toString()?.trim();
+        if (pName) {
+          const qty = parseFloat(row[`product${pIdx}Qty`] || (pIdx === 1 ? row.quantity : "")) || 1;
+          const rateVal = parseFloat(row[`product${pIdx}Rate`] || (pIdx === 1 ? row.rate : "")) || 0;
+          const rawAmt = parseFloat(row[`product${pIdx}Amount`] || (pIdx === 1 ? row.amount : ""));
+          const amtVal = !isNaN(rawAmt) ? rawAmt : (qty * rateVal);
+          const hsn = (row[`product${pIdx}HsnCode`] || (pIdx === 1 ? row.hsnCode || row.product1HsnCode : ""))?.toString()?.trim() || "";
+
+          itemsList.push({
+            productId: products[0]?.id || `prod-import-${Date.now()}-${i}-${pIdx}`,
+            productName: pName,
+            quantity: qty,
+            rate: rateVal,
+            amount: amtVal,
+            hsnCode: hsn,
+          });
+        }
+      }
+
+      // If no item extracted, fallback to single item using total value
+      if (itemsList.length === 0) {
+        const fallbackTotal = parseFloat(row.totalValue) || 0;
+        itemsList.push({
+          productId: products[0]?.id || "proj-1",
+          productName: products[0]?.name || "Default Product",
+          quantity: 1,
+          rate: fallbackTotal,
+          amount: fallbackTotal,
+        });
+      }
 
       // Invoicing / Billing details mapping
       const invoiceNumber = row.invoiceNumber?.trim() || "";
       const invoiceDate = row.invoiceDate?.trim() || "";
-      const ebillNo = row.ebillNo?.trim() || "";
-      const vehicleNo = row.vehicleNo?.trim() || "";
-      const transportName = row.transportName?.trim() || "";
-      const lrNo = row.lrNo?.trim() || "";
+      const actualDispatchDate = row.actualDispatchDate?.trim() || "";
+      const invoiceFileUrl = (row.invoiceFileUrl || row.invoiceLink || row.invoiceUrl)?.trim() || "";
+      const vehicleNo = (row.vehicleNo || row.vehicleNumber)?.trim() || "";
+      const transportName = (row.transporterName || row.transportName)?.trim() || "";
       const dispatchDate = row.dispatchDate?.trim() || "";
 
       let billingDetails: BillingDetails | undefined = undefined;
-      if (invoiceNumber || invoiceDate || ebillNo || vehicleNo || transportName || lrNo || dispatchDate) {
+      if (invoiceNumber || invoiceDate || actualDispatchDate || invoiceFileUrl || vehicleNo || transportName || dispatchDate) {
         billingDetails = {
           invoiceNumber: invoiceNumber || `INV-HIST-${Date.now().toString().slice(-4)}-${i+1}`,
           invoiceDate: invoiceDate || new Date().toISOString().split("T")[0],
-          ebillNo,
+          actualDispatchDate: actualDispatchDate || dispatchDate,
+          invoiceFileUrl,
+          invoiceFileName: invoiceFileUrl ? "Uploaded Invoice" : "",
           vehicleNo,
           transportName,
-          lrNo,
           dispatchDate,
-          invoiceFileUrl: "",
-          invoiceFileName: "",
+          mappedAt: new Date().toISOString(),
+          mappedByUserId: activeUserId,
         };
       }
 
-      // Customer PO / Closed Won details
-      const customerPoNumber = row.customerPoNumber?.trim() || "";
+      // Customer PO / Closed Won details mapping
+      const customerPoNumber = (row.customerPoNumber || row.poNumber)?.trim() || "";
       const poDate = row.poDate?.trim() || "";
-      const piNumber = row.piNumber?.trim() || "";
+      const poAttachmentUrl = (row.poAttachmentUrl || row.poUrl || row.customerPoFileUrl || row.customerPoUrl || row.poLink || row.customerPoLink || row.poDocumentUrl || row.poFileUrl)?.trim() || "";
+      const freightTerm = (row.freightTerm || row.freightTerms)?.trim() || "";
+      const freightChargedInBill = row.freightChargedInBill?.trim() || "";
+      const freightCostToAol = row.freightCostToAol?.trim() || "";
+      const cartageLabourCharges = row.cartageLabourCharges?.trim() || "";
+      const transporterName = (row.transporterName || row.transportName)?.trim() || "";
+      const deliveryTerm = (row.deliveryTerm || row.delivery || row.deliveryTerms)?.trim() || "";
+      const warehouseManagedBy = row.warehouseManagedBy?.trim() || "";
+      const destinationAddress = row.destinationAddress?.trim() || row.billingAddress?.trim() || "";
+      const gstin = row.gstin?.trim() || row.billingGstin?.trim() || "";
+      const dispatchLocation = row.dispatchLocation?.trim() || "";
+
+      // Determine final status
+      let finalStatus: OrderOffer["status"] = (row.status?.trim() as OrderOffer["status"]) || "New";
+      if ((invoiceNumber || customerPoNumber || poAttachmentUrl) && (!row.status || row.status.trim() === "New")) {
+        finalStatus = "Closed Won";
+      }
+
+      const calculatedTotalItems = itemsList.reduce((sum, item) => sum + (item.amount || 0), 0);
+      let totalVal = parseFloat(row.totalValue) || (calculatedTotalItems > 0 ? calculatedTotalItems : 0);
+      if (finalStatus === "Closed Won" && freightChargedInBill) {
+        totalVal += parseFreightAmount(freightChargedInBill) * 1.18;
+      }
+
       let closedWonDetails: ClosedWonDetails | undefined = undefined;
-      if (customerPoNumber || poDate || piNumber) {
+      if (
+        customerPoNumber ||
+        poDate ||
+        poAttachmentUrl ||
+        freightTerm ||
+        transporterName ||
+        vehicleNo ||
+        deliveryTerm ||
+        warehouseManagedBy ||
+        destinationAddress ||
+        dispatchDate ||
+        dispatchLocation ||
+        freightChargedInBill ||
+        freightCostToAol ||
+        cartageLabourCharges ||
+        finalStatus === "Closed Won"
+      ) {
         closedWonDetails = {
-          customerPoNumber,
+          customerPoNumber: customerPoNumber || "PO-IMPORTED",
           poDate: poDate || new Date().toISOString().split("T")[0],
-          piNumber,
-          freightTerm: row.delivery?.trim() || "",
-          freightChargedInBill: "No",
-          transporterName: transportName || "",
+          poAttachmentUrl: poAttachmentUrl || undefined,
+          freightTerm: freightTerm || "",
+          freightChargedInBill: freightChargedInBill || "No",
+          freightCostToAol: freightCostToAol || "",
+          cartageLabourCharges: cartageLabourCharges || "",
+          transporterName: transporterName || "",
           vehicleNo: vehicleNo || "",
-          deliveryTerm: row.delivery?.trim() || "",
-          destinationAddress: row.billingAddress?.trim() || "",
+          deliveryTerm: deliveryTerm || "",
+          destinationAddress: destinationAddress || row.billingAddress?.trim() || "",
+          gstin: gstin || billingGstin,
           dispatchDate: dispatchDate || new Date().toISOString().split("T")[0],
-          dispatchLocation: "",
-          warehouseManagedBy: "",
+          dispatchLocation: dispatchLocation || "",
+          warehouseManagedBy: warehouseManagedBy || "",
         };
       }
 
-      // Pipeline status: if invoice is mapped or PO attached, default to "Closed Won" if status is missing or "New"
-      let finalStatus: OrderOffer["status"] = (row.status?.trim() as OrderOffer["status"]) || "New";
-      if ((invoiceNumber || customerPoNumber) && (!row.status || row.status.trim() === "New")) {
-        finalStatus = "Closed Won";
+      // Mail Sent Status mapping
+      const rawMailStatus = (row.mailSentStatus || row.emailStatus)?.trim();
+      const rawMailTimestamp = (row.mailSentTimestamp || row.emailTimestamp)?.trim();
+      let emailStatusSummary: EmailSentStatusSummary | undefined = undefined;
+
+      if (rawMailStatus) {
+        let validStatus: EmailDeliveryStatus = "Sent";
+        const sLower = rawMailStatus.toLowerCase();
+        if (sLower.includes("simulat")) validStatus = "Simulated";
+        else if (sLower.includes("fail") || sLower.includes("error")) validStatus = "Failed";
+        else if (sLower.includes("pend")) validStatus = "Pending";
+        else if (sLower.includes("sent")) validStatus = "Sent";
+
+        emailStatusSummary = {
+          to: row.email?.trim() || "",
+          status: validStatus,
+          timestamp: rawMailTimestamp || new Date().toISOString(),
+          category: "create_order",
+          subject: `Order Confirmation - ${companyName}`,
+          sentByUserName: activeUser?.name || "System Import",
+        };
+      }
+
+      // Assigned Sales Person resolution
+      const assignedNameInput = (row.assignedToUserName || row.assignedToUser || row.assignedTo || row.salesPersonName || row.salesPerson || row.orderAssignedTo)?.toString()?.trim();
+      let assignedUserId = activeUserId;
+      if (assignedNameInput) {
+        const matchedUser = users.find(u =>
+          u.name.toLowerCase() === assignedNameInput.toLowerCase() ||
+          u.email.toLowerCase() === assignedNameInput.toLowerCase() ||
+          u.id === assignedNameInput
+        );
+        if (matchedUser) {
+          assignedUserId = matchedUser.id;
+        }
       }
 
       const orderId = `order-imp-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
 
       const newOrderData: OrderOffer = {
         id: orderId,
-        createdAt: new Date().toISOString(),
+        createdAt: row.orderDate?.trim() || new Date().toISOString(),
         createdByUserId: activeUserId,
         clientName,
         companyName,
         email: row.email?.trim() || "",
         phone: row.phone?.trim() || "+1 (555) 000-0000",
         billingAddress: row.billingAddress?.trim() || "",
+        billingGstin,
         status: finalStatus,
         totalValue: totalVal,
         items: itemsList,
-        assignedToUserId: activeUserId,
+        assignedToUserId: assignedUserId,
         notes: row.notes?.trim() || (invoiceNumber ? `Historical import with Invoice #${invoiceNumber}` : "Imported via Sheets / CSV Wizard"),
         payment: row.payment?.trim() || "",
-        delivery: row.delivery?.trim() || "",
+        paymentCreditPeriod: row.paymentCreditPeriod?.trim() || "",
+        delivery: deliveryTerm || row.delivery?.trim() || "",
         otherTerms: row.otherTerms?.trim() || "",
         billingDetails,
         closedWonDetails,
+        emailStatus: emailStatusSummary,
       };
 
       try {
         await onAddOrder(newOrderData);
 
-        // If Invoice Number or Payment Details exist, initialize PaymentDetails record in system
+        // If Invoice Number exists, initialize initial unpaid PaymentDetails record in system
         const effectiveInvoiceNo = invoiceNumber || (billingDetails?.invoiceNumber ?? "");
-        const rawAmtReceived = parseFloat(row.amountReceived);
-        const amtReceived = !isNaN(rawAmtReceived) ? rawAmtReceived : 0;
-        const paymentStatusRaw = row.paymentStatus?.trim();
-        const paymentReceivedDate = row.paymentReceivedDate?.trim() || new Date().toISOString().split("T")[0];
-        const utrId = row.utrId?.trim() || "";
 
-        if (effectiveInvoiceNo || amtReceived > 0 || paymentStatusRaw) {
-          const pendingAmt = Math.max(0, totalVal - amtReceived);
-          let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
-          if (paymentStatusRaw && ["Unpaid", "Partial paid", "Fully paid"].includes(paymentStatusRaw)) {
-            autoStatus = paymentStatusRaw as any;
-          } else if (amtReceived >= totalVal && totalVal > 0) {
-            autoStatus = "Fully paid";
-          } else if (amtReceived > 0) {
-            autoStatus = "Partial paid";
-          }
-
-          const receipts: PaymentReceiptRecord[] = amtReceived > 0 ? [{
-            id: `receipt-imp-${Date.now()}-${i}`,
-            orderId,
-            invoiceNumber: effectiveInvoiceNo || orderId,
-            amount: amtReceived,
-            paymentReceivedDate,
-            utrId,
-            comments: "Historical Bulk Import Receipt",
-            createdAt: new Date().toISOString(),
-            createdBy: activeUser?.name || "System Bulk Import",
-          }] : [];
-
+        if (effectiveInvoiceNo) {
           await savePaymentDetails({
             id: orderId,
             orderId: orderId,
-            invoiceNumber: effectiveInvoiceNo || orderId,
-            amountReceived: amtReceived,
-            lastEnteredAmount: amtReceived,
-            pendingAmount: pendingAmt,
-            paymentStatus: autoStatus,
-            paymentReceivedDate,
-            utrId,
-            comments: `Historical bulk import mapping for Invoice ${effectiveInvoiceNo || orderId}`,
-            receipts,
+            invoiceNumber: effectiveInvoiceNo,
+            amountReceived: 0,
+            lastEnteredAmount: 0,
+            pendingAmount: totalVal,
+            paymentStatus: "Unpaid",
+            paymentReceivedDate: "",
+            utrId: "",
+            comments: `Initial payment record created via bulk order import for Invoice ${effectiveInvoiceNo}`,
+            receipts: [],
             updatedAt: new Date().toISOString(),
             updatedByUserId: activeUserId,
             updatedByUserName: activeUser?.name || "System",
+          });
+        }
+
+        if (emailStatusSummary) {
+          await saveEmailSentLog({
+            id: `log-imp-${Date.now()}-${i}`,
+            orderId,
+            invoiceNumber: effectiveInvoiceNo || orderId,
+            companyName,
+            clientName,
+            to: row.email?.trim() || "",
+            subject: `Order Confirmation - ${companyName}`,
+            category: "create_order",
+            status: emailStatusSummary.status,
+            timestamp: emailStatusSummary.timestamp,
+            senderUserId: activeUserId,
+            senderUserName: activeUser?.name || "System Bulk Import",
           });
         }
 
@@ -411,6 +620,7 @@ export default function OrdersOffersView({
   const [newDispatchLocation, setNewDispatchLocation] = useState("");
   const [newWarehouseManagedBy, setNewWarehouseManagedBy] = useState("");
   const [newPoAttachmentUrl, setNewPoAttachmentUrl] = useState("");
+  const [newPoAttachments, setNewPoAttachments] = useState<PoAttachment[]>([]);
   const [newGstin, setNewGstin] = useState("");
   const [newSameAsBilling, setNewSameAsBilling] = useState(false);
 
@@ -429,11 +639,11 @@ export default function OrdersOffersView({
   const [editDispatchLocation, setEditDispatchLocation] = useState("");
   const [editWarehouseManagedBy, setEditWarehouseManagedBy] = useState("");
   const [editPoAttachmentUrl, setEditPoAttachmentUrl] = useState("");
+  const [editPoAttachments, setEditPoAttachments] = useState<PoAttachment[]>([]);
   const [editGstin, setEditGstin] = useState("");
   const [editSameAsBilling, setEditSameAsBilling] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [hasDriveAccess, setHasDriveAccess] = useState(hasDriveConnection());
+  const [uploadProgressText, setUploadProgressText] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [newPoFileName, setNewPoFileName] = useState("");
   const [editPoFileName, setEditPoFileName] = useState("");
@@ -452,9 +662,6 @@ export default function OrdersOffersView({
       const settings = await getSharedDriveSettings();
       if (settings) {
         setDriveSettings(settings);
-        setHasDriveAccess(hasDriveConnection(settings));
-      } else {
-        setHasDriveAccess(hasDriveConnection(null));
       }
 
       try {
@@ -527,12 +734,28 @@ export default function OrdersOffersView({
     }
   }, [assignableUsers, editAssignedTo, isEditOpen]);
 
-  // Pre-filtering orders based on view permission + search query (excluding status)
+  // Pre-filtering orders based on view permission + date range + search query (excluding status)
   const baseFilteredOrders = useMemo(() => {
     return orders.filter((order) => {
       // 1. Permission check
       const isLevelFilterEnabled = !!levelWiseFilters?.["orders"];
       if (!canViewOrderOffer(activeUserId, order, users, isLevelFilterEnabled)) return false;
+
+      // 2. Date range check
+      if (startDate || endDate) {
+        if (dateFilterType === "invoiceDate") {
+          const invDate = getOrderInvoiceDate(order);
+          if (!invDate) return false;
+          if (startDate && invDate < startDate) return false;
+          if (endDate && invDate > endDate) return false;
+        } else {
+          // "createdAt" (Create date / Order date)
+          const createDate = getOrderCreateDate(order);
+          if (!createDate) return false;
+          if (startDate && createDate < startDate) return false;
+          if (endDate && createDate > endDate) return false;
+        }
+      }
 
       // 3. Search query check
       const matchesSearch =
@@ -546,7 +769,7 @@ export default function OrdersOffersView({
 
       return matchesSearch;
     });
-  }, [orders, activeUserId, users, levelWiseFilters, searchTerm]);
+  }, [orders, activeUserId, users, levelWiseFilters, searchTerm, startDate, endDate, dateFilterType]);
 
   // Filtering based on status or bifurcated group
   const visibleOrders = useMemo(() => {
@@ -566,11 +789,43 @@ export default function OrdersOffersView({
     });
   }, [baseFilteredOrders, statusFilter]);
 
-  // Calculate sum metrics based on visible orders
+  // Sorting: Most recent records first (by create date or invoice date)
+  const sortedOrders = useMemo(() => {
+    return [...visibleOrders].sort((a, b) => {
+      if (dateFilterType === "invoiceDate") {
+        const dateA = getOrderInvoiceDate(a) || getOrderCreateDate(a) || "";
+        const dateB = getOrderInvoiceDate(b) || getOrderCreateDate(b) || "";
+        if (dateB !== dateA) return dateB.localeCompare(dateA);
+      } else {
+        const dateA = getOrderCreateDate(a) || "";
+        const dateB = getOrderCreateDate(b) || "";
+        if (dateB !== dateA) return dateB.localeCompare(dateA);
+      }
+      return (b.createdAt || "").localeCompare(a.createdAt || "");
+    });
+  }, [visibleOrders, dateFilterType]);
+
+  // Displayed orders (Fast mode: recent 100 records by default with "See More" pagination)
+  const displayedOrders = useMemo(() => {
+    return sortedOrders.slice(0, recordsLimit);
+  }, [sortedOrders, recordsLimit]);
+
+  // Calculate comprehensive metrics based on all matching visible orders
   const totalValue = visibleOrders.reduce((sum, o) => sum + o.totalValue, 0);
+  const averageDealValue = visibleOrders.length > 0 ? totalValue / visibleOrders.length : 0;
   const closedWonOrders = visibleOrders.filter((o) => o.status === "Closed Won");
   const closedWonValue = closedWonOrders.reduce((sum, o) => sum + o.totalValue, 0);
+  const openOffers = visibleOrders.filter((o) => ["New", "Contacted", "Proposal", "Negotiation"].includes(o.status));
+  const openOffersValue = openOffers.reduce((sum, o) => sum + o.totalValue, 0);
+  const lostOrders = visibleOrders.filter((o) => o.status === "Closed Lost");
+  const lostValue = lostOrders.reduce((sum, o) => sum + o.totalValue, 0);
+  const invoicedOrders = visibleOrders.filter((o) => !!o.billingDetails?.invoiceNumber);
+  const totalInvoicedValue = invoicedOrders.reduce((sum, o) => sum + (o.billingDetails?.invoiceAmount ? Number(o.billingDetails.invoiceAmount) || 0 : o.totalValue), 0);
   const totalProductLines = visibleOrders.reduce((sum, o) => sum + (o.items?.length || 0), 0);
+  const totalQuantityUnits = visibleOrders.reduce((sum, o) => {
+    const itemQty = (o.items || []).reduce((itemSum, item) => itemSum + (Number(item.quantity) || 0), 0);
+    return sum + itemQty;
+  }, 0);
 
   // Tax & Amount Calculations (Inclusive of 18% GST by default)
   const parseTaxPercent = (taxStr?: string): number => {
@@ -595,16 +850,30 @@ export default function OrdersOffersView({
     return base + gst;
   };
 
-  const calculateBaseTotal = (itemsList: Omit<OrderItem, "amount">[]) => {
-    return itemsList.reduce((sum, item) => sum + calculateItemBaseAmount(item), 0);
+  const parseFreightAmount = (freightVal?: string): number => {
+    if (!freightVal) return 0;
+    const cleaned = freightVal.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
+    if (!cleaned) return 0;
+    const num = parseFloat(cleaned[0]);
+    return isNaN(num) ? 0 : num;
   };
 
-  const calculateTotalGst = (itemsList: Omit<OrderItem, "amount">[]) => {
-    return itemsList.reduce((sum, item) => sum + calculateItemGstAmount(item), 0);
+  const calculateBaseTotal = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
+    const itemsBase = itemsList.reduce((sum, item) => sum + calculateItemBaseAmount(item), 0);
+    const freightBase = status === "Closed Won" ? parseFreightAmount(freightVal) : 0;
+    return itemsBase + freightBase;
   };
 
-  const calculateTotalValueWithGst = (itemsList: Omit<OrderItem, "amount">[]) => {
-    return itemsList.reduce((sum, item) => sum + calculateItemTotalWithGst(item), 0);
+  const calculateTotalGst = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
+    const itemsGst = itemsList.reduce((sum, item) => sum + calculateItemGstAmount(item), 0);
+    const freightGst = status === "Closed Won" ? parseFreightAmount(freightVal) * 0.18 : 0;
+    return itemsGst + freightGst;
+  };
+
+  const calculateTotalValueWithGst = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
+    const itemsTotal = itemsList.reduce((sum, item) => sum + calculateItemTotalWithGst(item), 0);
+    const freightTotalWithGst = status === "Closed Won" ? parseFreightAmount(freightVal) * 1.18 : 0;
+    return itemsTotal + freightTotalWithGst;
   };
 
   const calculateTotalValue = calculateTotalValueWithGst;
@@ -705,64 +974,110 @@ export default function OrdersOffersView({
     setNewWarehouseManagedBy("");
     setNewPoAttachmentUrl("");
     setNewPoFileName("");
+    setNewPoAttachments([]);
     setNewGstin("");
     setNewBillingGstin("");
     setNewSameAsBilling(false);
     setUploadError(null);
+    setUploadProgressText("");
   };
 
-  const handlePOFileUpload = async (file: File, isEdit: boolean) => {
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+  const handlePOFilesUpload = async (files: FileList | File[], isEdit: boolean) => {
+    const fileList = Array.from(files);
+    if (fileList.length === 0) return;
+
+    const currentAttachments = isEdit ? editPoAttachments : newPoAttachments;
+    const remainingSlots = 5 - currentAttachments.length;
+
+    if (currentAttachments.length >= 5) {
+      setUploadError("Maximum limit of 5 PO files reached. Remove an existing file to attach a new one.");
+      return;
+    }
+
+    if (fileList.length > remainingSlots) {
+      setUploadError(`You can only upload up to ${remainingSlots} more file(s). Maximum 5 PO files total allowed.`);
+      return;
+    }
+
+    const nonPdf = fileList.some((f) => !f.name.toLowerCase().endsWith(".pdf") && f.type !== "application/pdf");
+    if (nonPdf) {
       setUploadError("Only PDF files are allowed to be uploaded.");
       return;
     }
+
     setIsUploading(true);
     setUploadError(null);
+    setUploadProgressText(fileList.length === 1 ? `Uploading ${fileList[0].name} to Google Drive...` : `Uploading ${fileList.length} PO documents to Google Drive...`);
+
     try {
       const clientNameArg = isEdit 
         ? (editCompanyName || editClientName || "General Clients")
         : (newCompanyName || newClientName || "General Clients");
       const poNumArg = isEdit ? editPoNumber : newPoNumber;
 
-      const result = await uploadPOToDrive(file, clientNameArg, poNumArg);
-      if (isEdit) {
-        setEditPoAttachmentUrl(result.webViewLink);
-        setEditPoFileName(result.name);
-      } else {
-        setNewPoAttachmentUrl(result.webViewLink);
-        setNewPoFileName(result.name);
+      const uploadedList: PoAttachment[] = [];
+      let hadFallback = false;
+      let fallbackReason = "";
+
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        if (fileList.length > 1) {
+          setUploadProgressText(`Uploading ${i + 1} of ${fileList.length}: ${file.name}...`);
+        }
+        const result = await uploadPOToDrive(file, clientNameArg, poNumArg);
+        uploadedList.push({
+          id: result.id,
+          name: result.name || file.name,
+          url: result.webViewLink,
+          size: file.size,
+          uploadedAt: new Date().toISOString(),
+        });
+        if (result.isLocalFallback) {
+          hadFallback = true;
+          fallbackReason = result.fallbackReason || "Attached locally.";
+        }
       }
-      if (result.isLocalFallback) {
-        setUploadError(`Notice: ${result.fallbackReason || 'Attached locally.'} To sync directly to Google Drive, enable the Google Drive API in Google Cloud Console.`);
+
+      if (isEdit) {
+        const updated = [...editPoAttachments, ...uploadedList].slice(0, 5);
+        setEditPoAttachments(updated);
+        setEditPoAttachmentUrl(updated[0]?.url || "");
+        setEditPoFileName(updated[0]?.name || "");
+      } else {
+        const updated = [...newPoAttachments, ...uploadedList].slice(0, 5);
+        setNewPoAttachments(updated);
+        setNewPoAttachmentUrl(updated[0]?.url || "");
+        setNewPoFileName(updated[0]?.name || "");
+      }
+
+      if (hadFallback) {
+        setUploadError(`Notice: ${fallbackReason} You can also connect or refresh Google Drive in Admin Drive Settings.`);
       }
     } catch (err: any) {
       console.error(err);
-      setUploadError(err.message || "Failed to upload file to Google Drive.");
+      setUploadError(err.message || "Failed to upload PO document to Google Drive.");
     } finally {
       setIsUploading(false);
+      setUploadProgressText("");
     }
   };
 
-  const handleConnectDrive = async () => {
-    setIsConnecting(true);
-    setUploadError(null);
-    try {
-      await ensureGoogleDriveAccess(true);
-      const settings = await getSharedDriveSettings();
-      if (settings) {
-        setDriveSettings(settings);
-      }
-      setHasDriveAccess(true);
-    } catch (err: any) {
-      console.error(err);
-      setUploadError(err.message || "Failed to authorize Google Drive. Please make sure pop-ups are allowed for this site.");
-    } finally {
-      setIsConnecting(false);
+  const handleRemovePOAttachment = (index: number, isEdit: boolean) => {
+    if (isEdit) {
+      const updated = editPoAttachments.filter((_, i) => i !== index);
+      setEditPoAttachments(updated);
+      setEditPoAttachmentUrl(updated[0]?.url || "");
+      setEditPoFileName(updated[0]?.name || "");
+    } else {
+      const updated = newPoAttachments.filter((_, i) => i !== index);
+      setNewPoAttachments(updated);
+      setNewPoAttachmentUrl(updated[0]?.url || "");
+      setNewPoFileName(updated[0]?.name || "");
     }
   };
 
   // Submit handers
-  const handleCreateOrderSubmit = (e: React.FormEvent) => {
+  const handleCreateOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newClientName || !newCompanyName) {
       alert("Company Name and Client Full Name are required.");
@@ -816,42 +1131,7 @@ export default function OrdersOffersView({
 
     const computedTotal = finalItems.reduce((acc, it) => acc + it.amount, 0);
 
-    onAddOrder({
-      clientName: newClientName,
-      companyName: newCompanyName,
-      email: newEmail,
-      phone: newPhone || "+1 (555) 000-0000",
-      billingAddress: newBillingAddress,
-      billingGstin: newBillingGstin,
-      status: newStatus,
-      totalValue: computedTotal,
-      items: finalItems,
-      assignedToUserId: newAssignedTo,
-      notes: newNotes,
-      payment: newPayment,
-      paymentCreditPeriod: newPaymentCreditPeriod,
-      paymentBankId: newPaymentBankId,
-      paymentTermsOffer: newPaymentTermsOffer,
-      delivery: newDelivery,
-      otherTerms: newOtherTerms,
-      closedWonDetails: newStatus === "Closed Won" ? {
-        customerPoNumber: newPoNumber,
-        poDate: newPoDate,
-        freightTerm: newFreightTerm,
-        freightChargedInBill: newFreightChargedInBill,
-        freightCostToAol: newFreightCostToAol,
-        cartageLabourCharges: newCartageLabourCharges,
-        transporterName: newTransporterName,
-        vehicleNo: newVehicleNo,
-        deliveryTerm: newDeliveryTerm,
-        destinationAddress: newDestinationAddress,
-        gstin: newGstin,
-        dispatchDate: newDispatchDate,
-        dispatchLocation: newDispatchLocation,
-        warehouseManagedBy: newWarehouseManagedBy,
-        poAttachmentUrl: newPoAttachmentUrl,
-      } : undefined,
-    });
+    let initialEmailSummary: EmailSentStatusSummary | undefined = undefined;
 
     if (newSendEmail && newEmail) {
       const hierarchy = resolveUserHierarchyInfo(activeUserId, newAssignedTo, users);
@@ -966,38 +1246,108 @@ export default function OrdersOffersView({
       };
 
       const subject = applyTemplate(template?.subject || "New Sales Order");
-      let body = applyTemplate(template?.body || `Order Details:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
+      let rawBody = applyTemplate(template?.body || `Order Details:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
+      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
 
       const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : newEmail);
       const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
       const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-      auth.currentUser?.getIdToken().then((idToken) => {
-        fetch("/api/send-order-email", {
+      const idToken = await auth.currentUser?.getIdToken();
+      try {
+        const res = await fetch("/api/send-order-email", {
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${idToken}`
+            "Authorization": `Bearer ${idToken || ""}`
           },
           body: JSON.stringify({
             to: dynamicTo,
             cc: dynamicCc,
             bcc: dynamicBcc,
             subject: subject,
-            text: body,
+            text: formattedHtml,
+            html: formattedHtml,
+            htmlBody: formattedHtml,
+            plainText: formattedText,
             senderUserId: activeUser?.id,
-            category: "create_order"
+            category: "create_order",
+            companyName: newCompanyName,
+            clientName: newClientName
           })
-        })
-        .then(async (res) => {
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            console.error("Email sending failed:", errData.message || res.statusText);
-          }
-        })
-        .catch(console.error);
-      }).catch(console.error);
+        });
+        const resData = await res.json().catch(() => ({}));
+        const deliveryStatus: EmailDeliveryStatus = (res.ok && resData.deliveryStatus !== "Failed") ? "Sent" : "Failed";
+        initialEmailSummary = {
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          status: deliveryStatus,
+          timestamp: new Date().toISOString(),
+          subject,
+          error: res.ok ? undefined : (resData.message || "Failed to send order email"),
+          sentByUserName: activeUser?.name,
+        };
+
+        await saveEmailSentLog({
+          id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          companyName: newCompanyName,
+          clientName: newClientName,
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          subject,
+          category: "create_order",
+          status: deliveryStatus,
+          timestamp: new Date().toISOString(),
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          error: res.ok ? undefined : resData.message
+        });
+      } catch (err: any) {
+        console.error("Email sending failed for new order:", err);
+      }
     }
+
+    onAddOrder({
+      clientName: newClientName,
+      companyName: newCompanyName,
+      email: newEmail,
+      phone: newPhone || "+1 (555) 000-0000",
+      billingAddress: newBillingAddress,
+      billingGstin: newBillingGstin,
+      status: newStatus,
+      totalValue: computedTotal,
+      items: finalItems,
+      assignedToUserId: newAssignedTo,
+      notes: newNotes,
+      payment: newPayment,
+      paymentCreditPeriod: newPaymentCreditPeriod,
+      paymentBankId: newPaymentBankId,
+      paymentTermsOffer: newPaymentTermsOffer,
+      delivery: newDelivery,
+      otherTerms: newOtherTerms,
+      emailStatus: initialEmailSummary,
+      closedWonDetails: newStatus === "Closed Won" ? {
+        customerPoNumber: newPoNumber,
+        poDate: newPoDate,
+        freightTerm: newFreightTerm,
+        freightChargedInBill: newFreightChargedInBill,
+        freightCostToAol: newFreightCostToAol,
+        cartageLabourCharges: newCartageLabourCharges,
+        transporterName: newTransporterName,
+        vehicleNo: newVehicleNo,
+        deliveryTerm: newDeliveryTerm,
+        destinationAddress: newDestinationAddress,
+        gstin: newGstin,
+        dispatchDate: newDispatchDate,
+        dispatchLocation: newDispatchLocation,
+        warehouseManagedBy: newWarehouseManagedBy,
+        poAttachmentUrl: newPoAttachments[0]?.url || newPoAttachmentUrl || "",
+        poAttachmentUrls: newPoAttachments.map(a => a.url),
+        poAttachments: newPoAttachments,
+      } : undefined,
+    });
 
     setIsAddOpen(false);
     resetAddForm();
@@ -1039,13 +1389,36 @@ export default function OrdersOffersView({
     setEditDispatchLocation(order.closedWonDetails?.dispatchLocation || "");
     setEditWarehouseManagedBy(order.closedWonDetails?.warehouseManagedBy || "");
     setEditPoAttachmentUrl(order.closedWonDetails?.poAttachmentUrl || "");
+    if (order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0) {
+      setEditPoAttachments(order.closedWonDetails.poAttachments);
+      setEditPoFileName(order.closedWonDetails.poAttachments[0]?.name || "");
+    } else if (order.closedWonDetails?.poAttachmentUrls && order.closedWonDetails.poAttachmentUrls.length > 0) {
+      const parsed = order.closedWonDetails.poAttachmentUrls.map((url, idx) => ({
+        id: `po-att-${idx}`,
+        name: `Customer PO - ${order.closedWonDetails?.customerPoNumber || "Doc"}_${idx + 1}.pdf`,
+        url,
+      }));
+      setEditPoAttachments(parsed);
+      setEditPoFileName(parsed[0]?.name || "");
+    } else if (order.closedWonDetails?.poAttachmentUrl) {
+      const single = [{
+        id: `po-att-0`,
+        name: `Customer PO - ${order.closedWonDetails.customerPoNumber || "Document"}.pdf`,
+        url: order.closedWonDetails.poAttachmentUrl,
+      }];
+      setEditPoAttachments(single);
+      setEditPoFileName(single[0].name);
+    } else {
+      setEditPoAttachments([]);
+      setEditPoFileName("");
+    }
     setEditGstin(order.closedWonDetails?.gstin || "");
     setEditSameAsBilling(false);
 
     setIsEditOpen(true);
   };
 
-  const handleEditOrderSubmit = (e: React.FormEvent) => {
+  const handleEditOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingOrder) return;
 
@@ -1130,7 +1503,9 @@ export default function OrdersOffersView({
         dispatchDate: editDispatchDate,
         dispatchLocation: editDispatchLocation,
         warehouseManagedBy: editWarehouseManagedBy,
-        poAttachmentUrl: editPoAttachmentUrl,
+        poAttachmentUrl: editPoAttachments[0]?.url || editPoAttachmentUrl || "",
+        poAttachmentUrls: editPoAttachments.map(a => a.url),
+        poAttachments: editPoAttachments,
       } : undefined,
     });
 
@@ -1249,37 +1624,83 @@ export default function OrdersOffersView({
       };
 
       const subject = applyTemplate(template?.subject || "Sales Order Updated");
-      let body = applyTemplate(template?.body || `Order Details Updated:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
+      let rawBody = applyTemplate(template?.body || `Order Details Updated:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
+      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
 
       const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : editEmail);
       const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
       const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-      auth.currentUser?.getIdToken().then((idToken) => {
-        fetch("/api/send-order-email", {
+      const idToken = await auth.currentUser?.getIdToken();
+      try {
+        const res = await fetch("/api/send-order-email", {
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${idToken}`
+            "Authorization": `Bearer ${idToken || ""}`
           },
           body: JSON.stringify({
             to: dynamicTo,
             cc: dynamicCc,
             bcc: dynamicBcc,
             subject: subject,
-            text: body,
+            text: formattedHtml,
+            html: formattedHtml,
+            htmlBody: formattedHtml,
+            plainText: formattedText,
             senderUserId: activeUser?.id,
-            category: "edit_order"
+            category: "edit_order",
+            orderId: editingOrder.id,
+            companyName: editCompanyName || editingOrder.companyName,
+            clientName: editClientName || editingOrder.clientName
           })
-        })
-        .then(async (res) => {
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            console.error("Email sending failed:", errData.message || res.statusText);
-          }
-        })
-        .catch(console.error);
-      }).catch(console.error);
+        });
+        const resData = await res.json().catch(() => ({}));
+        const deliveryStatus: EmailDeliveryStatus = (res.ok && resData.deliveryStatus !== "Failed") ? "Sent" : "Failed";
+        const newSummary: EmailSentStatusSummary = {
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          status: deliveryStatus,
+          timestamp: new Date().toISOString(),
+          subject,
+          error: res.ok ? undefined : (resData.message || "Failed to send order email"),
+          sentByUserName: activeUser?.name,
+        };
+
+        await onEditOrder({
+          ...editingOrder,
+          clientName: editClientName,
+          companyName: editCompanyName,
+          email: editEmail,
+          phone: editPhone,
+          billingAddress: editBillingAddress,
+          billingGstin: editBillingGstin,
+          status: editStatus,
+          totalValue: computedTotal,
+          items: finalItems,
+          emailStatus: newSummary
+        });
+
+        await saveEmailSentLog({
+          id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          orderId: editingOrder.id,
+          companyName: editCompanyName || editingOrder.companyName,
+          clientName: editClientName || editingOrder.clientName,
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          subject,
+          category: "edit_order",
+          status: deliveryStatus,
+          timestamp: new Date().toISOString(),
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          error: res.ok ? undefined : resData.message
+        });
+      } catch (err: any) {
+        console.error("Email sending failed for edit order:", err);
+      }
     }
 
     setIsEditOpen(false);
@@ -1345,6 +1766,213 @@ export default function OrdersOffersView({
     setNewBankAddress("");
   };
 
+  const getEffectiveOrderStatus = (order: OrderOffer): EmailSentStatusSummary | undefined => {
+    if (order.emailStatus && order.emailStatus.timestamp) {
+      return order.emailStatus;
+    }
+    const matchingLog = emailSentLogs?.find(
+      (l) => l.orderId === order.id || (l.to === order.email && ["create_order", "edit_order", "resend_order"].includes(l.category))
+    );
+    if (matchingLog) {
+      return {
+        to: matchingLog.to,
+        cc: matchingLog.cc,
+        bcc: matchingLog.bcc,
+        status: matchingLog.status,
+        timestamp: matchingLog.timestamp,
+        error: matchingLog.error,
+        subject: matchingLog.subject,
+        sentByUserName: matchingLog.senderUserName,
+      };
+    }
+    return undefined;
+  };
+
+  const handleResendOrderEmail = async (order: OrderOffer) => {
+    setResendingOrderId(order.id);
+    try {
+      const hierarchy = resolveUserHierarchyInfo(activeUserId, order.assignedToUserId, users);
+      const template = emailTemplates?.find(
+        (t) => t.isDefault && (t.assignedForm === (order.status === "Closed Won" ? "create_order" : "create_order") || t.assignedForm === "any" || !t.assignedForm)
+      ) || emailTemplates?.find((t) => t.isDefault);
+
+      const itemsListString = (order.items || []).map((item, index) =>
+        `Product ${index + 1}: ${item.productName}: Qty ${item.quantity} @ ${item.rate} = ${item.amount}`
+      ).join("\n");
+
+      const selectedBank = paymentBanks?.find((b) => b.id === order.paymentBankId);
+      const bankDetailsTableHtml = selectedBank ? `
+<table style="width:100%; max-width:500px; border-collapse:collapse; margin:16px 0; font-family:Arial, sans-serif; font-size:13px; color:#1e293b; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;">
+  <thead>
+    <tr style="background-color:#f8fafc; border-bottom:1px solid #e2e8f0;">
+      <th colspan="2" style="padding:12px; text-align:left; font-weight:bold; color:#0f172a; font-size:14px; border-bottom:1px solid #e2e8f0;">Bank Details for Payment</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:10px; font-weight:600; color:#475569; width:35%; background-color:#f8fafc;">Bank Name</td>
+      <td style="padding:10px; color:#0f172a;">${selectedBank.bankName || ""}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:10px; font-weight:600; color:#475569; background-color:#f8fafc;">Account Holder</td>
+      <td style="padding:10px; color:#0f172a;">${selectedBank.accountHolderName || ""}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:10px; font-weight:600; color:#475569; background-color:#f8fafc;">A/C No.</td>
+      <td style="padding:10px; color:#0f172a; font-family:monospace; font-weight:bold;">${selectedBank.accountNumber || ""}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:10px; font-weight:600; color:#475569; background-color:#f8fafc;">IFSC Code</td>
+      <td style="padding:10px; color:#0f172a; font-family:monospace; font-weight:bold;">${selectedBank.ifscCode || ""}</td>
+    </tr>
+    ${selectedBank.branch ? `
+    <tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:10px; font-weight:600; color:#475569; background-color:#f8fafc;">Branch</td>
+      <td style="padding:10px; color:#0f172a;">${selectedBank.branch}</td>
+    </tr>` : ""}
+  </tbody>
+</table>`.trim() : "";
+
+      const itemsTableHtml = `
+<table style="width:100%; border-collapse:collapse; margin:16px 0; font-family:Arial, sans-serif; font-size:13px; color:#334155; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;">
+  <thead>
+    <tr style="background-color:#f8fafc; border-bottom:2px solid #cbd5e1; color:#0f172a; font-weight:bold;">
+      <th style="padding:10px; text-align:left; border-right:1px solid #e2e8f0; border-bottom:1px solid #cbd5e1;">Product</th>
+      <th style="padding:10px; text-align:center; border-right:1px solid #e2e8f0; border-bottom:1px solid #cbd5e1;">Quantity (Kg)</th>
+      <th style="padding:10px; text-align:right; border-right:1px solid #e2e8f0; border-bottom:1px solid #cbd5e1;">Price (Rs./Kg)</th>
+      <th style="padding:10px; text-align:right; border-bottom:1px solid #cbd5e1;">Amount (₹)</th>
+    </tr>
+  </thead>
+  <tbody>
+    ${(order.items || []).map((item, idx) => `
+    <tr style="border-bottom:1px solid #e2e8f0; background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
+      <td style="padding:10px; font-weight:500; border-right:1px solid #e2e8f0; color:#0f172a;">${item.productName || ""}</td>
+      <td style="padding:10px; text-align:center; border-right:1px solid #e2e8f0; font-weight:bold;">${item.quantity ? `${item.quantity.toLocaleString()} Kg` : "-"}</td>
+      <td style="padding:10px; text-align:right; border-right:1px solid #e2e8f0; font-family:monospace;">${item.rate ? `₹${item.rate.toLocaleString()}` : "-"}</td>
+      <td style="padding:10px; text-align:right; font-weight:bold; font-family:monospace; color:#0f172a;">₹${(item.amount || 0).toLocaleString()}</td>
+    </tr>`).join("")}
+  </tbody>
+  <tfoot>
+    <tr style="background-color:#f1f5f9; font-weight:bold; border-top:2px solid #cbd5e1; color:#0f172a;">
+      <td colspan="3" style="padding:12px; text-align:right; border-right:1px solid #e2e8f0; text-transform:uppercase; font-size:11px;">Grand Total Value:</td>
+      <td style="padding:12px; text-align:right; font-size:14px; font-family:monospace; color:#0f172a;">₹${(order.totalValue || 0).toLocaleString()}</td>
+    </tr>
+  </tfoot>
+</table>`.trim();
+
+      const applyTemplate = (text: string) => {
+        return replaceTemplateVars(text, {
+          recordId: order.id,
+          clientName: order.clientName,
+          companyName: order.companyName,
+          email: order.email,
+          phone: order.phone,
+          billingAddress: order.billingAddress,
+          status: order.status,
+          totalValue: order.totalValue,
+          itemsList: itemsListString,
+          itemsTable: itemsTableHtml,
+          bankDetailsTable: bankDetailsTableHtml,
+          payment: order.payment,
+          paymentTermsOffer: order.paymentTermsOffer,
+          paymentCreditPeriod: order.paymentCreditPeriod,
+          delivery: order.delivery,
+          otherTerms: order.otherTerms,
+          customerPoNumber: order.closedWonDetails?.customerPoNumber,
+          poDate: order.closedWonDetails?.poDate,
+          cartageLabourCharges: order.closedWonDetails?.cartageLabourCharges,
+          transporterName: order.closedWonDetails?.transporterName,
+          deliveryTerm: order.closedWonDetails?.deliveryTerm,
+          destinationAddress: order.closedWonDetails?.destinationAddress,
+          dispatchDate: order.closedWonDetails?.dispatchDate,
+          dispatchLocation: order.closedWonDetails?.dispatchLocation,
+          warehouseManagedBy: order.closedWonDetails?.warehouseManagedBy,
+          ...hierarchy,
+        });
+      };
+
+      const subject = applyTemplate(template?.subject || `Sales Order / Offer: ${order.companyName || order.clientName}`);
+      const rawBody = applyTemplate(template?.body || `Order Details:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
+      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
+
+      const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : order.email);
+      const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
+      const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
+
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch("/api/send-order-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken || ""}`,
+        },
+        body: JSON.stringify({
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          subject,
+          text: formattedHtml,
+          html: formattedHtml,
+          htmlBody: formattedHtml,
+          plainText: formattedText,
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          category: "resend_order",
+          orderId: order.id,
+          companyName: order.companyName,
+          clientName: order.clientName,
+        }),
+      });
+
+      const resData = await res.json().catch(() => ({}));
+      const deliveryStatus = resData.deliveryStatus || (res.ok ? "Sent" : "Failed");
+      const newSummary: EmailSentStatusSummary = {
+        to: dynamicTo,
+        cc: dynamicCc,
+        bcc: dynamicBcc,
+        status: deliveryStatus,
+        timestamp: new Date().toISOString(),
+        subject,
+        error: res.ok ? undefined : resData.message || "Sending failed",
+        sentByUserName: activeUser?.name,
+      };
+
+      onEditOrder({
+        ...order,
+        emailStatus: newSummary,
+      });
+
+      const logId = `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      await saveEmailSentLog({
+        id: logId,
+        orderId: order.id,
+        companyName: order.companyName,
+        clientName: order.clientName,
+        to: dynamicTo,
+        cc: dynamicCc,
+        bcc: dynamicBcc,
+        subject,
+        category: "resend_order",
+        status: deliveryStatus,
+        timestamp: new Date().toISOString(),
+        senderUserId: activeUser?.id,
+        senderUserName: activeUser?.name,
+        error: res.ok ? undefined : resData.message,
+      });
+
+      if (res.ok) {
+        showEmailBanner("success", `Email successfully sent to ${dynamicTo}`);
+      } else {
+        showEmailBanner("error", `Failed to send email: ${resData.message || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      console.error("Resend error:", err);
+      showEmailBanner("error", `Failed to resend: ${err.message || err}`);
+    } finally {
+      setResendingOrderId(null);
+    }
+  };
+
   if (!teamCanView) {
     return (
       <div className="bg-white border border-slate-200 rounded-lg p-8 text-center max-w-2xl mx-auto my-12 shadow-sm">
@@ -1359,6 +1987,29 @@ export default function OrdersOffersView({
 
   return (
     <div className="space-y-6 max-w-full mx-auto px-1 py-2">
+      {/* Email Notification Banner */}
+      {emailBanner && (
+        <div
+          className={`p-3.5 rounded-xl border flex items-center justify-between text-xs font-semibold animate-fadeIn ${
+            emailBanner.type === "success"
+              ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+              : "bg-rose-50 text-rose-800 border-rose-200"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {emailBanner.type === "success" ? <Check size={16} className="text-emerald-600" /> : <ShieldAlert size={16} className="text-rose-600" />}
+            <span>{emailBanner.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setEmailBanner(null)}
+            className="p-1 hover:bg-black/5 rounded-md text-slate-500 hover:text-slate-800"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* Header section */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
@@ -1372,48 +2023,6 @@ export default function OrdersOffersView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-center">
-          {/* Google Drive Status & Re-authorization */}
-          {isUserTeamAllowedForDrive(activeUser, driveSettings) && (
-            <div className="flex items-center gap-1.5 mr-1">
-              {hasDriveAccess ? (
-                <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-2 rounded-xl text-[11px] font-bold">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                  <span>Google Drive Active</span>
-                  <button
-                    type="button"
-                    onClick={handleConnectDrive}
-                    disabled={isConnecting}
-                    className="ml-1 text-[10px] text-emerald-800 hover:text-emerald-950 font-semibold underline cursor-pointer"
-                    title="Refresh / Re-authorize Google Drive Access"
-                  >
-                    {isConnecting ? "Refreshing..." : "Re-auth"}
-                  </button>
-                </div>
-              ) : (
-                <div className="inline-flex items-center gap-2 bg-amber-50 text-amber-800 border border-amber-200 px-3 py-1.5 rounded-xl text-[11px] font-bold">
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-                    <span>Drive Unlinked</span>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={isConnecting}
-                    onClick={handleConnectDrive}
-                    className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-1 px-2.5 rounded-lg text-[10px] flex items-center gap-1 transition-all shadow-xs cursor-pointer"
-                    title="Connect / Authorize Google Drive"
-                  >
-                    {isConnecting ? (
-                      <Loader2 size={10} className="animate-spin" />
-                    ) : (
-                      <Upload size={10} />
-                    )}
-                    <span>Connect Drive</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
           {activeUser.role === Role.Admin && (
             <button
               type="button"
@@ -1504,8 +2113,8 @@ export default function OrdersOffersView({
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
           <div className="min-w-0">
             <span className="text-[10px] text-slate-400 font-bold uppercase font-mono block tracking-wider">Gross Value</span>
-            <span className="text-lg font-bold text-slate-900 mt-1 block font-mono">
-              ₹{totalValue.toLocaleString()}
+            <span className="text-lg font-bold text-slate-900 mt-1 block font-mono" title={`₹${totalValue.toLocaleString('en-IN')}`}>
+              {formatCompactRupees(totalValue)}
             </span>
           </div>
           <div className="p-2.5 bg-emerald-50 rounded-lg text-emerald-600">
@@ -1520,8 +2129,8 @@ export default function OrdersOffersView({
             <span className="text-lg font-bold text-slate-900 mt-1 block font-mono">
               {closedWonOrders.length}
             </span>
-            <span className="text-[9.5px] text-emerald-600 font-bold mt-0.5 block">
-              ₹{closedWonValue.toLocaleString()} won
+            <span className="text-[9.5px] text-emerald-600 font-bold mt-0.5 block" title={`₹${closedWonValue.toLocaleString('en-IN')} won`}>
+              {formatCompactRupees(closedWonValue)} won
             </span>
           </div>
           <div className="p-2.5 bg-amber-50 rounded-lg text-amber-600">
@@ -1623,6 +2232,107 @@ export default function OrdersOffersView({
         </div>
       </div>
 
+      {/* Date Range Filter Bar */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        {/* Date Field Type Selector + Custom Date Inputs */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5 text-xs text-slate-700 font-bold font-mono">
+            <Calendar size={14} className="text-indigo-600" />
+            <span>FILTER DATE BY:</span>
+          </div>
+
+          {/* Date Type Toggle: Create Date vs Invoice Date */}
+          <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+            <button
+              type="button"
+              onClick={() => {
+                setDateFilterType("createdAt");
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                dateFilterType === "createdAt"
+                  ? "bg-white text-indigo-700 shadow-xs border border-slate-200"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              Create Date
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setDateFilterType("invoiceDate");
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                dateFilterType === "invoiceDate"
+                  ? "bg-white text-indigo-700 shadow-xs border border-slate-200"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              Invoice Date
+            </button>
+          </div>
+
+          {/* Date Pickers */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
+              <span className="text-[10px] font-bold text-slate-400 font-mono uppercase">From</span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => {
+                  setStartDate(e.target.value);
+                  setActiveDatePreset("Custom");
+                }}
+                className="text-xs text-slate-700 font-mono bg-transparent outline-none cursor-pointer"
+              />
+            </div>
+            <span className="text-slate-300 font-bold font-mono text-xs">to</span>
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
+              <span className="text-[10px] font-bold text-slate-400 font-mono uppercase">To</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => {
+                  setEndDate(e.target.value);
+                  setActiveDatePreset("Custom");
+                }}
+                className="text-xs text-slate-700 font-mono bg-transparent outline-none cursor-pointer"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Presets & Reset */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-bold text-slate-400 font-mono uppercase mr-1">Presets:</span>
+          {["All Time", "Today", "This Week", "This Month", "Last Month", "This FY"].map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              onClick={() => applyDatePreset(preset)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold font-mono transition-all cursor-pointer ${
+                activeDatePreset === preset
+                  ? "bg-indigo-600 text-white shadow-xs"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200/60"
+              }`}
+            >
+              {preset}
+            </button>
+          ))}
+
+          {(startDate || endDate || activeDatePreset !== "All Time") && (
+            <button
+              type="button"
+              onClick={clearDateFilter}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold font-mono text-rose-600 hover:bg-rose-50 border border-rose-200 flex items-center gap-1 transition-all ml-1 cursor-pointer"
+              title="Clear date filter"
+            >
+              <X size={12} />
+              Reset
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Main Order/Offer Registry */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
@@ -1633,20 +2343,21 @@ export default function OrdersOffersView({
                 <th className="py-2.5 px-3">Itemized Product List</th>
                 <th className="py-2.5 px-3 text-center">Status</th>
                 <th className="py-2.5 px-3">Invoice Details</th>
+                <th className="py-2.5 px-3">Email Sent Status</th>
                 <th className="py-2.5 px-3">Total Deal Value</th>
                 <th className="py-2.5 px-3">Assign Ownership</th>
                 <th className="py-2.5 px-4 text-right">Auth Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {visibleOrders.length === 0 ? (
+              {displayedOrders.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-xs text-slate-400 font-mono">
+                  <td colSpan={8} className="py-12 text-center text-xs text-slate-400 font-mono">
                     No matching orders or offers found in the registry.
                   </td>
                 </tr>
               ) : (
-                visibleOrders.map((order) => {
+                displayedOrders.map((order) => {
                   const createdBy = users.find((u) => u.id === order.createdByUserId);
                   const assignedTo = users.find((u) => u.id === order.assignedToUserId);
 
@@ -1670,19 +2381,55 @@ export default function OrdersOffersView({
                     <tr key={order.id} className="hover:bg-slate-50/50 transition-colors">
                       {/* Client / Company info */}
                       <td className="py-3 px-4 min-w-[200px]">
-                        <div className="flex flex-col">
-                          <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                            <Building2 size={12} className="text-slate-400 shrink-0" />
-                            {order.companyName || order.clientName}
-                          </span>
-                          <span className="text-[10px] text-slate-600 font-medium flex items-center gap-1 mt-0.5">
-                            <UserIcon size={11} className="text-slate-400 shrink-0" />
-                            {order.clientName}
-                          </span>
-                          <span className="text-[10px] text-slate-400 mt-0.5 font-mono">
-                            {order.email} | {order.phone}
-                          </span>
-                        </div>
+                        {(() => {
+                          const parsedEmails = (order.email || "")
+                            .split(/[,;]/)
+                            .map((e) => e.trim())
+                            .filter(Boolean);
+                          const visibleEmails = parsedEmails.slice(0, 2);
+                          const hiddenCount = parsedEmails.length - 2;
+
+                          return (
+                            <div className="flex flex-col">
+                              <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                                <Building2 size={12} className="text-slate-400 shrink-0" />
+                                {order.companyName || order.clientName}
+                              </span>
+                              <span className="text-[10px] text-slate-600 font-medium flex items-center gap-1 mt-0.5">
+                                <UserIcon size={11} className="text-slate-400 shrink-0" />
+                                {order.clientName}
+                              </span>
+
+                              {/* Email list - displayed on separate rows (max 2) */}
+                              {visibleEmails.length > 0 && (
+                                <div className="mt-1 space-y-0.5 font-mono text-[10px]">
+                                  {visibleEmails.map((em, idx) => (
+                                    <div key={idx} className="text-slate-500 flex items-center gap-1 truncate" title={em}>
+                                      <Mail size={10} className="text-slate-400 shrink-0" />
+                                      <span className="truncate">{em}</span>
+                                    </div>
+                                  ))}
+                                  {hiddenCount > 0 && (
+                                    <div
+                                      className="text-[9px] text-indigo-600 font-semibold pl-3.5 cursor-help"
+                                      title={`Hidden emails: ${parsedEmails.slice(2).join(", ")}`}
+                                    >
+                                      +{hiddenCount} more email{hiddenCount > 1 ? "s" : ""}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Phone */}
+                              {order.phone && (
+                                <span className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1">
+                                  <Phone size={10} className="text-slate-400 shrink-0" />
+                                  {order.phone}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* Items details nested list */}
@@ -1735,7 +2482,25 @@ export default function OrdersOffersView({
                           }`}>
                             {order.status}
                           </span>
-                          {order.closedWonDetails?.poAttachmentUrl && (
+                          {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                            <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                              {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                <a
+                                  key={attIdx}
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails?.customerPoNumber || "document"}_${attIdx + 1}.pdf`);
+                                  }}
+                                  className="inline-flex items-center gap-1 text-[9px] text-emerald-600 hover:text-emerald-800 font-bold bg-emerald-50 hover:bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-150 transition-all shadow-2xs"
+                                  title={`Open ${att.name || 'PO Document'}`}
+                                >
+                                  <FileText size={10} />
+                                  <span>{order.closedWonDetails!.poAttachments!.length === 1 ? "PO Link ↗" : `PO ${attIdx + 1} ↗`}</span>
+                                </a>
+                              ))}
+                            </div>
+                          ) : order.closedWonDetails?.poAttachmentUrl ? (
                             <a
                               href="#"
                               onClick={(e) => {
@@ -1748,7 +2513,7 @@ export default function OrdersOffersView({
                               <FileText size={10} />
                               <span>PO Link ↗</span>
                             </a>
-                          )}
+                          ) : null}
                         </div>
                       </td>
 
@@ -1762,7 +2527,28 @@ export default function OrdersOffersView({
                                 {order.billingDetails.invoiceNumber}
                               </span>
                             </div>
-                            {order.billingDetails.invoiceFileUrl && (
+                            {order.billingDetails.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0 ? (
+                              <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                                {order.billingDetails.invoiceAttachments.map((att, attIdx) => (
+                                  <a
+                                    key={attIdx}
+                                    href="#"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "Doc"}_${attIdx + 1}.pdf`);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-[9px] text-indigo-700 hover:text-indigo-900 font-mono font-bold bg-indigo-50 hover:bg-indigo-100 px-1.5 py-0.5 rounded border border-indigo-200 transition-all shadow-2xs"
+                                    title={`Open ${att.name || `Invoice ${attIdx + 1}`}`}
+                                  >
+                                    <FileText size={10} className="shrink-0 text-indigo-600" />
+                                    <span className="truncate max-w-[110px]">
+                                      {order.billingDetails!.invoiceAttachments!.length === 1 ? (att.name || "Invoice.pdf") : (att.name || `Inv ${attIdx + 1}`)}
+                                    </span>
+                                    <span className="text-[8px] text-indigo-500">↗</span>
+                                  </a>
+                                ))}
+                              </div>
+                            ) : order.billingDetails.invoiceFileUrl ? (
                               <a
                                 href="#"
                                 onClick={(e) => {
@@ -1775,8 +2561,9 @@ export default function OrdersOffersView({
                                 <span className="truncate max-w-[120px]" title={order.billingDetails.invoiceFileName}>
                                   {order.billingDetails.invoiceFileName || "invoice.pdf"}
                                 </span>
+                                <span className="text-[8px] text-indigo-500">↗</span>
                               </a>
-                            )}
+                            ) : null}
                             {order.billingDetails.mappedAt && (
                               <div className="text-[8px] text-slate-400 font-mono">
                                 Mapped: {formatDate(order.billingDetails.mappedAt)}
@@ -1788,10 +2575,21 @@ export default function OrdersOffersView({
                         )}
                       </td>
 
+                      {/* Email Delivery & Sent Status */}
+                      <td className="py-3 px-3 min-w-[200px]">
+                        <EmailSentStatusCell
+                          statusSummary={getEffectiveOrderStatus(order)}
+                          onResend={() => handleResendOrderEmail(order)}
+                          isResending={resendingOrderId === order.id}
+                          canResend={true}
+                          tableType="order"
+                        />
+                      </td>
+
                       {/* Financial grand total */}
                       <td className="py-3 px-3">
-                        <span className="text-slate-950 font-mono font-bold text-xs">
-                          ₹{order.totalValue.toLocaleString()}
+                        <span className="text-slate-950 font-mono font-bold text-xs" title={`₹${order.totalValue.toLocaleString('en-IN')}`}>
+                          {formatCompactRupees(order.totalValue)}
                         </span>
                       </td>
 
@@ -1876,7 +2674,183 @@ export default function OrdersOffersView({
                 })
               )}
             </tbody>
+            <tfoot className="bg-slate-100/90 border-t-2 border-slate-300 font-mono text-xs font-bold text-slate-900">
+              <tr>
+                <td colSpan={5} className="py-3 px-4 text-slate-700 uppercase tracking-wider text-[10px]">
+                  Table Summary ({displayedOrders.length} {displayedOrders.length === 1 ? "Record" : "Records"})
+                </td>
+                <td className="py-3 px-3">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-extrabold text-indigo-950 font-mono" title={`Exact Displayed Total: ₹${displayedOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0).toLocaleString('en-IN')}`}>
+                      {formatCompactRupees(displayedOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0))}
+                    </span>
+                    <span className="text-[9px] font-normal text-slate-500 font-sans">
+                      Displayed Gross Value
+                    </span>
+                  </div>
+                </td>
+                <td colSpan={2} className="py-3 px-3 text-[10px] font-normal text-slate-500 font-sans text-right">
+                  Filtered Gross Value Total: <strong className="text-slate-900 font-mono font-bold" title={`Exact Filtered Total: ₹${visibleOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0).toLocaleString('en-IN')}`}>{formatCompactRupees(visibleOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0))}</strong>
+                </td>
+              </tr>
+            </tfoot>
           </table>
+        </div>
+
+        {/* Pagination & Fast Load "See More" Bar */}
+        <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 text-slate-600 font-mono text-[11px]">
+            <Clock size={14} className="text-indigo-600 shrink-0" />
+            <span>
+              Showing <strong className="text-slate-900 font-bold">{displayedOrders.length}</strong> of <strong className="text-slate-900 font-bold">{sortedOrders.length}</strong> records
+            </span>
+            {sortedOrders.length > 100 && (
+              <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100">
+                <CheckCircle2 size={11} /> Fast Mode (100)
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {displayedOrders.length < sortedOrders.length && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setRecordsLimit((prev) => Math.min(prev + 100, sortedOrders.length))}
+                  className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-indigo-50 border border-slate-300 hover:border-indigo-300 text-indigo-700 font-bold text-xs flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                >
+                  <ChevronDown size={14} />
+                  See More (+100)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecordsLimit(sortedOrders.length)}
+                  className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                >
+                  <Layers size={14} />
+                  Show All ({sortedOrders.length})
+                </button>
+              </>
+            )}
+
+            {recordsLimit > 100 && (
+              <button
+                type="button"
+                onClick={() => setRecordsLimit(100)}
+                className="px-3 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs transition-all cursor-pointer font-mono"
+              >
+                Collapse to Recent 100
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* SUMMARY SECTION BELOW TABLE */}
+      <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-md border border-slate-800 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-indigo-500/20 text-indigo-400 rounded-xl border border-indigo-500/30">
+              <BarChart3 size={20} />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold tracking-tight uppercase font-mono text-white flex items-center gap-2">
+                Orders & Offers Summary
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Consolidated analysis across all {visibleOrders.length} records matching current date range & stage filters
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+            <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 border border-slate-700">
+              Date: <strong className="text-indigo-300">{dateFilterType === "createdAt" ? "Create Date" : "Invoice Date"}</strong> {startDate || endDate ? `(${startDate || "Earliest"} → ${endDate || "Latest"})` : `(${activeDatePreset})`}
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 border border-slate-700">
+              Stage: <strong className="text-emerald-300">{statusFilter}</strong>
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
+          {/* Summary Metric 1 */}
+          <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 flex flex-col justify-between">
+            <div>
+              <span className="text-[10px] font-bold uppercase font-mono text-slate-400 tracking-wider block">Total Filtered Deals</span>
+              <span className="text-xl font-bold font-mono text-white mt-1 block">
+                {visibleOrders.length}
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400 font-mono mt-2 pt-2 border-t border-slate-700/60 block">
+              Showing {displayedOrders.length} in table
+            </span>
+          </div>
+
+          {/* Summary Metric 2 */}
+          <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 flex flex-col justify-between">
+            <div>
+              <span className="text-[10px] font-bold uppercase font-mono text-indigo-300 tracking-wider block">Gross Value (₹)</span>
+              <span className="text-xl font-bold font-mono text-white mt-1 block" title={`₹${totalValue.toLocaleString('en-IN')}`}>
+                {formatCompactRupees(totalValue)}
+              </span>
+            </div>
+            <span className="text-[10px] text-indigo-300 font-mono mt-2 pt-2 border-t border-slate-700/60 block">
+              Avg {formatCompactRupees(averageDealValue)} / deal
+            </span>
+          </div>
+
+          {/* Summary Metric 3 */}
+          <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 flex flex-col justify-between">
+            <div>
+              <span className="text-[10px] font-bold uppercase font-mono text-emerald-400 tracking-wider block">Closed Won Revenue</span>
+              <span className="text-xl font-bold font-mono text-emerald-400 mt-1 block" title={`₹${closedWonValue.toLocaleString('en-IN')}`}>
+                {formatCompactRupees(closedWonValue)}
+              </span>
+            </div>
+            <span className="text-[10px] text-emerald-400/90 font-mono mt-2 pt-2 border-t border-slate-700/60 block">
+              {closedWonOrders.length} orders ({((closedWonOrders.length / (visibleOrders.length || 1)) * 100).toFixed(1)}% won)
+            </span>
+          </div>
+
+          {/* Summary Metric 4 */}
+          <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 flex flex-col justify-between">
+            <div>
+              <span className="text-[10px] font-bold uppercase font-mono text-amber-400 tracking-wider block">Active Pipeline (Offers)</span>
+              <span className="text-xl font-bold font-mono text-amber-400 mt-1 block" title={`₹${openOffersValue.toLocaleString('en-IN')}`}>
+                {formatCompactRupees(openOffersValue)}
+              </span>
+            </div>
+            <span className="text-[10px] text-amber-400/90 font-mono mt-2 pt-2 border-t border-slate-700/60 block">
+              {openOffers.length} in negotiation/proposal
+            </span>
+          </div>
+
+          {/* Summary Metric 5 */}
+          <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 flex flex-col justify-between">
+            <div>
+              <span className="text-[10px] font-bold uppercase font-mono text-sky-400 tracking-wider block">Invoiced Orders</span>
+              <span className="text-xl font-bold font-mono text-sky-400 mt-1 block" title={`₹${totalInvoicedValue.toLocaleString('en-IN')}`}>
+                {formatCompactRupees(totalInvoicedValue)}
+              </span>
+            </div>
+            <span className="text-[10px] text-sky-400/90 font-mono mt-2 pt-2 border-t border-slate-700/60 block">
+              {invoicedOrders.length} invoices generated
+            </span>
+          </div>
+
+          {/* Summary Metric 6 */}
+          <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 flex flex-col justify-between">
+            <div>
+              <span className="text-[10px] font-bold uppercase font-mono text-purple-300 tracking-wider block">Total Quantity</span>
+              <span className="text-xl font-bold font-mono text-white mt-1 block" title={`${totalQuantityUnits.toLocaleString('en-IN')} Kg`}>
+                {formatQuantityMT(totalQuantityUnits)}
+              </span>
+            </div>
+            <span className="text-[10px] text-purple-300 font-mono mt-2 pt-2 border-t border-slate-700/60 block">
+              Across {totalProductLines} product lines
+            </span>
+          </div>
         </div>
       </div>
 
@@ -2179,16 +3153,7 @@ export default function OrdersOffersView({
                   </div>
                 )}
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs font-bold text-slate-500 uppercase font-mono">Payment Bank</label>
-                    <button
-                      type="button"
-                      onClick={() => setIsAddBankModalOpen(true)}
-                      className="text-[10.5px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors flex items-center gap-0.5 cursor-pointer"
-                    >
-                      <Plus size={11} /> Add New Bank
-                    </button>
-                  </div>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Payment Bank</label>
                   <select
                     value={newPaymentBankId}
                     onChange={(e) => setNewPaymentBankId(e.target.value)}
@@ -2353,15 +3318,21 @@ export default function OrdersOffersView({
                 <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 mt-2 font-mono space-y-1">
                   <div className="flex justify-between items-center text-xs text-slate-600">
                     <span>Base Subtotal (Excl. Tax):</span>
-                    <span className="font-bold">₹{calculateBaseTotal(newItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <span className="font-bold">₹{calculateBaseTotal(newItems, newStatus, newFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
+                  {newStatus === "Closed Won" && parseFreightAmount(newFreightChargedInBill) > 0 && (
+                    <div className="flex justify-between items-center text-xs text-emerald-700 bg-emerald-50/70 px-2 py-1 rounded border border-emerald-200/60 font-sans">
+                      <span>Freight Charged in Bill:</span>
+                      <span className="font-bold font-mono">₹{parseFreightAmount(newFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (+18% GST: ₹{(parseFreightAmount(newFreightChargedInBill) * 0.18).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center text-xs text-slate-600">
                     <span>Total GST (18% / applicable tax):</span>
-                    <span className="font-bold text-indigo-600">₹{calculateTotalGst(newItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <span className="font-bold text-indigo-600">₹{calculateTotalGst(newItems, newStatus, newFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                   <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-200 pt-1.5 mt-1">
                     <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
-                    <span className="text-indigo-900 font-black">₹{calculateTotalValueWithGst(newItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <span className="text-indigo-900 font-black">₹{calculateTotalValueWithGst(newItems, newStatus, newFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                 </div>
               </div>
@@ -2511,12 +3482,24 @@ export default function OrdersOffersView({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Delivery / Booking Term</label>
-                      <input
-                        type="text"
+                      <select
                         value={newDeliveryTerm}
                         onChange={(e) => setNewDeliveryTerm(e.target.value)}
                         className="w-full text-xs border border-slate-200 bg-white px-3 py-2 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none"
-                      />
+                      >
+                        <option value="">-- Select Delivery Term --</option>
+                        {Array.from(new Set([
+                          "Door Delivery",
+                          "Transporter Godown Delivery at Destination",
+                          "Party Vehicle (self Pickup)",
+                          ...deliveryTerms.map(dt => dt.name),
+                          ...(newDeliveryTerm ? [newDeliveryTerm] : [])
+                        ])).map((term) => (
+                          <option key={term} value={term}>
+                            {term}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div>
                       <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Warehouse Managed By</label>
@@ -2525,10 +3508,19 @@ export default function OrdersOffersView({
                         onChange={(e) => setNewWarehouseManagedBy(e.target.value)}
                         className="w-full text-xs border border-slate-200 bg-white px-3 py-2 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none"
                       >
-                        <option value="">Select Warehouse...</option>
-                        {warehouses.map((wh) => (
-                          <option key={wh.id} value={wh.name}>{wh.name}</option>
-                        ))}
+                        <option value="">Select Warehouse Manager...</option>
+                        {warehouses.map((wh) => {
+                          const mgrValue = wh.warehouseManager?.trim() || wh.name?.trim() || wh.warehouseName?.trim() || "";
+                          const label = wh.warehouseManager?.trim()
+                            ? `${wh.warehouseManager.trim()}${wh.warehouseName ? ` (${wh.warehouseName})` : ""}`
+                            : (wh.name || wh.warehouseName || "");
+                          return (
+                            <option key={wh.id} value={mgrValue}>{label}</option>
+                          );
+                        })}
+                        {newWarehouseManagedBy && !warehouses.some(w => (w.warehouseManager?.trim() || w.name?.trim() || w.warehouseName?.trim()) === newWarehouseManagedBy || w.name === newWarehouseManagedBy) && (
+                          <option value={newWarehouseManagedBy}>{newWarehouseManagedBy}</option>
+                        )}
                       </select>
                     </div>
                   </div>
@@ -2599,145 +3591,114 @@ export default function OrdersOffersView({
                     </div>
                   </div>
                   <div>
-                    {newPoAttachmentUrl ? (
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Attached PO Document</label>
-                        <div className="flex items-center justify-between bg-emerald-50/50 border border-emerald-150 p-3 rounded-xl">
-                          <div className="flex items-center gap-3">
-                            <div className="p-2 bg-emerald-100 rounded-lg text-emerald-700 animate-pulse">
-                              <FileText className="h-5 w-5" />
-                            </div>
-                            <div className="text-left">
-                              <p className="text-xs font-semibold text-slate-850">
-                                {newPoFileName || "Attached Purchase Order"}
-                              </p>
-                              <a 
-                                href="#" 
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  openOrDownloadDocument(newPoAttachmentUrl, newPoFileName || "po_document.pdf");
-                                }}
-                                className="text-[10px] text-indigo-600 hover:text-indigo-850 font-bold underline block mt-0.5"
-                              >
-                                View PO Document ↗
-                              </a>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNewPoAttachmentUrl("");
-                              setNewPoFileName("");
-                            }}
-                            className="p-1 hover:bg-slate-150 rounded-lg text-slate-500 hover:text-rose-600 transition-colors cursor-pointer"
-                            title="Remove attachment"
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Attach PO Document</label>
-                        {!hasDriveAccess ? (
-                          <div className="border border-slate-200 bg-slate-50/50 rounded-xl p-5 text-center transition-all">
-                            <FileText className="mx-auto h-6 w-6 text-indigo-500 mb-2 opacity-80" />
-                            {isUserTeamAllowedForDrive(activeUser, driveSettings) ? (
-                              <>
-                                <p className="text-xs font-semibold text-slate-750">
-                                  Connect Google Drive to Upload POs
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-tight">
+                        Attach PO Document(s) <span className="text-slate-400 font-normal">({newPoAttachments.length}/5 files)</span>
+                      </label>
+                      {newPoAttachments.length > 0 && newPoAttachments.length < 5 && !isUploading && (
+                        <label
+                          htmlFor="new-po-file-upload-more"
+                          className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold cursor-pointer hover:underline flex items-center gap-1"
+                        >
+                          <Plus size={11} /> Add more (up to {5 - newPoAttachments.length})
+                        </label>
+                      )}
+                    </div>
+
+                    {/* Attached files list */}
+                    {newPoAttachments.length > 0 && (
+                      <div className="space-y-2 mb-2">
+                        {newPoAttachments.map((att, idx) => (
+                          <div key={idx} className="flex items-center justify-between bg-emerald-50/60 border border-emerald-200 p-2.5 rounded-xl shadow-2xs">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="p-1.5 bg-emerald-100 rounded-lg text-emerald-700 shrink-0">
+                                <FileText className="h-4 w-4" />
+                              </div>
+                              <div className="min-w-0 text-left">
+                                <p className="text-xs font-semibold text-slate-800 truncate" title={att.name}>
+                                  {att.name || `Purchase Order Doc ${idx + 1}`}
                                 </p>
-                                <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
-                                  {driveSettings?.folderName
-                                    ? `Connect or re-authorize to upload PO documents directly to central folder "${driveSettings.folderName}".`
-                                    : "Connect your Google Drive account to securely upload customer PO documents."}
-                                </p>
-                                <button
-                                  type="button"
-                                  disabled={isConnecting}
-                                  onClick={handleConnectDrive}
-                                  className="mt-3 inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2 px-4 rounded-xl text-xs transition-all duration-150 shadow-sm cursor-pointer"
+                                <a
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    openOrDownloadDocument(att.url, att.name || "po_document.pdf");
+                                  }}
+                                  className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold underline inline-block mt-0.5"
                                 >
-                                  {isConnecting ? (
-                                    <>
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      <span>Authorizing...</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Upload className="h-3.5 w-3.5" />
-                                      <span>Connect Google Drive</span>
-                                    </>
-                                  )}
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <p className="text-xs font-semibold text-slate-750">
-                                  Google Drive Access Restricted
-                                </p>
-                                <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
-                                  Google Drive upload is restricted to authorized teams. Please contact your system administrator to enable access for team <span className="font-semibold text-slate-700 font-mono">"{activeUser.teamName || "Unassigned"}"</span>.
-                                </p>
-                              </>
-                            )}
-                            {uploadError && (
-                              <p className="text-[10px] text-rose-500 font-semibold mt-2">⚠️ {uploadError}</p>
-                            )}
-                          </div>
-                        ) : (
-                          <div>
-                            <div 
-                              className={`border-2 border-dashed rounded-xl p-4 text-center transition-all cursor-pointer ${
-                                isUploading 
-                                  ? "border-indigo-400 bg-indigo-50/20" 
-                                  : "border-slate-200 hover:border-indigo-400 bg-slate-50/50 hover:bg-slate-50"
-                              }`}
-                              onDragOver={(e) => e.preventDefault()}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                if (isUploading) return;
-                                const files = e.dataTransfer.files;
-                                if (files && files.length > 0) {
-                                  handlePOFileUpload(files[0], false);
-                                }
-                              }}
-                            >
-                              <input
-                                type="file"
-                                id="new-po-file-upload"
-                                className="hidden"
-                                accept=".pdf"
-                                disabled={isUploading}
-                                onChange={(e) => {
-                                  const files = e.target.files;
-                                  if (files && files.length > 0) {
-                                    handlePOFileUpload(files[0], false);
-                                  }
-                                }}
-                              />
-                              {isUploading ? (
-                                <div className="flex flex-col items-center justify-center py-2">
-                                  <Loader2 className="h-6 w-6 text-indigo-650 animate-spin mb-1" />
-                                  <p className="text-xs font-semibold text-slate-750">Uploading to Google Drive...</p>
-                                  <p className="text-[10px] text-slate-500 mt-0.5">Creating 'SMS_PO' folder and storing file</p>
-                                </div>
-                              ) : (
-                                <label htmlFor="new-po-file-upload" className="cursor-pointer block py-1">
-                                  <Upload className="mx-auto h-6 w-6 text-slate-400 mb-1" />
-                                  <p className="text-xs font-semibold text-slate-700">
-                                    Click to attach PDF PO file or drag & drop here (PDF only)
-                                  </p>
-                                  <p className="text-[10px] text-slate-500 mt-0.5">
-                                    Securely saves to your Google Drive in 'SMS_PO' folder
-                                  </p>
-                                </label>
-                              )}
+                                  View PO Document ↗
+                                </a>
+                              </div>
                             </div>
-                            {uploadError && (
-                              <p className="text-[10px] text-rose-500 font-semibold mt-1">⚠️ {uploadError}</p>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleRemovePOAttachment(idx, false)}
+                              className="p-1 hover:bg-rose-100 rounded-lg text-slate-400 hover:text-rose-600 transition-colors cursor-pointer shrink-0 ml-2"
+                              title="Remove this PO document"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
                           </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Dropzone for up to 5 files */}
+                    {newPoAttachments.length < 5 && (
+                      <div>
+                        <div 
+                          className={`border-2 border-dashed rounded-xl p-4 text-center transition-all cursor-pointer ${
+                            isUploading 
+                              ? "border-indigo-400 bg-indigo-50/20" 
+                              : "border-slate-200 hover:border-indigo-400 bg-slate-50/50 hover:bg-slate-50"
+                          }`}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (isUploading) return;
+                            const files = e.dataTransfer.files;
+                            if (files && files.length > 0) {
+                              handlePOFilesUpload(files, false);
+                            }
+                          }}
+                        >
+                          <input
+                            type="file"
+                            id="new-po-file-upload-more"
+                            className="hidden"
+                            accept=".pdf"
+                            multiple
+                            disabled={isUploading}
+                            onChange={(e) => {
+                              const files = e.target.files;
+                              if (files && files.length > 0) {
+                                handlePOFilesUpload(files, false);
+                              }
+                              e.target.value = "";
+                            }}
+                          />
+                          {isUploading ? (
+                            <div className="flex flex-col items-center justify-center py-2">
+                              <Loader2 className="h-6 w-6 text-indigo-650 animate-spin mb-1" />
+                              <p className="text-xs font-semibold text-slate-750">{uploadProgressText || "Uploading Document..."}</p>
+                              <p className="text-[10px] text-slate-500 mt-0.5">Storing document directly in Google Drive</p>
+                            </div>
+                          ) : (
+                            <label htmlFor="new-po-file-upload-more" className="cursor-pointer block py-1">
+                              <Upload className="mx-auto h-6 w-6 text-slate-400 mb-1" />
+                              <p className="text-xs font-semibold text-slate-700">
+                                {newPoAttachments.length === 0 
+                                  ? "Click to attach PDF PO file(s) or drag & drop (up to 5 files at a time)"
+                                  : `Click to attach up to ${5 - newPoAttachments.length} more PDF file(s)`}
+                              </p>
+                              <p className="text-[10px] text-slate-500 mt-0.5">
+                                Automatically organized and saved to Google Drive
+                              </p>
+                            </label>
+                          )}
+                        </div>
+                        {uploadError && (
+                          <p className="text-[10px] text-rose-500 font-semibold mt-1">⚠️ {uploadError}</p>
                         )}
                       </div>
                     )}
@@ -2967,16 +3928,7 @@ export default function OrdersOffersView({
                   </div>
                 )}
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs font-bold text-slate-500 uppercase font-mono">Payment Bank</label>
-                    <button
-                      type="button"
-                      onClick={() => setIsAddBankModalOpen(true)}
-                      className="text-[10.5px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors flex items-center gap-0.5 cursor-pointer"
-                    >
-                      <Plus size={11} /> Add New Bank
-                    </button>
-                  </div>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Payment Bank</label>
                   <select
                     value={editPaymentBankId}
                     onChange={(e) => setEditPaymentBankId(e.target.value)}
@@ -3141,15 +4093,21 @@ export default function OrdersOffersView({
                 <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 mt-2 font-mono space-y-1">
                   <div className="flex justify-between items-center text-xs text-slate-600">
                     <span>Base Subtotal (Excl. Tax):</span>
-                    <span className="font-bold">₹{calculateBaseTotal(editItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <span className="font-bold">₹{calculateBaseTotal(editItems, editStatus, editFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
+                  {editStatus === "Closed Won" && parseFreightAmount(editFreightChargedInBill) > 0 && (
+                    <div className="flex justify-between items-center text-xs text-emerald-700 bg-emerald-50/70 px-2 py-1 rounded border border-emerald-200/60 font-sans">
+                      <span>Freight Charged in Bill:</span>
+                      <span className="font-bold font-mono">₹{parseFreightAmount(editFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (+18% GST: ₹{(parseFreightAmount(editFreightChargedInBill) * 0.18).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center text-xs text-slate-600">
                     <span>Total GST (18% / applicable tax):</span>
-                    <span className="font-bold text-amber-700">₹{calculateTotalGst(editItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <span className="font-bold text-amber-700">₹{calculateTotalGst(editItems, editStatus, editFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                   <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-200 pt-1.5 mt-1">
                     <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
-                    <span className="text-amber-950 font-black">₹{calculateTotalValueWithGst(editItems).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <span className="text-amber-950 font-black">₹{calculateTotalValueWithGst(editItems, editStatus, editFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                 </div>
               </div>
@@ -3299,12 +4257,24 @@ export default function OrdersOffersView({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Delivery / Booking Term</label>
-                      <input
-                        type="text"
+                      <select
                         value={editDeliveryTerm}
                         onChange={(e) => setEditDeliveryTerm(e.target.value)}
                         className="w-full text-xs border border-slate-200 bg-white px-3 py-2 rounded-lg focus:ring-1 focus:ring-amber-500 outline-none"
-                      />
+                      >
+                        <option value="">-- Select Delivery Term --</option>
+                        {Array.from(new Set([
+                          "Door Delivery",
+                          "Transporter Godown Delivery at Destination",
+                          "Party Vehicle (self Pickup)",
+                          ...deliveryTerms.map(dt => dt.name),
+                          ...(editDeliveryTerm ? [editDeliveryTerm] : [])
+                        ])).map((term) => (
+                          <option key={term} value={term}>
+                            {term}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div>
                       <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Warehouse Managed By</label>
@@ -3313,10 +4283,19 @@ export default function OrdersOffersView({
                         onChange={(e) => setEditWarehouseManagedBy(e.target.value)}
                         className="w-full text-xs border border-slate-200 bg-white px-3 py-2 rounded-lg focus:ring-1 focus:ring-amber-500 outline-none"
                       >
-                        <option value="">Select Warehouse...</option>
-                        {warehouses.map((wh) => (
-                          <option key={wh.id} value={wh.name}>{wh.name}</option>
-                        ))}
+                        <option value="">Select Warehouse Manager...</option>
+                        {warehouses.map((wh) => {
+                          const mgrValue = wh.warehouseManager?.trim() || wh.name?.trim() || wh.warehouseName?.trim() || "";
+                          const label = wh.warehouseManager?.trim()
+                            ? `${wh.warehouseManager.trim()}${wh.warehouseName ? ` (${wh.warehouseName})` : ""}`
+                            : (wh.name || wh.warehouseName || "");
+                          return (
+                            <option key={wh.id} value={mgrValue}>{label}</option>
+                          );
+                        })}
+                        {editWarehouseManagedBy && !warehouses.some(w => (w.warehouseManager?.trim() || w.name?.trim() || w.warehouseName?.trim()) === editWarehouseManagedBy || w.name === editWarehouseManagedBy) && (
+                          <option value={editWarehouseManagedBy}>{editWarehouseManagedBy}</option>
+                        )}
                       </select>
                     </div>
                   </div>
@@ -3387,145 +4366,114 @@ export default function OrdersOffersView({
                     </div>
                   </div>
                   <div>
-                    {editPoAttachmentUrl ? (
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Attached PO Document</label>
-                        <div className="flex items-center justify-between bg-emerald-50/50 border border-emerald-150 p-3 rounded-xl">
-                          <div className="flex items-center gap-3">
-                            <div className="p-2 bg-emerald-100 rounded-lg text-emerald-700 animate-pulse">
-                              <FileText className="h-5 w-5" />
-                            </div>
-                            <div className="text-left">
-                              <p className="text-xs font-semibold text-slate-850">
-                                {editPoFileName || "Attached Purchase Order"}
-                              </p>
-                              <a 
-                                href="#" 
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  openOrDownloadDocument(editPoAttachmentUrl, editPoFileName || "po_document.pdf");
-                                }}
-                                className="text-[10px] text-amber-600 hover:text-amber-850 font-bold underline block mt-0.5"
-                              >
-                                View PO Document ↗
-                              </a>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditPoAttachmentUrl("");
-                              setEditPoFileName("");
-                            }}
-                            className="p-1 hover:bg-slate-150 rounded-lg text-slate-500 hover:text-rose-600 transition-colors cursor-pointer"
-                            title="Remove attachment"
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono tracking-tight">Attach PO Document</label>
-                        {!hasDriveAccess ? (
-                          <div className="border border-slate-200 bg-slate-50/50 rounded-xl p-5 text-center transition-all">
-                            <FileText className="mx-auto h-6 w-6 text-indigo-500 mb-2 opacity-80" />
-                            {isUserTeamAllowedForDrive(activeUser, driveSettings) ? (
-                              <>
-                                <p className="text-xs font-semibold text-slate-750">
-                                  Connect Google Drive to Upload POs
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-tight">
+                        Attach PO Document(s) <span className="text-slate-400 font-normal">({editPoAttachments.length}/5 files)</span>
+                      </label>
+                      {editPoAttachments.length > 0 && editPoAttachments.length < 5 && !isUploading && (
+                        <label
+                          htmlFor="edit-po-file-upload-more"
+                          className="text-[10px] text-amber-600 hover:text-amber-800 font-bold cursor-pointer hover:underline flex items-center gap-1"
+                        >
+                          <Plus size={11} /> Add more (up to {5 - editPoAttachments.length})
+                        </label>
+                      )}
+                    </div>
+
+                    {/* Attached files list */}
+                    {editPoAttachments.length > 0 && (
+                      <div className="space-y-2 mb-2">
+                        {editPoAttachments.map((att, idx) => (
+                          <div key={idx} className="flex items-center justify-between bg-emerald-50/60 border border-emerald-200 p-2.5 rounded-xl shadow-2xs">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="p-1.5 bg-emerald-100 rounded-lg text-emerald-700 shrink-0">
+                                <FileText className="h-4 w-4" />
+                              </div>
+                              <div className="min-w-0 text-left">
+                                <p className="text-xs font-semibold text-slate-800 truncate" title={att.name}>
+                                  {att.name || `Purchase Order Doc ${idx + 1}`}
                                 </p>
-                                <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
-                                  {driveSettings?.folderName
-                                    ? `Connect or re-authorize to upload PO documents directly to central folder "${driveSettings.folderName}".`
-                                    : "Connect your Google Drive account to securely upload customer PO documents."}
-                                </p>
-                                <button
-                                  type="button"
-                                  disabled={isConnecting}
-                                  onClick={handleConnectDrive}
-                                  className="mt-3 inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2 px-4 rounded-xl text-xs transition-all duration-150 shadow-sm cursor-pointer"
+                                <a
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    openOrDownloadDocument(att.url, att.name || "po_document.pdf");
+                                  }}
+                                  className="text-[10px] text-amber-600 hover:text-amber-800 font-bold underline inline-block mt-0.5"
                                 >
-                                  {isConnecting ? (
-                                    <>
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      <span>Authorizing...</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Upload className="h-3.5 w-3.5" />
-                                      <span>Connect Google Drive</span>
-                                    </>
-                                  )}
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <p className="text-xs font-semibold text-slate-750">
-                                  Google Drive Access Restricted
-                                </p>
-                                <p className="text-[10px] text-slate-500 mt-1 max-w-sm mx-auto">
-                                  Google Drive upload is restricted to authorized teams. Please contact your system administrator to enable access for team <span className="font-semibold text-slate-700 font-mono">"{activeUser.teamName || "Unassigned"}"</span>.
-                                </p>
-                              </>
-                            )}
-                            {uploadError && (
-                              <p className="text-[10px] text-rose-500 font-semibold mt-2">⚠️ {uploadError}</p>
-                            )}
-                          </div>
-                        ) : (
-                          <div>
-                            <div 
-                              className={`border-2 border-dashed rounded-xl p-4 text-center transition-all cursor-pointer ${
-                                isUploading 
-                                  ? "border-amber-400 bg-amber-50/20" 
-                                  : "border-slate-200 hover:border-amber-400 bg-slate-50/50 hover:bg-slate-50"
-                              }`}
-                              onDragOver={(e) => e.preventDefault()}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                if (isUploading) return;
-                                const files = e.dataTransfer.files;
-                                if (files && files.length > 0) {
-                                  handlePOFileUpload(files[0], true);
-                                }
-                              }}
-                            >
-                              <input
-                                type="file"
-                                id="edit-po-file-upload"
-                                className="hidden"
-                                accept=".pdf"
-                                disabled={isUploading}
-                                onChange={(e) => {
-                                  const files = e.target.files;
-                                  if (files && files.length > 0) {
-                                    handlePOFileUpload(files[0], true);
-                                  }
-                                }}
-                              />
-                              {isUploading ? (
-                                <div className="flex flex-col items-center justify-center py-2">
-                                  <Loader2 className="h-6 w-6 text-amber-600 animate-spin mb-1" />
-                                  <p className="text-xs font-semibold text-slate-750">Uploading to Google Drive...</p>
-                                  <p className="text-[10px] text-slate-500 mt-0.5">Creating 'SMS_PO' folder and storing file</p>
-                                </div>
-                              ) : (
-                                <label htmlFor="edit-po-file-upload" className="cursor-pointer block py-1">
-                                  <Upload className="mx-auto h-6 w-6 text-slate-400 mb-1" />
-                                  <p className="text-xs font-semibold text-slate-700">
-                                    Click to attach PDF PO file or drag & drop here (PDF only)
-                                  </p>
-                                  <p className="text-[10px] text-slate-500 mt-0.5">
-                                    Securely saves to your Google Drive in 'SMS_PO' folder
-                                  </p>
-                                </label>
-                              )}
+                                  View PO Document ↗
+                                </a>
+                              </div>
                             </div>
-                            {uploadError && (
-                              <p className="text-[10px] text-rose-500 font-semibold mt-1">⚠️ {uploadError}</p>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleRemovePOAttachment(idx, true)}
+                              className="p-1 hover:bg-rose-100 rounded-lg text-slate-400 hover:text-rose-600 transition-colors cursor-pointer shrink-0 ml-2"
+                              title="Remove this PO document"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
                           </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Dropzone for up to 5 files */}
+                    {editPoAttachments.length < 5 && (
+                      <div>
+                        <div 
+                          className={`border-2 border-dashed rounded-xl p-4 text-center transition-all cursor-pointer ${
+                            isUploading 
+                              ? "border-amber-400 bg-amber-50/20" 
+                              : "border-slate-200 hover:border-amber-400 bg-slate-50/50 hover:bg-slate-50"
+                          }`}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (isUploading) return;
+                            const files = e.dataTransfer.files;
+                            if (files && files.length > 0) {
+                              handlePOFilesUpload(files, true);
+                            }
+                          }}
+                        >
+                          <input
+                            type="file"
+                            id="edit-po-file-upload-more"
+                            className="hidden"
+                            accept=".pdf"
+                            multiple
+                            disabled={isUploading}
+                            onChange={(e) => {
+                              const files = e.target.files;
+                              if (files && files.length > 0) {
+                                handlePOFilesUpload(files, true);
+                              }
+                              e.target.value = "";
+                            }}
+                          />
+                          {isUploading ? (
+                            <div className="flex flex-col items-center justify-center py-2">
+                              <Loader2 className="h-6 w-6 text-amber-600 animate-spin mb-1" />
+                              <p className="text-xs font-semibold text-slate-750">{uploadProgressText || "Uploading Document..."}</p>
+                              <p className="text-[10px] text-slate-500 mt-0.5">Storing document directly in Google Drive</p>
+                            </div>
+                          ) : (
+                            <label htmlFor="edit-po-file-upload-more" className="cursor-pointer block py-1">
+                              <Upload className="mx-auto h-6 w-6 text-slate-400 mb-1" />
+                              <p className="text-xs font-semibold text-slate-700">
+                                {editPoAttachments.length === 0 
+                                  ? "Click to attach PDF PO file(s) or drag & drop (up to 5 files at a time)"
+                                  : `Click to attach up to ${5 - editPoAttachments.length} more PDF file(s)`}
+                              </p>
+                              <p className="text-[10px] text-slate-500 mt-0.5">
+                                Automatically organized and saved to Google Drive
+                              </p>
+                            </label>
+                          )}
+                        </div>
+                        {uploadError && (
+                          <p className="text-[10px] text-rose-500 font-semibold mt-1">⚠️ {uploadError}</p>
                         )}
                       </div>
                     )}
@@ -3920,15 +4868,31 @@ export default function OrdersOffersView({
                       </div>
                     </div>
 
-                    <div className="flex items-center">
-                      {selectedOrderDetails.billingDetails.invoiceFileUrl ? (
+                    <div>
+                      <span className="text-[9px] font-mono text-indigo-500 uppercase font-bold block mb-1">Invoice Attachment File(s)</span>
+                      {selectedOrderDetails.billingDetails.invoiceAttachments && selectedOrderDetails.billingDetails.invoiceAttachments.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedOrderDetails.billingDetails.invoiceAttachments.map((att, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => openOrDownloadDocument(att.url, att.name || `Invoice_${selectedOrderDetails.billingDetails!.invoiceNumber}_${idx + 1}.pdf`)}
+                              className="inline-flex items-center gap-1.5 text-[10.5px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded-lg transition-all shadow-2xs cursor-pointer"
+                              title={att.name}
+                            >
+                              <FileText size={12} />
+                              <span className="max-w-[170px] truncate">{att.name || `Invoice Doc ${idx + 1}`} ↗</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : selectedOrderDetails.billingDetails.invoiceFileUrl ? (
                         <button
                           type="button"
                           onClick={() => openOrDownloadDocument(selectedOrderDetails.billingDetails!.invoiceFileUrl!, selectedOrderDetails.billingDetails!.invoiceFileName || `Invoice_${selectedOrderDetails.billingDetails!.invoiceNumber}.pdf`)}
                           className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2.5 rounded-xl transition-all shadow-xs cursor-pointer"
                         >
                           <FileText size={14} />
-                          <span>Download Invoice PDF ↗</span>
+                          <span>{selectedOrderDetails.billingDetails.invoiceFileName || "Download Invoice PDF"} ↗</span>
                         </button>
                       ) : (
                         <span className="text-slate-400 text-xs italic">No attached PDF file</span>
@@ -4004,8 +4968,23 @@ export default function OrdersOffersView({
                       </div>
 
                       <div>
-                        <span className="text-[9px] font-mono text-slate-400 uppercase block">PO Attachment File</span>
-                        {selectedOrderDetails.closedWonDetails.poAttachmentUrl ? (
+                        <span className="text-[9px] font-mono text-slate-400 uppercase block">PO Attachment File(s)</span>
+                        {selectedOrderDetails.closedWonDetails.poAttachments && selectedOrderDetails.closedWonDetails.poAttachments.length > 0 ? (
+                          <div className="flex flex-wrap gap-2 mt-1">
+                            {selectedOrderDetails.closedWonDetails.poAttachments.map((att, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() => openOrDownloadDocument(att.url, att.name || `PO_${selectedOrderDetails.closedWonDetails!.customerPoNumber}_${idx + 1}.pdf`)}
+                                className="inline-flex items-center gap-1.5 text-[10.5px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg border border-emerald-150 transition-all cursor-pointer shadow-2xs"
+                                title={att.name}
+                              >
+                                <FileText size={12} />
+                                <span className="max-w-[170px] truncate">{att.name || `PO Doc ${idx + 1}`} ↗</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : selectedOrderDetails.closedWonDetails.poAttachmentUrl ? (
                           <button
                             type="button"
                             onClick={() => openOrDownloadDocument(selectedOrderDetails.closedWonDetails!.poAttachmentUrl!, `PO_${selectedOrderDetails.closedWonDetails!.customerPoNumber}.pdf`)}
@@ -4045,6 +5024,16 @@ export default function OrdersOffersView({
                           <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">₹{item.amount.toLocaleString()}</td>
                         </tr>
                       ))}
+                      {selectedOrderDetails.status === "Closed Won" && parseFreightAmount(selectedOrderDetails.closedWonDetails?.freightChargedInBill) > 0 && (
+                        <tr className="bg-emerald-50/40 font-medium text-emerald-950 border-t border-slate-200">
+                          <td className="py-2 px-3 font-semibold" colSpan={3}>
+                            Freight Charged in Bill (+18% GST = ₹{(parseFreightAmount(selectedOrderDetails.closedWonDetails?.freightChargedInBill) * 0.18).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono font-bold text-emerald-900">
+                            ₹{(parseFreightAmount(selectedOrderDetails.closedWonDetails?.freightChargedInBill) * 1.18).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      )}
                       <tr className="bg-slate-50/50 font-bold border-t border-slate-200">
                         <td className="py-2.5 px-3 text-slate-700" colSpan={2}>Grand Total</td>
                         <td className="py-2.5 px-3 text-right text-slate-900 font-mono text-xs" colSpan={2}>

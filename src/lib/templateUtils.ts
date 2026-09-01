@@ -196,6 +196,125 @@ export interface ReplaceVariablesContext {
 }
 
 /**
+ * Generate rich sample context data for live template preview
+ */
+export function getSampleTemplateContext(assignedForm?: string): ReplaceVariablesContext {
+  return {
+    recordId: "ORD-2026-94812",
+    creatorName: "Naveen Verma",
+    creatorPhone: "+91 9876543210",
+    creatorEmail: "naveen@chsurya.in",
+    assignedToName: "Mohit Jain",
+    assignedToEmail: "mohit@aromaorganic.in",
+    teamLeadEmail: "lead@aromaorganic.in",
+    managerEmail: "manager@aromaorganic.in",
+    currentUserEmail: "naveen@chsurya.in",
+    clientName: "Demo Contact Person",
+    companyName: "Demo Company Pvt Ltd",
+    email: "demo@company.com",
+    phone: "+91 9123456789",
+    billingAddress: "E-211, 212 A, Tower 2, Seawoods Grand Central, Sector 40, Navi Mumbai 400706",
+    billingGstin: "27AAAAA0000A1Z5",
+    clientBillingAddress: "E-211, 212 A, Tower 2, Seawoods Grand Central, Sector 40, Navi Mumbai 400706",
+    status: "Closed Won",
+    totalValue: 118000,
+    itemsList: "Product 1: ZINC STEARATE ZS- P: Qty 100 @ 1000 = ₹1,18,000 (Incl. 18% GST)",
+    itemsTable: `
+      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 13px; border: 1px solid #cbd5e1; margin-top: 10px;">
+        <thead style="background-color: #f8fafc; color: #334155;">
+          <tr>
+            <th style="border: 1px solid #cbd5e1; text-align: left; padding: 8px;">Product</th>
+            <th style="border: 1px solid #cbd5e1; text-align: center; padding: 8px;">HSN</th>
+            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Qty</th>
+            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Rate (₹)</th>
+            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Taxable (₹)</th>
+            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Tax</th>
+            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Total (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; font-weight: bold;">ZINC STEARATE ZS- P</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center;">2915.70</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">100 Bags</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">1,000</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">1,00,000</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">18% GST</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; font-weight: bold;">1,18,000</td>
+          </tr>
+        </tbody>
+      </table>
+    `,
+    payment: "100% advance against PI",
+    paymentTermsOffer: "Within 30 days from date of Invoice",
+    paymentCreditPeriod: "30 Days",
+    delivery: "Door Delivery",
+    otherTerms: "Standard quality inspection applicable.",
+    notes: "Urgent dispatch requested by buyer.",
+    customerPoNumber: "PO-2026-8891",
+    poDate: "2026-08-15",
+    freightTerm: "Paid by AOL",
+    freightChargedInBill: "Included",
+    freightCostToAol: "₹4,500",
+    cartageLabourCharges: "₹1,500",
+    transporterName: "VRL Logistics",
+    deliveryTerm: "Door Delivery",
+    destinationAddress: "E-211, 212 A, Tower 2, Seawoods Grand Central, Sector 40, Navi Mumbai 400706",
+    gstin: "27AAAAA0000A1Z5",
+    dispatchDate: "2026-08-20",
+    dispatchLocation: "Kolkata Depot",
+    warehouseManagedBy: "Central Chemical Hub",
+    invoiceNumber: "INV-2026-0412",
+    invoiceFileLink: "https://drive.google.com/file/d/sample-invoice/view",
+    amountReceived: 50000,
+    pendingAmount: 68000,
+    paymentStatus: "Partial Paid",
+    dueDate: "2026-09-15",
+    totalPendingAmount: 245000,
+    invoiceCount: 2,
+    invoiceTable: `
+      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 13px; border: 1px solid #cbd5e1; margin-top: 10px;">
+        <thead style="background-color: #f8fafc; color: #334155;">
+          <tr>
+            <th style="border: 1px solid #cbd5e1; text-align: left; padding: 8px;">Invoice #</th>
+            <th style="border: 1px solid #cbd5e1; text-align: left; padding: 8px;">PO #</th>
+            <th style="border: 1px solid #cbd5e1; text-align: center; padding: 8px;">Due Date</th>
+            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Inv Amount (₹)</th>
+            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Pending (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; font-weight: bold;">INV-2026-0301</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">PO-8812</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center; color: #dc2626; font-weight: bold;">2026-08-01 (Overdue)</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">1,27,000</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; font-weight: bold; color: #dc2626;">1,27,000</td>
+          </tr>
+          <tr>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; font-weight: bold;">INV-2026-0412</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">PO-8891</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center;">2026-09-15</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">1,18,000</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; font-weight: bold;">1,18,000</td>
+          </tr>
+        </tbody>
+      </table>
+    `,
+    todayDate: "2026-09-01",
+    bankDetailsTable: `
+      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 13px; border: 1px solid #cbd5e1; background-color: #f8fafc; margin-top: 10px;">
+        <tr><td style="padding: 6px; font-weight: bold; width: 35%;">Bank Name:</td><td style="padding: 6px;">HDFC Bank Ltd</td></tr>
+        <tr><td style="padding: 6px; font-weight: bold;">Account Name:</td><td style="padding: 6px;">Aroma Organics Limited</td></tr>
+        <tr><td style="padding: 6px; font-weight: bold;">Account Number:</td><td style="padding: 6px; font-family: monospace;">50200012345678</td></tr>
+        <tr><td style="padding: 6px; font-weight: bold;">IFSC Code:</td><td style="padding: 6px; font-family: monospace;">HDFC0000123</td></tr>
+        <tr><td style="padding: 6px; font-weight: bold;">Branch:</td><td style="padding: 6px;">Seawoods Grand Central, Navi Mumbai</td></tr>
+      </table>
+    `,
+  };
+}
+
+/**
  * Replace template variables in any text string
  */
 export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext): string {
@@ -321,5 +440,59 @@ export function resolveUserHierarchyInfo(creatorUserId: string, assignedToUserId
     assignedToEmail,
     teamLeadEmail,
     managerEmail,
+  };
+}
+
+/**
+ * Clean & format raw template body into HTML & plain text on client-side
+ * Ensures email rendering works without needing any custom backend code updates.
+ */
+export function formatEmailBodyForSending(rawBody: string): { html: string; text: string } {
+  if (!rawBody) return { html: "", text: "" };
+
+  // 1. Un-escape escaped HTML tags like &lt;b&gt; -> <b>, &lt;table&gt; -> <table>
+  let clean = rawBody
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+
+  const hasHtml = /<[a-z][\s\S]*>/i.test(clean);
+  let htmlResult = "";
+
+  if (!hasHtml) {
+    htmlResult = `<div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #1e293b; line-height: 1.6;">${clean.replace(/\n/g, "<br/>")}</div>`;
+  } else {
+    // Preserve <table> blocks cleanly without injecting <br/> tags into table structures
+    const tableRegex = /(<table[\s\S]*?<\/table>)/gi;
+    const parts = clean.split(tableRegex);
+    const formattedParts = parts.map((part) => {
+      if (part.toLowerCase().startsWith("<table")) {
+        return part.replace(/<br\s*\/?>/gi, "").replace(/\s*\n\s*/g, " ");
+      } else {
+        if (/<(br|p|div|h[1-6]|ul|ol|li)\b[^>]*>/i.test(part)) {
+          return part;
+        }
+        return part.replace(/\n/g, "<br/>");
+      }
+    });
+    htmlResult = `<div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #1e293b; line-height: 1.6;">${formattedParts.join("")}</div>`;
+  }
+
+  // Clean plain text fallback
+  const textResult = htmlResult
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/tr>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+
+  return {
+    html: htmlResult,
+    text: textResult,
   };
 }

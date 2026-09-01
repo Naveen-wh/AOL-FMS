@@ -4,11 +4,8 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { User, SalesLead, ProjectWorkflow, SalesTask, ActionLog, Role, AccessLevel, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, TaxRate, BadDebtor } from "./types";
+import { User, ProjectWorkflow, SalesTask, ActionLog, Role, AccessLevel, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, TaxRate, BadDebtor, EmailSentLog } from "./types";
 import {
-  canViewLead,
-  canEditLead,
-  canDeleteLead,
   canDeleteTask,
   canDeleteClient,
   canDeleteOrderOffer,
@@ -21,8 +18,6 @@ import { auth, signOut, onAuthStateChanged } from "./firebase";
 import { 
   seedDatabaseIfEmpty, 
   subscribeCollection, 
-  saveLead, 
-  deleteLeadDoc, 
   saveTask, 
   deleteTaskDoc, 
   saveLog, 
@@ -48,6 +43,8 @@ import {
   deleteManufacturerDoc,
   saveFreightTerm,
   deleteFreightTermDoc,
+  saveDeliveryTerm,
+  deleteDeliveryTermDoc,
   saveTransporter,
   deleteTransporterDoc,
   saveWarehouse,
@@ -67,7 +64,9 @@ import {
   saveFAQ,
   deleteFAQDoc,
   saveBugRequest,
-  deleteBugRequestDoc
+  deleteBugRequestDoc,
+  subscribeEmailSentLogs,
+  saveEmailSentLog
 } from "./lib/firebaseService";
 
 // Sub-components
@@ -76,7 +75,6 @@ import ClientsView from "./components/ClientsView";
 import AuthScreen from "./components/AuthScreen";
 import PendingOnboardingScreen from "./components/PendingOnboardingScreen";
 import DashboardView from "./components/DashboardView";
-import LeadsView from "./components/LeadsView";
 import OrdersOffersView from "./components/OrdersOffersView";
 import IndentView from "./components/IndentView";
 import PaymentListView from "./components/PaymentListView";
@@ -85,6 +83,7 @@ import TeamDirectoryView from "./components/TeamDirectoryView";
 import AuditLogsView from "./components/AuditLogsView";
 import EmailTemplateManagementView from "./components/EmailTemplateManagementView";
 import AboutMeView from "./components/AboutMeView";
+import { AolLogo } from "./components/AolLogo";
 
 // Lucide Icons
 import {
@@ -103,7 +102,9 @@ import {
   Receipt,
   CreditCard,
   HelpCircle,
-  Type
+  Type,
+  Sun,
+  Moon
 } from "lucide-react";
 
 export default function App() {
@@ -116,7 +117,6 @@ export default function App() {
 
   // Collection states
   const [users, setUsers] = useState<User[]>([]);
-  const [leads, setLeads] = useState<SalesLead[]>([]);
   const [workflows, setWorkflows] = useState<ProjectWorkflow[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [tasks, setTasks] = useState<SalesTask[]>([]);
@@ -130,6 +130,7 @@ export default function App() {
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
   const [freightTerms, setFreightTerms] = useState<FreightTerm[]>([]);
+  const [deliveryTerms, setDeliveryTerms] = useState<DeliveryTerm[]>([]);
   const [transporters, setTransporters] = useState<TransporterName[]>([]);
   const [warehouses, setWarehouses] = useState<WarehouseManagedBy[]>([]);
   const [dispatchLocations, setDispatchLocations] = useState<DispatchLocation[]>([]);
@@ -141,8 +142,28 @@ export default function App() {
   const [faqs, setFaqs] = useState<FAQItem[]>([]);
   const [bugRequests, setBugRequests] = useState<BugRequest[]>([]);
   const [badDebtors, setBadDebtors] = useState<BadDebtor[]>([]);
+  const [emailSentLogs, setEmailSentLogs] = useState<EmailSentLog[]>([]);
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [isAuditLogEnabledState, setIsAuditLogEnabledState] = useState<boolean>(true);
+
+  // Application Theme state (light / dark)
+  type AppTheme = "light" | "dark";
+  const [theme, setTheme] = useState<AppTheme>(() => {
+    const saved = localStorage.getItem("app_theme");
+    if (saved === "dark" || saved === "light") return saved;
+    return typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+
+  useEffect(() => {
+    if (theme === "dark") {
+      document.documentElement.classList.add("dark");
+      document.documentElement.setAttribute("data-theme", "dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+      document.documentElement.setAttribute("data-theme", "light");
+    }
+    localStorage.setItem("app_theme", theme);
+  }, [theme]);
 
   // Application Font Size state (small = default current size, medium = increased, large = large size)
   type AppFontSize = "small" | "medium" | "large";
@@ -234,7 +255,6 @@ export default function App() {
 
     console.log("[Firebase] Setting up query listeners...");
     const unsubUsers = subscribeCollection<User>("users", setUsers);
-    const unsubLeads = subscribeCollection<SalesLead>("leads", setLeads);
     const unsubWorkflows = subscribeCollection<ProjectWorkflow>("workflows", setWorkflows);
     const unsubProducts = subscribeCollection<Product>("products", setProducts, "createdAt");
     const unsubTasks = subscribeCollection<SalesTask>("tasks", setTasks);
@@ -248,6 +268,7 @@ export default function App() {
     const unsubProductGroups = subscribeCollection<ProductGroup>("product_groups", setProductGroups, "createdAt");
     const unsubManufacturers = subscribeCollection<Manufacturer>("manufacturers", setManufacturers, "createdAt");
     const unsubFreightTerms = subscribeCollection<FreightTerm>("freight_terms", setFreightTerms, "createdAt");
+    const unsubDeliveryTerms = subscribeCollection<DeliveryTerm>("delivery_terms", setDeliveryTerms, "createdAt");
     const unsubTransporters = subscribeCollection<TransporterName>("transporters", setTransporters, "createdAt");
     const unsubWarehouses = subscribeCollection<WarehouseManagedBy>("warehouses", setWarehouses, "createdAt");
     const unsubDispatchLocations = subscribeCollection<DispatchLocation>("dispatch_locations", setDispatchLocations, "createdAt");
@@ -259,10 +280,10 @@ export default function App() {
     const unsubFaqs = subscribeCollection<FAQItem>("faqs", setFaqs, "createdAt");
     const unsubBugs = subscribeCollection<BugRequest>("bug_requests", setBugRequests, "createdAt");
     const unsubBadDebtors = subscribeCollection<BadDebtor>("bad_debtors", setBadDebtors, "createdAt");
+    const unsubEmailSentLogs = subscribeEmailSentLogs(setEmailSentLogs);
 
     return () => {
       unsubUsers();
-      unsubLeads();
       unsubWorkflows();
       unsubProducts();
       unsubTasks();
@@ -276,6 +297,7 @@ export default function App() {
       unsubProductGroups();
       unsubManufacturers();
       unsubFreightTerms();
+      unsubDeliveryTerms();
       unsubTransporters();
       unsubWarehouses();
       unsubDispatchLocations();
@@ -287,6 +309,7 @@ export default function App() {
       unsubFaqs();
       unsubBugs();
       unsubBadDebtors();
+      unsubEmailSentLogs();
     };
   }, [isAuthenticated]);
 
@@ -310,7 +333,6 @@ export default function App() {
 
   const allTabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "leads", label: "Deals & Leads", icon: Coins },
     { id: "orders", label: "Orders & Offers", icon: ShoppingBag },
     { id: "indent", label: "Indent", icon: Receipt },
     { id: "payment_list", label: "Payment List", icon: CreditCard },
@@ -658,6 +680,52 @@ export default function App() {
       details: `${activeUser.name} deleted freight term: "${term?.name || id}"`
     });
   };
+  const handleAddDeliveryTerm = async (data: Omit<DeliveryTerm, "id" | "createdAt">) => {
+    const dtId = `dt-${Date.now()}`;
+    await saveDeliveryTerm({ ...data, id: dtId, createdAt: new Date().toISOString() });
+    await saveLog({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userId: activeUser.id,
+      userName: activeUser.name,
+      actionType: "Create Delivery Term",
+      targetType: "Delivery Term",
+      targetId: dtId,
+      targetName: data.name,
+      details: `${activeUser.name} created delivery term: "${data.name}"`
+    });
+  };
+  const handleEditDeliveryTerm = async (id: string, name: string) => {
+    const term = deliveryTerms.find(c => c.id === id);
+    const updated = { ...term, id, name, createdAt: term?.createdAt || new Date().toISOString() };
+    await saveDeliveryTerm(updated);
+    await saveLog({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userId: activeUser.id,
+      userName: activeUser.name,
+      actionType: "Edit Delivery Term",
+      targetType: "Delivery Term",
+      targetId: id,
+      targetName: name,
+      details: `${activeUser.name} edited delivery term: "${name}"`
+    });
+  };
+  const handleDeleteDeliveryTerm = async (id: string) => {
+    const term = deliveryTerms.find(c => c.id === id);
+    await deleteDeliveryTermDoc(id);
+    await saveLog({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userId: activeUser.id,
+      userName: activeUser.name,
+      actionType: "Delete Delivery Term",
+      targetType: "Delivery Term",
+      targetId: id,
+      targetName: term?.name || id,
+      details: `${activeUser.name} deleted delivery term: "${term?.name || id}"`
+    });
+  };
   const handleAddTransporter = async (data: Omit<TransporterName, "id" | "createdAt">) => {
     const transId = `trn-${Date.now()}`;
     await saveTransporter({ ...data, id: transId, createdAt: new Date().toISOString() });
@@ -905,70 +973,6 @@ export default function App() {
       createdAt: paymentBanks.find(b => b.id === id)?.createdAt || new Date().toISOString()
     };
     await savePaymentBank(updatedBank);
-  };
-  const handleAddLead = async (newLeadData: Omit<SalesLead, "id" | "createdAt">) => {
-    const leadId = `lead-${Date.now()}`;
-    const newLead: SalesLead = {
-      ...newLeadData,
-      id: leadId,
-      createdAt: new Date().toISOString(),
-    };
-    
-    await saveLead(newLead);
-    
-    // Log write to Firestore
-    await saveLog({
-      id: `log-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      userId: activeUser.id,
-      userName: activeUser.name,
-      actionType: "Create Lead",
-      targetType: "Lead",
-      targetId: leadId,
-      targetName: newLead.companyName,
-      details: `${activeUser.name} (${activeUser.role}) created sales lead for client "${newLead.clientName}" at "${newLead.companyName}" with value of $${newLead.value.toLocaleString()}`
-    });
-  };
-
-  const handleEditLead = async (updatedLead: SalesLead) => {
-    await saveLead(updatedLead);
-
-    // Log write to Firestore
-    await saveLog({
-      id: `log-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      userId: activeUser.id,
-      userName: activeUser.name,
-      actionType: "Edit Lead",
-      targetType: "Lead",
-      targetId: updatedLead.id,
-      targetName: updatedLead.companyName,
-      details: `${activeUser.name} modified deal status to "${updatedLead.status}" for "${updatedLead.companyName}" (Client: ${updatedLead.clientName})`
-    });
-  };
-
-  const handleDeleteLead = async (leadId: string) => {
-    const leadToDelete = leads.find((l) => l.id === leadId);
-    if (!leadToDelete) return;
-    if (!canDeleteLead(activeUser.id, leadToDelete, users)) {
-      alert("Delete forbidden. Requires Manager role, Admin clearance, or record ownership.");
-      return;
-    }
-
-    await deleteLeadDoc(leadId);
-
-    // Log write to Firestore
-    await saveLog({
-      id: `log-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      userId: activeUser.id,
-      userName: activeUser.name,
-      actionType: "Delete Lead",
-      targetType: "Lead",
-      targetId: leadId,
-      targetName: leadToDelete.companyName,
-      details: `${activeUser.name} permanently deleted lead archive entry of "${leadToDelete.companyName}"`
-    });
   };
 
   // State handlers for clients
@@ -1282,10 +1286,8 @@ export default function App() {
       {/* Dynamic Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-40">
         <div className="max-w-[95%] mx-auto px-3 sm:px-4 lg:px-5 py-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-emerald-600 text-white p-1.5 rounded-md shadow-xs">
-              <Briefcase size={16} className="stroke-[2.5]" />
-            </div>
+          <div className="flex items-center gap-3">
+            <AolLogo size="md" className="h-7 sm:h-8" />
             <div>
               <h1 className="text-sm font-bold tracking-tight text-slate-900 leading-none">
                 Sales Management Portal
@@ -1315,30 +1317,47 @@ export default function App() {
               </div>
             </div>
 
-            {/* Font Size Option - Just left to Log Out icon */}
-            <div className="flex items-center bg-slate-100/90 border border-slate-200/90 p-0.5 rounded-lg text-[10px] font-mono shadow-2xs">
-              <span className="px-1.5 text-slate-400 font-bold flex items-center gap-1 text-[9px] uppercase tracking-wider select-none" title="Adjust application font size">
-                <Type size={12} className="text-slate-500" />
-                <span className="hidden md:inline">Font</span>
+            {/* Dark / Light Mode Toggle - Single icon just left of font button */}
+            <button
+              type="button"
+              onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+              className="flex items-center justify-center p-1.5 rounded-lg border border-slate-200/90 bg-slate-100/90 hover:bg-slate-200/80 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-amber-300 dark:hover:bg-slate-700/80 transition-all cursor-pointer shadow-2xs"
+              title={theme === "light" ? "Switch to Dark Mode" : "Switch to Light Mode"}
+              aria-label="Toggle dark/light mode"
+            >
+              {theme === "light" ? (
+                <Moon size={14} className="text-slate-600" />
+              ) : (
+                <Sun size={14} className="text-amber-400" />
+              )}
+            </button>
+
+            {/* Font Size Option - Single 'A' icon button cycling Small -> Medium -> Large */}
+            <button
+              type="button"
+              onClick={() => {
+                const nextSize: AppFontSize = fontSize === "small" ? "medium" : fontSize === "medium" ? "large" : "small";
+                setFontSize(nextSize);
+              }}
+              className="flex items-center justify-center gap-0.5 px-2 py-1 rounded-lg border border-slate-200/90 bg-slate-100/90 hover:bg-slate-200/80 text-slate-700 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-700/80 transition-all cursor-pointer shadow-2xs group"
+              title={`Font Size: ${fontSize.toUpperCase()} (Click to toggle Small → Medium → Large)`}
+              aria-label="Adjust Font Size"
+            >
+              <span
+                className={`font-black font-sans leading-none transition-all ${
+                  fontSize === "small"
+                    ? "text-[13px] text-slate-600 dark:text-slate-300"
+                    : fontSize === "medium"
+                    ? "text-[16px] text-emerald-600 dark:text-emerald-400 font-black"
+                    : "text-[19px] text-indigo-600 dark:text-indigo-400 font-black"
+                }`}
+              >
+                A
               </span>
-              <div className="flex items-center gap-0.5">
-                {(["small", "medium", "large"] as const).map((size) => (
-                  <button
-                    key={size}
-                    type="button"
-                    onClick={() => setFontSize(size)}
-                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold capitalize transition-all cursor-pointer ${
-                      fontSize === size
-                        ? "bg-white text-emerald-700 shadow-xs border border-slate-200/90 font-black"
-                        : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/60"
-                    }`}
-                    title={`Set font size to ${size} (${size === "small" ? "Default / Current size" : size === "medium" ? "Medium (+10%)" : "Large (+22%)"})`}
-                  >
-                    {size}
-                  </button>
-                ))}
-              </div>
-            </div>
+              <span className="text-[8px] font-mono font-bold uppercase opacity-70 ml-0.5 leading-none">
+                {fontSize === "small" ? "S" : fontSize === "medium" ? "M" : "L"}
+              </span>
+            </button>
 
             {/* Logout trigger */}
             <button
@@ -1384,7 +1403,6 @@ export default function App() {
             <DashboardView
               activeUserId={activeUserId}
               users={users}
-              leads={leads}
               workflows={workflows}
               products={products}
               tasks={tasks}
@@ -1392,24 +1410,6 @@ export default function App() {
               clients={clients}
               teams={teams}
               visibleSubTabs={userTeamSetting?.visibleSubTabs}
-              levelWiseFilters={userTeamSetting?.levelWiseFilters}
-            />
-          )}
-
-          {activeTab === "leads" && (
-            <LeadsView
-              activeUserId={activeUserId}
-              users={users}
-              leads={leads}
-              workflows={workflows}
-              products={products}
-              clients={clients}
-              teams={teams}
-              onAddLead={handleAddLead}
-              onEditLead={handleEditLead}
-              onDeleteLead={handleDeleteLead}
-              onAddClient={handleAddClient}
-              teamPermissions={userTeamSetting?.teamPermissions}
               levelWiseFilters={userTeamSetting?.levelWiseFilters}
             />
           )}
@@ -1424,6 +1424,7 @@ export default function App() {
               clients={clients}
               teams={teams}
               freightTerms={freightTerms}
+              deliveryTerms={deliveryTerms}
               transporters={transporters}
               warehouses={warehouses}
               dispatchLocations={dispatchLocations}
@@ -1436,6 +1437,7 @@ export default function App() {
               onAddPaymentBank={handleAddPaymentBank}
               onAddClient={handleAddClient}
               emailTemplates={emailTemplates}
+              emailSentLogs={emailSentLogs}
               teamPermissions={userTeamSetting?.teamPermissions}
               levelWiseFilters={userTeamSetting?.levelWiseFilters}
             />
@@ -1451,11 +1453,13 @@ export default function App() {
               onAddOrder={handleAddOrder}
               paymentBanks={paymentBanks}
               freightTerms={freightTerms}
+              deliveryTerms={deliveryTerms}
               transporters={transporters}
               warehouses={warehouses}
               dispatchLocations={dispatchLocations}
               visibleSubTabs={userTeamSetting?.visibleSubTabs}
               emailTemplates={emailTemplates}
+              emailSentLogs={emailSentLogs}
               teamPermissions={userTeamSetting?.teamPermissions}
               levelWiseFilters={userTeamSetting?.levelWiseFilters}
             />
@@ -1471,6 +1475,7 @@ export default function App() {
               paymentBanks={paymentBanks}
               visibleSubTabs={userTeamSetting?.visibleSubTabs}
               emailTemplates={emailTemplates}
+              emailSentLogs={emailSentLogs}
               paymentDetailsList={paymentDetailsList}
               teamPermissions={userTeamSetting?.teamPermissions}
               levelWiseFilters={userTeamSetting?.levelWiseFilters}
@@ -1489,7 +1494,7 @@ export default function App() {
               onAddClient={handleAddClient}
               onEditClient={handleEditClient}
               onDeleteClient={handleDeleteClient}
-              leads={leads}
+              orders={orders}
               workflows={workflows}
               products={products}
               tasks={tasks}
@@ -1512,13 +1517,13 @@ export default function App() {
               groups={productGroups}
               manufacturers={manufacturers}
               freightTerms={freightTerms}
+              deliveryTerms={deliveryTerms}
               transporters={transporters}
               warehouses={warehouses}
               dispatchLocations={dispatchLocations}
               paymentTerms={paymentTerms}
               paymentCreditPeriods={paymentCreditPeriods}
               taxRates={taxRates}
-              leads={leads}
               workflows={workflows}
               tasks={tasks}
               onAddProduct={handleAddProduct}
@@ -1536,6 +1541,9 @@ export default function App() {
               onAddFreightTerm={handleAddFreightTerm}
               onEditFreightTerm={handleEditFreightTerm}
               onDeleteFreightTerm={handleDeleteFreightTerm}
+              onAddDeliveryTerm={handleAddDeliveryTerm}
+              onEditDeliveryTerm={handleEditDeliveryTerm}
+              onDeleteDeliveryTerm={handleDeleteDeliveryTerm}
               onAddTransporter={handleAddTransporter}
               onEditTransporter={handleEditTransporter}
               onDeleteTransporter={handleDeleteTransporter}

@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
+  ensureGoogleDriveAccess,
   getSharedDriveSettings,
   saveSharedDriveSettings,
-  ensureGoogleDriveAccess,
-  hasDriveConnection,
   extractDriveFolderId,
   verifyDriveFolderOrSharedDrive,
-  DriveTargetVerification,
+  hasDriveConnection,
   DriveSettings,
+  DriveTargetVerification,
 } from "../lib/googleDriveService";
 import {
   Save,
@@ -19,10 +19,9 @@ import {
   AlertCircle,
   ExternalLink,
   Lock,
+  Zap,
+  CheckCircle2,
   RefreshCw,
-  Info,
-  Layers,
-  Search,
 } from "lucide-react";
 import { User, Team } from "../types";
 import { saveLog } from "../lib/firebaseService";
@@ -43,17 +42,19 @@ export default function AdminDriveSettings({
   const [loading, setLoading] = useState(false);
   const [folderId, setFolderId] = useState("");
   const [folderName, setFolderName] = useState("SMS_PO");
-  const [driveType, setDriveType] = useState<"shared_drive" | "shared_folder" | "my_drive" | undefined>(undefined);
+  const [driveType, setDriveType] = useState<"shared_drive" | "shared_folder" | "my_drive" | undefined>("shared_folder");
   const [allowAllTeams, setAllowAllTeams] = useState<boolean>(true);
   const [allowedTeamIds, setAllowedTeamIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [isAuthorizing, setIsAuthorizing] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [hasConnection, setHasConnection] = useState(false);
-  const [tokenExpiry, setTokenExpiry] = useState<number | undefined>(undefined);
 
-  // Verification states
+  // Authentication & Verification State
+  const [hasConnection, setHasConnection] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [tokenExpiryTime, setTokenExpiryTime] = useState<number | null>(null);
+
+  // Folder Verification State
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationResult, setVerificationResult] = useState<DriveTargetVerification | null>(null);
   const [verificationError, setVerificationError] = useState<string | null>(null);
@@ -100,11 +101,13 @@ export default function AdminDriveSettings({
       if (settings) {
         setFolderId(settings.folderId || "");
         setFolderName(settings.folderName || "SMS_PO");
-        setDriveType(settings.driveType);
+        setDriveType(settings.driveType || "shared_folder");
         setAllowAllTeams(settings.allowAllTeams !== false);
         setAllowedTeamIds(settings.allowedTeamIds || []);
         setHasConnection(hasDriveConnection(settings));
-        setTokenExpiry(settings.tokenExpiry);
+        if (settings.tokenExpiry) {
+          setTokenExpiryTime(settings.tokenExpiry);
+        }
       } else {
         setFolderName("SMS_PO");
         setAllowAllTeams(true);
@@ -122,6 +125,53 @@ export default function AdminDriveSettings({
     loadSettings();
   }, []);
 
+  const handleConnectGoogleDrive = async () => {
+    setIsAuthenticating(true);
+    setAuthError(null);
+    try {
+      const token = await ensureGoogleDriveAccess(true);
+      if (token) {
+        setHasConnection(true);
+        setTokenExpiryTime(Date.now() + 3500 * 1000);
+        // Refresh settings from Firestore
+        await loadSettings();
+      }
+    } catch (err: any) {
+      console.error("Authentication error:", err);
+      setAuthError(err.message || "Failed to authorize Google Drive. Please allow pop-ups and try again.");
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handleVerifyFolder = async () => {
+    setIsVerifying(true);
+    setVerificationResult(null);
+    setVerificationError(null);
+
+    try {
+      const token = await ensureGoogleDriveAccess(false);
+      const clean = extractDriveFolderId(folderId);
+      if (!clean) {
+        throw new Error("Please enter a Google Drive Folder ID or Shared Drive Link to verify.");
+      }
+
+      const result = await verifyDriveFolderOrSharedDrive(token, clean);
+      setVerificationResult(result);
+      if (result.name && (!folderName || folderName === "SMS_PO")) {
+        setFolderName(result.name);
+      }
+      if (result.type) {
+        setDriveType(result.type);
+      }
+    } catch (err: any) {
+      console.error("Folder verification error:", err);
+      setVerificationError(err.message || "Unable to access this Google Drive folder. Please check ID and permissions.");
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
   const handleFolderIdChange = (val: string) => {
     setFolderId(val);
     setVerificationResult(null);
@@ -134,37 +184,6 @@ export default function AdminDriveSettings({
       if (clean && clean !== folderId) {
         setFolderId(clean);
       }
-    }
-  };
-
-  const handleVerifyDriveId = async (forceReauth = false) => {
-    const cleanId = extractDriveFolderId(folderId);
-    if (!cleanId) {
-      setVerificationError("Please enter a Google Drive Folder ID or Shared Drive ID to test.");
-      return;
-    }
-
-    setIsVerifying(true);
-    setVerificationError(null);
-    setVerificationResult(null);
-
-    try {
-      const token = await ensureGoogleDriveAccess(forceReauth);
-      const result = await verifyDriveFolderOrSharedDrive(token, cleanId);
-      setVerificationResult(result);
-      setFolderId(result.id);
-      if (result.type === "shared_drive" || result.type === "shared_folder" || result.type === "my_drive") {
-        setDriveType(result.type);
-      }
-      if (result.name && (!folderName || folderName === "SMS_PO")) {
-        setFolderName(result.name);
-      }
-      setHasConnection(true);
-    } catch (err: any) {
-      console.error("Drive ID verification error:", err);
-      setVerificationError(err.message || "Failed to verify ID. Ensure Google Drive is authorized and the ID is correct.");
-    } finally {
-      setIsVerifying(false);
     }
   };
 
@@ -191,23 +210,6 @@ export default function AdminDriveSettings({
     setAllowedTeamIds([]);
   };
 
-  const handleAuthorizeDrive = async () => {
-    setIsAuthorizing(true);
-    setAuthError(null);
-    try {
-      await ensureGoogleDriveAccess(true);
-      await loadSettings();
-    } catch (err: any) {
-      console.error("Error authorizing Google Drive:", err);
-      setAuthError(
-        err.message ||
-          "Failed to authorize Google Drive. Please ensure pop-ups are allowed in your browser."
-      );
-    } finally {
-      setIsAuthorizing(false);
-    }
-  };
-
   const handleSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!folderName.trim()) {
@@ -224,11 +226,12 @@ export default function AdminDriveSettings({
       const newSettings: DriveSettings = {
         folderName: folderName.trim(),
         folderId: cleanFolderId,
-        driveType: driveType || current?.driveType || "my_drive",
+        driveType: driveType || current?.driveType || "shared_folder",
         allowAllTeams: allowAllTeams,
         allowedTeamIds: allowAllTeams ? [] : allowedTeamIds,
         adminAccessToken: current?.adminAccessToken,
         tokenExpiry: current?.tokenExpiry,
+        uploadMode: "google_drive_oauth",
       };
 
       await saveSharedDriveSettings(newSettings);
@@ -242,8 +245,8 @@ export default function AdminDriveSettings({
           actionType: "Update Google Drive Settings",
           targetType: "Settings",
           targetId: "google_drive",
-          targetName: "Google Drive / Shared Drive Configuration",
-          details: `ADMIN ACTION: ${activeUser.name} updated Google Drive Shared Folder/Drive configuration. Name: "${folderName}" (ID: ${cleanFolderId || "Auto"}, Type: ${newSettings.driveType}), Team Access: ${allowAllTeams ? "All Teams" : allowedTeamIds.join(", ")}`,
+          targetName: "Google Drive OAuth Configuration",
+          details: `ADMIN ACTION: ${activeUser.name} updated Google Drive Target: "${folderName}" (ID: ${cleanFolderId || "Auto"}), Team Access: ${allowAllTeams ? "All Teams" : allowedTeamIds.join(", ")}`,
         });
       }
 
@@ -278,71 +281,121 @@ export default function AdminDriveSettings({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-bold text-slate-900 tracking-tight">
-                Google Drive & Shared Drives (Team Drives) Configuration
+                Google Drive Storage & Authentication
               </h2>
               <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] font-bold px-2 py-0.5 rounded-full font-mono uppercase">
                 <Lock size={9} /> Admin Only
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Configure your central Google Drive folder or Google Shared Drive (Team Drive) for POs and Invoices.
+              Securely authenticate and upload customer POs & Invoices directly to your organization's Google Drive or Shared Drive.
             </p>
           </div>
         </div>
 
-        {/* Live Status & Quick Auth */}
+        {/* Live Status Badge */}
         <div className="flex items-center gap-2">
           {hasConnection ? (
             <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl text-xs font-bold shadow-2xs">
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>OAuth Connected</span>
+              <CheckCircle2 size={14} className="text-emerald-600" />
+              <span>Google Drive Connected</span>
             </div>
           ) : (
-            <div className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-xl text-xs font-bold shadow-2xs">
-              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-              <span>Session Timed Out</span>
+            <div className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-2xs">
+              <AlertCircle size={14} />
+              <span>Authentication Needed</span>
             </div>
           )}
-
-          <button
-            type="button"
-            onClick={handleAuthorizeDrive}
-            disabled={isAuthorizing}
-            className="inline-flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-bold px-3 py-1.5 rounded-xl text-xs transition-all cursor-pointer disabled:opacity-50"
-            title="Authorize or refresh Google Drive access"
-          >
-            {isAuthorizing ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <RefreshCw size={12} />
-            )}
-            <span>{hasConnection ? "Re-authorize" : "Connect Drive"}</span>
-          </button>
         </div>
       </div>
 
       <form onSubmit={handleSave} className="p-5 space-y-6">
-        {/* Section 1: Central Folder / Shared Drive Config */}
+        {/* Section 1: Google Drive OAuth Connection */}
+        <div className="p-4 bg-gradient-to-br from-blue-50/70 via-indigo-50/40 to-slate-50 border border-blue-200 rounded-2xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs">
+                <Zap size={16} className="fill-white" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-slate-900 font-mono uppercase tracking-wider flex items-center gap-1.5">
+                  <span>Google Drive Authentication & Access</span>
+                  {hasConnection && (
+                    <span className="bg-emerald-100 text-emerald-800 text-[9px] font-bold px-2 py-0.5 rounded-full font-mono">
+                      Active
+                    </span>
+                  )}
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Authorize Google Drive once using Google OAuth. The connection is shared across all authorized sales team members.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleConnectGoogleDrive}
+              disabled={isAuthenticating}
+              className={`shrink-0 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer ${
+                hasConnection
+                  ? "bg-white hover:bg-slate-50 text-slate-700 border border-slate-300"
+                  : "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20"
+              }`}
+            >
+              {isAuthenticating ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  <span>Connecting with Google...</span>
+                </>
+              ) : hasConnection ? (
+                <>
+                  <RefreshCw size={14} className="text-slate-500" />
+                  <span>Reconnect / Refresh Token</span>
+                </>
+              ) : (
+                <>
+                  <Zap size={14} className="fill-white" />
+                  <span>Connect Google Drive</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Connection Status Details */}
+          {hasConnection && (
+            <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-start gap-2.5">
+              <CheckCircle2 size={16} className="text-emerald-600 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <p className="font-bold">Google Drive Connection Active</p>
+                <p className="text-[11px] text-emerald-700 leading-relaxed">
+                  Your sales team can upload POs and Invoices directly to Google Drive. Uploaded files will be automatically organized by client name.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {authError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2.5">
+              <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <p className="font-bold">Google Authentication Error</p>
+                <p className="text-[11px] leading-relaxed">{authError}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Section 2: Central Folder / Shared Drive Target Config */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-indigo-50 text-indigo-600 font-mono text-[10px] font-bold flex items-center justify-center border border-indigo-200">
-                1
+              <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-700 font-mono text-[10px] font-bold flex items-center justify-center border border-slate-300">
+                2
               </span>
               <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
-                Google Drive or Shared Drive (Team Drive) Details
+                Target Google Drive Folder or Shared Drive (Team Drive)
               </h3>
             </div>
-            {driveType && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold font-mono px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">
-                <Layers size={10} />
-                {driveType === "shared_drive"
-                  ? "Shared Drive (Root)"
-                  : driveType === "shared_folder"
-                  ? "Folder inside Shared Drive"
-                  : "My Drive Folder"}
-              </span>
-            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -359,104 +412,76 @@ export default function AdminDriveSettings({
                 className="w-full text-xs font-medium text-slate-800 bg-slate-50/50 border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-blue-500 focus:bg-white transition-all font-mono"
               />
               <p className="text-[10px] text-slate-400 mt-1">
-                Display name for the central storage location.
+                Display name for the central storage location (created automatically if not found).
               </p>
             </div>
 
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="text-[11px] font-bold text-slate-600 block">
-                  Folder ID or Shared Drive ID / URL <span className="text-slate-400 font-normal">(Shared Drives Supported)</span>
+                  Folder ID, Shared Drive Link or ID <span className="text-slate-400 font-normal">(Optional)</span>
                 </label>
-                {folderId.trim() && (
-                  <button
-                    type="button"
-                    onClick={handleVerifyDriveId}
-                    disabled={isVerifying}
-                    className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer"
-                  >
-                    {isVerifying ? <Loader2 size={10} className="animate-spin" /> : <Search size={10} />}
-                    <span>Test / Verify ID</span>
-                  </button>
-                )}
               </div>
-              <div className="relative">
+              <div className="flex gap-2">
                 <input
                   type="text"
                   value={folderId}
                   onChange={(e) => handleFolderIdChange(e.target.value)}
                   onBlur={handleFolderIdBlur}
-                  placeholder="e.g. 0ABcDeF123456789... or full Google Drive URL"
-                  className="w-full text-xs font-medium text-slate-800 bg-slate-50/50 border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-blue-500 focus:bg-white transition-all font-mono"
+                  placeholder="e.g. https://drive.google.com/drive/folders/1ABCxyz... or 0ABcDeF123..."
+                  className="flex-1 text-xs font-medium text-slate-800 bg-slate-50/50 border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-blue-500 focus:bg-white transition-all font-mono"
                 />
+                {folderId.trim() !== "" && (
+                  <button
+                    type="button"
+                    onClick={handleVerifyFolder}
+                    disabled={isVerifying}
+                    className="shrink-0 inline-flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  >
+                    {isVerifying ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+                    <span>Verify</span>
+                  </button>
+                )}
               </div>
               <p className="text-[10px] text-slate-400 mt-1">
-                Paste the Shared Drive ID, Folder ID, or full Drive URL. Supports <strong>Google Shared Drives</strong> and <strong>My Drive</strong> folders.
+                Paste the Shared Drive ID, Folder ID, or full Google Drive URL. Leave blank for default auto-created <code>SMS_PO</code> folder.
               </p>
             </div>
           </div>
 
-          {/* Verification Feedback Banner */}
+          {/* Verification Feedback */}
           {verificationResult && (
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-start gap-2.5">
-              <Check size={16} className="text-emerald-600 shrink-0 mt-0.5" />
-              <div className="space-y-0.5">
-                <p className="font-bold text-emerald-950 flex items-center gap-1.5">
-                  <span>Verified Google Drive Target:</span>
-                  <span className="font-mono bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded text-[10px]">
-                    {verificationResult.name}
-                  </span>
-                </p>
-                <p className="text-[11px] text-emerald-800">
-                  {verificationResult.description} (Clean ID: <code className="font-mono text-emerald-950 select-all font-semibold">{verificationResult.id}</code>)
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-start gap-2 animate-fade-in">
+              <CheckCircle2 size={16} className="text-emerald-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Target Verified: {verificationResult.description}</p>
+                <p className="text-[11px] text-emerald-700">
+                  Folder ID: <code className="font-mono">{verificationResult.id}</code>
                 </p>
               </div>
             </div>
           )}
 
           {verificationError && (
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-              <div className="flex items-start gap-2">
-                <AlertCircle size={14} className="text-rose-600 shrink-0 mt-0.5" />
-                <div className="text-[11px]">
-                  <span className="font-bold">Verification Notice:</span> {verificationError}
-                </div>
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2 animate-fade-in">
+              <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Verification Notice</p>
+                <p className="text-[11px] leading-relaxed">{verificationError}</p>
               </div>
-              <button
-                type="button"
-                onClick={() => handleVerifyDriveId(true)}
-                disabled={isVerifying}
-                className="self-start sm:self-auto shrink-0 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 text-white font-bold py-1.5 px-3 rounded-lg text-[10px] flex items-center gap-1.5 cursor-pointer shadow-xs transition-all"
-              >
-                {isVerifying ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                <span>Re-authorize & Test</span>
-              </button>
             </div>
           )}
-
-          {/* Shared Drive info box */}
-          <div className="bg-indigo-50/60 border border-indigo-200 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-indigo-950">
-            <Info size={16} className="text-indigo-600 shrink-0 mt-0.5" />
-            <div className="space-y-1 text-[11px] leading-relaxed">
-              <p className="font-semibold text-indigo-950 flex items-center gap-1.5">
-                <span>Google Shared Drives (Team Drives) & My Drive Supported:</span>
-              </p>
-              <p className="text-indigo-900">
-                You can specify a <strong>Google Shared Drive (Team Drive)</strong> ID, a subfolder inside a Shared Drive, or a standard My Drive folder. All upload and subfolder creation requests utilize full Shared Drive API parameters (<code>supportsAllDrives</code> and <code>includeItemsFromAllDrives</code>) so files are securely stored in your team's designated workspace drive.
-              </p>
-            </div>
-          </div>
         </div>
 
-        {/* Section 2: Team Access Permissions */}
+        {/* Section 3: Team Access Permissions */}
         <div className="space-y-3 pt-2 border-t border-slate-100">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="w-5 h-5 rounded-full bg-emerald-50 text-emerald-600 font-mono text-[10px] font-bold flex items-center justify-center border border-emerald-200">
-                2
+                3
               </span>
               <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
-                Team Access & Re-connect Permissions
+                Team Access Permissions
               </h3>
             </div>
 
@@ -482,7 +507,7 @@ export default function AdminDriveSettings({
           </div>
 
           <p className="text-xs text-slate-500">
-            Control which teams have access to connect to Google Drive, re-authorize if the connection times out, and upload customer POs / Invoices.
+            Control which teams have access to upload documents to Google Drive.
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -506,7 +531,7 @@ export default function AdminDriveSettings({
                   <span>All Teams (Open Access)</span>
                 </div>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  All active team members across the organization can connect and upload documents to Google Drive.
+                  All active team members across the organization can upload documents to Google Drive.
                 </p>
               </div>
             </label>
@@ -531,7 +556,7 @@ export default function AdminDriveSettings({
                   <span>Specific Teams Only</span>
                 </div>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Only users belonging to the selected teams (plus Admins) can connect & upload documents.
+                  Only users belonging to the selected teams (plus Admins) can upload documents.
                 </p>
               </div>
             </label>
@@ -591,13 +616,6 @@ export default function AdminDriveSettings({
             </div>
           )}
         </div>
-
-        {authError && (
-          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2">
-            <AlertCircle size={14} className="shrink-0" />
-            <span>{authError}</span>
-          </div>
-        )}
 
         {/* Footer Actions */}
         <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">

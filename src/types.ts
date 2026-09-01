@@ -31,6 +31,14 @@ export interface User {
   showOnDashboard?: boolean;
 }
 
+export interface PoAttachment {
+  id?: string;
+  name: string;
+  url: string;
+  size?: number;
+  uploadedAt?: string;
+}
+
 export interface ClosedWonDetails {
   customerPoNumber: string;
   piNumber?: string;
@@ -48,26 +56,8 @@ export interface ClosedWonDetails {
   dispatchLocation: string;
   warehouseManagedBy: string;
   poAttachmentUrl?: string;
-}
-
-export interface SalesLead {
-  id: string;
-  clientName: string;
-  companyName: string;
-  email: string;
-  phone: string;
-  status: "New" | "Contacted" | "Proposal" | "Negotiation" | "Closed Won" | "Closed Lost";
-  value: number; // Deal value
-  quantity: number;
-  rate: number;
-  amount: number;
-  assignedToUserId: string;
-  createdByUserId: string;
-  projectId: string; // Belongs to a workflow project
-  items?: OrderItem[];
-  notes: string;
-  createdAt: string;
-  closedWonDetails?: ClosedWonDetails;
+  poAttachmentUrls?: string[];
+  poAttachments?: PoAttachment[];
 }
 
 export interface OrderItem {
@@ -92,11 +82,21 @@ export interface PaymentBank {
   createdAt: string;
 }
 
+export interface InvoiceAttachment {
+  id?: string;
+  name: string;
+  url: string;
+  size?: number;
+  uploadedAt?: string;
+}
+
 export interface BillingDetails {
   invoiceNumber: string;
   invoiceDate?: string;
   invoiceFileUrl?: string;
   invoiceFileName?: string;
+  invoiceFileUrls?: string[];
+  invoiceAttachments?: InvoiceAttachment[];
   mappedAt?: string;
   mappedByUserId?: string;
   actualDispatchDate?: string;
@@ -105,6 +105,40 @@ export interface BillingDetails {
   transportName?: string;
   lrNo?: string;
   dispatchDate?: string;
+}
+
+export type EmailDeliveryStatus = "Sent" | "Failed" | "Simulated" | "Pending";
+
+export interface EmailSentStatusSummary {
+  to: string;
+  cc?: string;
+  bcc?: string;
+  status: EmailDeliveryStatus;
+  timestamp: string;
+  error?: string;
+  category?: string;
+  subject?: string;
+  sentByUserName?: string;
+}
+
+export interface EmailSentLog {
+  id: string;
+  orderId?: string;
+  invoiceNumber?: string;
+  companyName?: string;
+  clientName?: string;
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject: string;
+  category: "create_order" | "edit_order" | "invoice_issuance" | "payment_reminder" | "payment_reminder_consolidated" | "resend_order" | "resend_invoice" | string;
+  status: EmailDeliveryStatus;
+  timestamp: string;
+  error?: string;
+  warning?: string;
+  senderUserId?: string;
+  senderUserName?: string;
+  senderEmail?: string;
 }
 
 export interface OrderOffer {
@@ -132,6 +166,9 @@ export interface OrderOffer {
   billingDetails?: BillingDetails;
   isBadDebtor?: boolean;
   badDebtorRecord?: BadDebtor;
+  emailStatus?: EmailSentStatusSummary;
+  invoiceEmailStatus?: EmailSentStatusSummary;
+  paymentReminderEmailStatus?: EmailSentStatusSummary;
 }
 
 export interface BadDebtor {
@@ -182,8 +219,8 @@ export interface ActionLog {
   timestamp: string;
   userId: string;
   userName: string;
-  actionType: "Create Lead" | "Edit Lead" | "Delete Lead" | "Create Task" | "Edit Task" | "Delete Task" | "Create User" | "Edit User" | "Delete User" | "Create Product" | "Edit Product" | "Delete Product" | "Create Order" | "Edit Order" | "Delete Order" | "Create Category" | "Edit Category" | "Delete Category" | "Create Group" | "Edit Group" | "Delete Group" | "Create Manufacturer" | "Edit Manufacturer" | "Delete Manufacturer" | "Create Freight Term" | "Edit Freight Term" | "Delete Freight Term" | "Create Transporter" | "Edit Transporter" | "Delete Transporter" | "Map Invoice" | "Update Invoice" | "Update Payment" | "Update Order Status" | "Map Customer PO" | "Update Google Drive Settings" | "Create Email Template" | "Update Email Template" | "Delete Email Template" | "Send Email" | "Create Payment Term" | "Edit Payment Term" | "Delete Payment Term" | "Create Payment Credit Period" | "Edit Payment Credit Period" | "Delete Payment Credit Period" | "Create Tax Rate" | "Edit Tax Rate" | "Delete Tax Rate" | "Update Email Sending Mode" | "Update Single Setted ID Config" | "Update User SMTP Credentials" | "Remove User SMTP Credentials" | "Add Payment Receipt" | "Delete Payment Record" | "Update Payment Details" | "Add Bad Debtor" | "Update Bad Debtor" | "Delete Bad Debtor" | "Bulk Import Bad Debtors";
-  targetType: "Lead" | "Task" | "User" | "Product" | "Order" | "Category" | "Group" | "Manufacturer" | "Freight Term" | "Transporter" | "Settings" | "EmailTemplate" | "Payment Term" | "Payment Credit Period" | "Tax Rate" | "BadDebtor" | "BadDebtors";
+  actionType: "Create Lead" | "Edit Lead" | "Delete Lead" | "Create Task" | "Edit Task" | "Delete Task" | "Create User" | "Edit User" | "Delete User" | "Create Product" | "Edit Product" | "Delete Product" | "Create Order" | "Edit Order" | "Delete Order" | "Create Category" | "Edit Category" | "Delete Category" | "Create Group" | "Edit Group" | "Delete Group" | "Create Manufacturer" | "Edit Manufacturer" | "Delete Manufacturer" | "Create Freight Term" | "Edit Freight Term" | "Delete Freight Term" | "Create Delivery Term" | "Edit Delivery Term" | "Delete Delivery Term" | "Create Transporter" | "Edit Transporter" | "Delete Transporter" | "Map Invoice" | "Update Invoice" | "Update Payment" | "Update Order Status" | "Map Customer PO" | "Update Google Drive Settings" | "Create Email Template" | "Update Email Template" | "Delete Email Template" | "Send Email" | "Create Payment Term" | "Edit Payment Term" | "Delete Payment Term" | "Create Payment Credit Period" | "Edit Payment Credit Period" | "Delete Payment Credit Period" | "Create Tax Rate" | "Edit Tax Rate" | "Delete Tax Rate" | "Update Email Sending Mode" | "Update Single Setted ID Config" | "Update User SMTP Credentials" | "Remove User SMTP Credentials" | "Add Payment Receipt" | "Delete Payment Record" | "Update Payment Details" | "Add Bad Debtor" | "Update Bad Debtor" | "Delete Bad Debtor" | "Bulk Import Bad Debtors" | "Update Email Config";
+  targetType: "Lead" | "Task" | "User" | "Product" | "Order" | "Category" | "Group" | "Manufacturer" | "Freight Term" | "Delivery Term" | "Transporter" | "Settings" | "EmailTemplate" | "Payment Term" | "Payment Credit Period" | "Tax Rate" | "BadDebtor" | "BadDebtors";
   targetId: string;
   targetName: string;
   details: string;
@@ -246,6 +283,12 @@ export interface FreightTerm {
   createdAt: string;
 }
 
+export interface DeliveryTerm {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
 export interface TransporterName {
   id: string;
   transporterId?: string;
@@ -286,7 +329,7 @@ export interface EmailAutoSelectSettings {
   ordersAutoSelect: boolean;
 }
 
-export type EmailSendingMode = "single_setted_id" | "logged_in_user_id";
+export type EmailSendingMode = "single_setted_id" | "logged_in_user_id" | "google_apps_script";
 
 export interface SmtpCredentials {
   smtpHost?: string;
@@ -299,6 +342,7 @@ export interface SmtpCredentials {
 
 export interface EmailSendingConfig {
   mode: EmailSendingMode;
+  gasWebUrl?: string;
   singleConfig?: SmtpCredentials;
   userConfigs?: Record<string, SmtpCredentials>;
   updatedAt?: string;

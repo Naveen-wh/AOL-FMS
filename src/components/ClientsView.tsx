@@ -4,12 +4,12 @@
  */
 
 import React, { useState } from "react";
-import { User, SalesLead, ProjectWorkflow, SalesTask, Client, Team, Role, Product } from "../types";
+import { User, OrderOffer, ProjectWorkflow, SalesTask, Client, Team, Role, Product } from "../types";
 import {
   canEditTask,
   canDeleteTask,
   canViewTask,
-  canViewLead,
+  canViewOrderOffer,
   canViewClient,
   canEditClient,
   canDeleteClient,
@@ -45,6 +45,7 @@ import {
   Sparkles,
   Edit2,
   FileSpreadsheet,
+  ShoppingBag,
 } from "lucide-react";
 
 interface ClientsViewProps {
@@ -55,7 +56,7 @@ interface ClientsViewProps {
   onAddClient: (clientData: Omit<Client, "id" | "createdAt">) => void;
   onEditClient: (clientId: string, clientData: Partial<Omit<Client, "id" | "createdAt" | "createdByUserId">>) => void;
   onDeleteClient: (clientId: string) => void;
-  leads: SalesLead[];
+  orders?: OrderOffer[];
   workflows: ProjectWorkflow[];
   products?: Product[];
   tasks: SalesTask[];
@@ -73,7 +74,7 @@ export default function ClientsView({
   onAddClient,
   onEditClient,
   onDeleteClient,
-  leads = [],
+  orders = [],
   workflows = [],
   products = [],
   tasks = [],
@@ -197,21 +198,21 @@ export default function ClientsView({
     filteredClients[0];
 
   // ----------------------------------------------------
-  // LEADS & METRICS FILTERING
+  // ORDERS & METRICS FILTERING
   // ----------------------------------------------------
-  const clientLeads = activeClient
-    ? leads.filter(
-        (lead) =>
-          (lead.companyName === activeClient.companyName ||
-            lead.clientName.toLowerCase() === activeClient.fullName.toLowerCase()) &&
-          canViewLead(activeUserId, lead, users)
+  const clientOrders = activeClient
+    ? orders.filter(
+        (order) =>
+          (order.companyName === activeClient.companyName ||
+            order.clientName.toLowerCase() === activeClient.fullName.toLowerCase()) &&
+          canViewOrderOffer(activeUserId, order, users)
       )
     : [];
 
-  const visibleLeads = clientLeads.slice(0, 5);
+  const visibleClientOrders = clientOrders.slice(0, 5);
 
-  const clientTotalPipelineValue = clientLeads.reduce(
-    (sum, lead) => sum + (lead.value || 0),
+  const clientTotalPipelineValue = clientOrders.reduce(
+    (sum, order) => sum + (Number(order.totalValue) || 0),
     0
   );
 
@@ -303,13 +304,13 @@ export default function ClientsView({
     setEditingClient(null);
   };
 
-  const handleOpenAddTaskForLead = (lead: SalesLead) => {
+  const handleOpenAddTaskForOrder = (order: OrderOffer) => {
     setNewTaskTitle("");
     setNewTaskDesc("");
     setNewTaskDueDate("2026-06-30");
     setNewTaskPriority("Medium");
-    setNewTaskProjectId(lead.projectId || products[0]?.id || "proj-1");
-    setNewTaskLeadId(lead.id);
+    setNewTaskProjectId(products[0]?.id || "proj-1");
+    setNewTaskLeadId(order.id);
     setNewTaskAssignedTo(activeUserId);
     setIsAddTaskOpen(true);
   };
@@ -339,13 +340,16 @@ export default function ClientsView({
     Low: "bg-blue-50 text-blue-700 border-blue-100",
   };
 
-  const leadStatusColors = {
-    New: "bg-blue-50 text-blue-700 border-blue-200",
-    Contacted: "bg-amber-50 text-amber-700 border-amber-200",
-    Proposal: "bg-purple-50 text-purple-700 border-purple-200",
-    Negotiation: "bg-orange-50 text-orange-700 border-orange-200",
-    "Closed Won": "bg-emerald-50 text-emerald-700 border-emerald-250",
-    "Closed Lost": "bg-rose-50 text-rose-700 border-rose-200",
+  const orderStatusColors: Record<string, string> = {
+    Draft: "bg-slate-50 text-slate-700 border-slate-200",
+    "Offer / Quotation": "bg-indigo-50 text-indigo-700 border-indigo-200",
+    "Confirmed Order": "bg-blue-50 text-blue-700 border-blue-200",
+    "Sent to Logistics": "bg-cyan-50 text-cyan-700 border-cyan-200",
+    "In Transit": "bg-amber-50 text-amber-700 border-amber-200",
+    Delivered: "bg-emerald-50 text-emerald-700 border-emerald-250",
+    Billed: "bg-purple-50 text-purple-700 border-purple-200",
+    Paid: "bg-emerald-100 text-emerald-800 border-emerald-300",
+    Cancelled: "bg-rose-50 text-rose-700 border-rose-200",
   };
 
   return (
@@ -482,8 +486,8 @@ export default function ClientsView({
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-slate-50/40 text-[9px] uppercase tracking-wider text-slate-500 border-b border-slate-100 font-mono">
-                    <th className="py-2.5 px-3 pl-4 font-bold">Client Contact</th>
-                    <th className="py-2.5 px-2 font-bold">Company Name</th>
+                    <th className="py-2.5 px-3 pl-4 font-bold">Company Name</th>
+                    <th className="py-2.5 px-2 font-bold">Client Contact</th>
                     <th className="py-2.5 px-2 font-bold">GST Identity</th>
                     <th className="py-2.5 px-2 font-bold">City Profile</th>
                     <th className="py-2.5 px-2 font-bold">Team</th>
@@ -493,13 +497,18 @@ export default function ClientsView({
                 <tbody className="divide-y divide-slate-100 text-xs">
                   {filteredClients.map((client) => {
                     const isSelected = activeClient?.id === client.id;
-                    const matchesCount = leads.filter(
-                      (l) =>
-                        l.companyName === client.companyName ||
-                        l.clientName.toLowerCase() === client.fullName.toLowerCase()
+                    const matchesCount = orders.filter(
+                      (o) =>
+                        o.companyName === client.companyName ||
+                        o.clientName?.toLowerCase() === client.fullName.toLowerCase()
                     ).length;
 
                     const deletable = canDeleteClient(activeUserId, client, users);
+
+                    const emails = (client.email || "")
+                      .split(/[,;]/)
+                      .map((e) => e.trim())
+                      .filter(Boolean);
 
                     return (
                       <tr
@@ -511,28 +520,39 @@ export default function ClientsView({
                             : "hover:bg-slate-50/50"
                         }`}
                       >
-                        {/* Client details */}
+                        {/* Company Name */}
                         <td className="py-2.5 px-3 pl-4">
-                          <div>
-                            <span className="text-slate-900 font-extrabold block text-[11px] leading-tight">
-                              {client.fullName}
-                            </span>
-                            <span className="text-[9.5px] text-slate-400 font-mono block mt-0.5">
-                              {client.email || "No Email listed"}
-                            </span>
-                          </div>
-                        </td>
-
-                        {/* Company */}
-                        <td className="py-2.5 px-2">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded text-[10px] font-mono font-extrabold border border-slate-200">
                               {client.companyName}
                             </span>
                             {matchesCount > 0 && (
                               <span className="bg-indigo-100 text-indigo-800 text-[8.5px] font-extrabold px-1 rounded-full">
-                                {matchesCount} Deals
+                                {matchesCount} {matchesCount === 1 ? "Order" : "Orders"}
                               </span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Client Contact */}
+                        <td className="py-2.5 px-2">
+                          <div>
+                            <span className="text-slate-900 font-extrabold block text-[11px] leading-tight">
+                              {client.fullName}
+                            </span>
+                            {emails.length === 0 ? (
+                              <span className="text-[9.5px] text-slate-400 font-mono block mt-0.5">
+                                No Email listed
+                              </span>
+                            ) : (
+                              <div className="mt-0.5 space-y-0.5 font-mono text-[9.5px]">
+                                {emails.map((em, idx) => (
+                                  <div key={idx} className="text-slate-500 flex items-center gap-1 truncate" title={em}>
+                                    <Mail size={10} className="text-slate-400 shrink-0" />
+                                    <span className="truncate">{em}</span>
+                                  </div>
+                                ))}
+                              </div>
                             )}
                           </div>
                         </td>
@@ -728,13 +748,32 @@ export default function ClientsView({
                     <span className="text-[8.5px] uppercase font-mono text-slate-400 font-extrabold block">
                       Contact Matrix
                     </span>
-                    <a
-                      href={`mailto:${activeClient.email}`}
-                      className="flex items-center gap-1.5 text-indigo-600 hover:underline font-mono truncate"
-                    >
-                      <Mail size={11} className="text-slate-400 shrink-0" />
-                      {activeClient.email || "No Email"}
-                    </a>
+                    {(() => {
+                      const activeEmails = (activeClient.email || "")
+                        .split(/[,;]/)
+                        .map((e) => e.trim())
+                        .filter(Boolean);
+
+                      if (activeEmails.length === 0) {
+                        return (
+                          <div className="flex items-center gap-1.5 text-slate-400 font-mono">
+                            <Mail size={11} className="text-slate-400 shrink-0" />
+                            No Email
+                          </div>
+                        );
+                      }
+
+                      return activeEmails.map((em, idx) => (
+                        <a
+                          key={idx}
+                          href={`mailto:${em}`}
+                          className="flex items-center gap-1.5 text-indigo-600 hover:underline font-mono truncate"
+                        >
+                          <Mail size={11} className="text-slate-400 shrink-0" />
+                          {em}
+                        </a>
+                      ));
+                    })()}
                     <a
                       href={`tel:${activeClient.phone}`}
                       className="flex items-center gap-1.5 text-slate-700 font-mono truncate"
@@ -806,21 +845,21 @@ export default function ClientsView({
       </div>
 
       {/* ==========================================
-          SECTION 3: Authorized Task Pipeline (5 Visible)
+          SECTION 3: Authorized Order & Offer Pipeline (5 Visible)
          ========================================== */}
       <div id="section-authorized-task-pipeline" className="bg-white rounded-xl border border-slate-200 shadow-3xs overflow-hidden">
         {/* Header Panel */}
         <div className="p-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="bg-indigo-50 text-indigo-700 p-1.5 rounded-md">
-              <Kanban size={13} />
+              <ShoppingBag size={13} />
             </div>
             <div>
               <h2 className="text-xs font-extrabold text-slate-900 uppercase font-mono tracking-wider">
-                Authorized Task Pipeline ({visibleLeads.length} Visible)
+                Authorized Order & Offer Pipeline ({visibleClientOrders.length} Visible)
               </h2>
               <p className="text-[9.5px] text-indigo-600 font-mono leading-none mt-0.5 uppercase tracking-wider font-bold">
-                Operational deals & leads associated with {activeClient?.fullName || "First Client"}
+                Operational orders & offers associated with {activeClient?.fullName || "First Client"}
               </p>
             </div>
           </div>
@@ -836,67 +875,67 @@ export default function ClientsView({
             <ListTodo size={36} className="mx-auto text-slate-300 mb-1.5" />
             <span className="font-bold text-xs text-slate-600 block">No Active Pipeline Context</span>
             <span className="text-[10.5px] text-slate-450 mt-0.5">
-              Select or register a client first to view operational sales pipelines and workflows.
+              Select or register a client first to view operational orders and workflows.
             </span>
           </div>
-        ) : visibleLeads.length === 0 ? (
+        ) : visibleClientOrders.length === 0 ? (
           <div className="py-12 text-center text-slate-400">
             <ListTodo size={36} className="mx-auto text-slate-300 mb-1.5" />
-            <span className="font-bold text-xs text-slate-600 block">No Associated Leads or Deals Found</span>
+            <span className="font-bold text-xs text-slate-600 block">No Associated Orders or Offers Found</span>
             <p className="text-[10.5px] text-slate-450 max-w-sm mx-auto mt-1 leading-normal">
-              There are currently no sales leads linked to <strong>{activeClient.fullName} ({activeClient.companyName})</strong> or your role permissions prevent you from viewing them.
+              There are currently no orders or offers linked to <strong>{activeClient.fullName} ({activeClient.companyName})</strong> or your role permissions prevent you from viewing them.
             </p>
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {visibleLeads.map((lead) => {
-              const leadTasks = tasks.filter(
+            {visibleClientOrders.map((order) => {
+              const orderTasks = tasks.filter(
                 (task) =>
-                  task.leadId === lead.id && canViewTask(activeUserId, task, users)
+                  task.leadId === order.id && canViewTask(activeUserId, task, users)
               );
 
               // Progress bar metrics based on status
               const stages = ["New", "Contacted", "Proposal", "Negotiation", "Closed Won"];
-              const currentStageIndex = stages.indexOf(lead.status === "Closed Lost" ? "Negotiation" : lead.status);
-              const progressPct = ((currentStageIndex + 1) / stages.length) * 100;
+              const currentStageIndex = stages.indexOf(order.status === "Closed Lost" ? "Negotiation" : order.status);
+              const progressPct = ((Math.max(currentStageIndex, 0) + 1) / stages.length) * 100;
 
               return (
                 <div
-                  key={lead.id}
+                  key={order.id}
                   className="p-3.5 flex flex-col xl:flex-row xl:items-center justify-between gap-4 hover:bg-slate-50/30 transition-colors"
                 >
-                  {/* Lead information & metrics */}
+                  {/* Order information & metrics */}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-extrabold text-xs text-slate-900">
-                        {lead.clientName}
+                        {order.clientName}
                       </span>
                       <span className="text-[9px] text-slate-400 font-mono bg-slate-100 px-1 rounded border border-slate-200">
-                        Project ID: {getProjectName(lead.projectId)}
+                        Date: {order.createdAt ? formatDate(order.createdAt) : "N/A"}
                       </span>
                       
                       {/* Financial Deal Value badge */}
                       <span className="bg-emerald-50 text-emerald-800 border border-emerald-150 px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold">
-                        Amount: {lead.value ? `₹${lead.value.toLocaleString("en-IN")}` : "₹0"}
-                        {lead.quantity !== undefined && lead.rate !== undefined && (
+                        Amount: {order.totalValue ? `₹${Number(order.totalValue).toLocaleString("en-IN")}` : "₹0"}
+                        {order.items && order.items.length > 0 && (
                           <span className="text-[8.5px] text-emerald-600 font-normal ml-1">
-                            ({lead.quantity} × ₹{lead.rate.toLocaleString("en-IN")})
+                            ({order.items.length} items)
                           </span>
                         )}
                       </span>
 
-                      {/* Lead Status Badge */}
+                      {/* Order Status Badge */}
                       <span
                         className={`inline-block text-[9px] font-bold px-1.5 py-0.5 rounded border leading-none ${
-                          leadStatusColors[lead.status] || "bg-slate-50 text-slate-600"
+                          orderStatusColors[order.status] || "bg-slate-50 text-slate-600"
                         }`}
                       >
-                        {lead.status}
+                        {order.status}
                       </span>
                     </div>
 
                     <p className="text-[10.5px] text-slate-500 mt-1 max-w-3xl leading-snug">
-                      {lead.notes || "No notes registered on this sales pipeline profile."}
+                      {order.notes || order.payment || order.delivery || "No remarks registered on this order profile."}
                     </p>
 
                     {/* Progress tracking representation bar */}
@@ -911,9 +950,9 @@ export default function ClientsView({
                       <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden border border-slate-200/60">
                         <div
                           className={`h-full transition-all ${
-                            lead.status === "Closed Won"
+                            order.status === "Closed Won"
                               ? "bg-emerald-500"
-                              : lead.status === "Closed Lost"
+                              : order.status === "Closed Lost"
                               ? "bg-rose-500"
                               : "bg-indigo-600"
                           }`}
@@ -923,19 +962,19 @@ export default function ClientsView({
                     </div>
                   </div>
 
-                  {/* Tasks Pipeline for this lead */}
+                  {/* Tasks Pipeline for this order */}
                   <div className="xl:w-96 shrink-0 bg-slate-50 p-3 rounded-lg border border-slate-200 flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-[9px] uppercase font-mono text-slate-400 font-extrabold flex items-center gap-1 leading-none">
                           <ListTodo size={10} />
-                          Related Lead Tasks ({leadTasks.length})
+                          Related Order Tasks ({orderTasks.length})
                         </span>
                         
                         {/* Quick Add Task trigger */}
                         <button
-                          onClick={() => handleOpenAddTaskForLead(lead)}
-                          title="Assign New Task to this Lead"
+                          onClick={() => handleOpenAddTaskForOrder(order)}
+                          title="Assign New Task to this Order"
                           className="text-[9px] font-mono font-bold bg-indigo-600 hover:bg-indigo-700 text-white px-1.5 py-0.5 rounded flex items-center gap-0.5 leading-none transition-all cursor-pointer shadow-3xs"
                         >
                           <Plus size={9} />
@@ -944,13 +983,13 @@ export default function ClientsView({
                       </div>
 
                       {/* Scrollable list of specific tasks */}
-                      {leadTasks.length === 0 ? (
+                      {orderTasks.length === 0 ? (
                         <div className="text-center py-4 text-slate-400 italic text-[10px]">
-                          No tasks assigned to this lead. Click Add Task above.
+                          No tasks assigned to this order. Click Add Task above.
                         </div>
                       ) : (
                         <div className="space-y-1.5 max-h-24 overflow-y-auto pr-1">
-                          {leadTasks.map((task) => {
+                          {orderTasks.map((task) => {
                             const isEditable = canEditTask(activeUserId, task, users);
                             const isDeletable = canDeleteTask(activeUserId, task, users);
                             const assignee = getAssignee(task.assignedToUserId);
@@ -1476,16 +1515,16 @@ export default function ClientsView({
 
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 block mb-1 uppercase font-mono">
-                    Related Sales Lead
+                    Related Order / Offer
                   </label>
                   <select
                     disabled
                     value={newTaskLeadId}
                     className="w-full text-xs border border-slate-200 bg-slate-100 px-3 py-2 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-bold"
                   >
-                    {leads.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.clientName} ({l.companyName})
+                    {orders.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.clientName} ({o.companyName})
                       </option>
                     ))}
                   </select>

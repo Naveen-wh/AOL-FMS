@@ -259,7 +259,6 @@ export default function TeamDirectoryView({
         { id: "sp", label: "SP (Sales Persons)" }
       ]
     },
-    { id: "leads", label: "Deals & Leads" },
     { id: "orders", label: "Orders & Offers" },
     {
       id: "indent",

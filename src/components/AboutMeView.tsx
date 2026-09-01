@@ -82,48 +82,6 @@ export const BUILTIN_FAQS: FAQItem[] = [
     createdByUserName: "System Admin"
   },
 
-  // --- DEALS & LEADS (5 FAQs) ---
-  {
-    id: "faq-lead-1",
-    question: "How do I switch between Kanban Board and Table View in Deals & Leads?",
-    answer: "Navigate to 'Deals & Leads' and use the view toggle buttons at the top right ('Kanban Board' vs. 'Data Table'). Kanban displays cards organized by stage columns, while Table view offers tabular sorting and CSV exports.",
-    category: "Deals & Leads",
-    createdAt: "2026-08-01T00:00:00.000Z",
-    createdByUserName: "System Admin"
-  },
-  {
-    id: "faq-lead-2",
-    question: "How do I move a lead from one stage to another?",
-    answer: "In Kanban view, drag and drop the lead card into the target stage column. Alternatively, click the lead to open details, change the 'Stage' dropdown, and save.",
-    category: "Deals & Leads",
-    createdAt: "2026-08-01T00:00:00.000Z",
-    createdByUserName: "System Admin"
-  },
-  {
-    id: "faq-lead-3",
-    question: "How do I search, filter, and export my sales leads?",
-    answer: "Use the search bar at the top of Deals & Leads to search by client name or contact. Apply filters for Stage, Priority, or Owner, then click 'Export CSV' to download the dataset.",
-    category: "Deals & Leads",
-    createdAt: "2026-08-01T00:00:00.000Z",
-    createdByUserName: "System Admin"
-  },
-  {
-    id: "faq-lead-4",
-    question: "How do I log interaction notes or follow-up tasks for a lead?",
-    answer: "Click on any lead to open its detail drawer. Under 'Activity Log & Tasks', type meeting notes, record call logs, or set follow-up reminders assigned to team members.",
-    category: "Deals & Leads",
-    createdAt: "2026-08-01T00:00:00.000Z",
-    createdByUserName: "System Admin"
-  },
-  {
-    id: "faq-lead-5",
-    question: "Who can edit or delete a lead in my organization?",
-    answer: "Lead editing is enabled for Editors, Managers, and Admins. Lead deletion is restricted to Team Managers and System Administrators to protect organizational data.",
-    category: "Deals & Leads",
-    createdAt: "2026-08-01T00:00:00.000Z",
-    createdByUserName: "System Admin"
-  },
-
   // --- ORDERS & OFFERS (5 FAQs) ---
   {
     id: "faq-ord-1",
@@ -564,7 +522,6 @@ export default function AboutMeView({
     const defaultCats = [
       "All",
       "Dashboard",
-      "Deals & Leads",
       "Orders & Offers",
       "Indent",
       "Payment List",

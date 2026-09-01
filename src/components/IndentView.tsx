@@ -10,21 +10,22 @@ import {
   OrderItem, 
   Role, 
   BillingDetails, 
+  InvoiceAttachment,
   EmailTemplate, 
   EmailAutoSelectSettings, 
   Client, 
   FreightTerm, 
+  DeliveryTerm,
   TransporterName, 
   WarehouseManagedBy, 
-  DispatchLocation 
+  DispatchLocation,
+  EmailSentLog,
+  EmailSentStatusSummary,
 } from "../types";
 import { canViewOrderOffer } from "../data";
 import { 
   uploadInvoiceToDrive, 
-  hasDriveConnection, 
-  ensureGoogleDriveAccess, 
   getSharedDriveSettings, 
-  isUserTeamAllowedForDrive,
   DriveSettings,
   openOrDownloadDocument
 } from "../lib/googleDriveService";
@@ -32,10 +33,12 @@ import {
   getEmailAutoSelectSettings,
   saveEmailAutoSelectSettings,
   saveLog,
+  saveEmailSentLog,
 } from "../lib/firebaseService";
 import { auth } from "../firebase";
-import { replaceTemplateVars, resolveUserHierarchyInfo } from "../lib/templateUtils";
+import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
 import { formatDate } from "../utils";
+import { EmailSentStatusCell } from "./EmailSentStatusCell";
 import { 
   Search, 
   Check, 
@@ -125,11 +128,13 @@ interface IndentViewProps {
   onAddOrder?: (order: Omit<OrderOffer, "id" | "createdAt" | "createdByUserId">) => void;
   paymentBanks?: PaymentBank[];
   freightTerms?: FreightTerm[];
+  deliveryTerms?: DeliveryTerm[];
   transporters?: TransporterName[];
   warehouses?: WarehouseManagedBy[];
   dispatchLocations?: DispatchLocation[];
   visibleSubTabs?: { [key: string]: string[] };
   emailTemplates?: EmailTemplate[];
+  emailSentLogs?: EmailSentLog[];
   teamPermissions?: { [tabId: string]: { view: boolean; edit: boolean; add: boolean } };
   levelWiseFilters?: { [tabOrSubTabId: string]: boolean };
 }
@@ -143,11 +148,13 @@ export default function IndentView({
   onAddOrder,
   paymentBanks = [],
   freightTerms = [],
+  deliveryTerms = [],
   transporters = [],
   warehouses = [],
   dispatchLocations = [],
   visibleSubTabs,
   emailTemplates = [],
+  emailSentLogs = [],
   teamPermissions,
   levelWiseFilters,
 }: IndentViewProps) {
@@ -213,6 +220,8 @@ export default function IndentView({
 
   // Filter & Search state
   const [searchTerm, setSearchTerm] = useState("");
+  const [resendingInvoiceOrderId, setResendingInvoiceOrderId] = useState<string | null>(null);
+  const [emailBanner, setEmailBanner] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   // Import Modal state for Invoice Attached
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -227,6 +236,7 @@ export default function IndentView({
     { key: "invoiceFileName", label: "Invoice File Name", sampleValue: "INV-2026-8801.pdf", description: "Filename of attached invoice" },
     { key: "invoiceFileUrl", label: "Invoice File Link / URL", sampleValue: "https://drive.google.com/file/d/...", description: "Accessible link to invoice PDF" },
     { key: "customerPoNumber", label: "Customer PO Number", sampleValue: "PO-44210", description: "Associated Purchase Order number" },
+    { key: "poAttachmentUrl", label: "Customer PO File Link / URL", sampleValue: "https://drive.google.com/file/d/po-sample/...", description: "Accessible link to customer PO PDF/document" },
     { key: "totalValue", label: "PO / Invoice Total (₹)", sampleValue: "120000", description: "Invoice or order total value" },
     { key: "productName", label: "Product Name", sampleValue: "Caustic Soda Flakes", description: "Product description" },
     { key: "quantity", label: "Quantity", sampleValue: "50", description: "Product quantity" },
@@ -250,6 +260,7 @@ export default function IndentView({
 
       const fileUrl = row.invoiceFileUrl?.trim() || "";
       const fileName = row.invoiceFileName?.trim() || `${invNum}.pdf`;
+      const poAttachmentUrl = (row.poAttachmentUrl || row.poUrl || row.customerPoFileUrl || row.customerPoUrl || row.poLink || row.customerPoLink)?.trim() || "";
 
       // Check if an existing order matches by invoiceNumber or by companyName (unmapped)
       const existingOrder = orders.find(o => 
@@ -281,6 +292,7 @@ export default function IndentView({
           closedWonDetails: {
             ...existingOrder.closedWonDetails,
             customerPoNumber: row.customerPoNumber?.trim() || existingOrder.closedWonDetails?.customerPoNumber || "",
+            poAttachmentUrl: poAttachmentUrl || existingOrder.closedWonDetails?.poAttachmentUrl || undefined,
           }
         };
 
@@ -328,6 +340,7 @@ export default function IndentView({
           },
           closedWonDetails: {
             customerPoNumber: row.customerPoNumber?.trim() || "",
+            poAttachmentUrl: poAttachmentUrl || undefined,
             poDate: new Date().toISOString().split("T")[0],
             freightTerm: "To Pay",
             transporterName: "TBD",
@@ -354,16 +367,16 @@ export default function IndentView({
   };
 
   // Drive integration state
-  const [hasDriveAccess, setHasDriveAccess] = useState(false);
   const [driveSettings, setDriveSettings] = useState<DriveSettings | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
 
   // Per-order forms state
   // We use the order.id as the key for storing inputs, selected files, error, success and loading states
   const [invoiceNumbers, setInvoiceNumbers] = useState<{ [key: string]: string }>({});
   const [invoiceDates, setInvoiceDates] = useState<{ [key: string]: string }>({});
   const [actualDispatchDates, setActualDispatchDates] = useState<{ [key: string]: string }>({});
-  const [selectedFiles, setSelectedFiles] = useState<{ [key: string]: File | null }>({});
+  const [selectedFiles, setSelectedFiles] = useState<{ [key: string]: File[] }>({});
+  const [existingAttachments, setExistingAttachments] = useState<{ [key: string]: InvoiceAttachment[] }>({});
+  const [uploadProgressText, setUploadProgressText] = useState<{ [key: string]: string }>({});
   const [selectedTemplates, setSelectedTemplates] = useState<{ [key: string]: string }>({});
   const [sendEmails, setSendEmails] = useState<{ [key: string]: boolean }>({});
   const [uploadProgress, setUploadProgress] = useState<{ [key: string]: boolean }>({});
@@ -388,9 +401,6 @@ export default function IndentView({
         const settings = await getSharedDriveSettings();
         if (settings) {
           setDriveSettings(settings);
-          setHasDriveAccess(hasDriveConnection(settings));
-        } else {
-          setHasDriveAccess(hasDriveConnection(null));
         }
       } catch (err) {
         console.error("Error loading drive settings:", err);
@@ -405,24 +415,6 @@ export default function IndentView({
     };
     fetchSettings();
   }, []);
-
-  // Handle Google Drive Connection for Admin (if needed)
-  const handleConnectDrive = async () => {
-    setIsConnecting(true);
-    try {
-      await ensureGoogleDriveAccess(true);
-      const settings = await getSharedDriveSettings();
-      if (settings) {
-        setDriveSettings(settings);
-      }
-      setHasDriveAccess(true);
-    } catch (err: any) {
-      console.error(err);
-      alert(err.message || "Failed to authorize Google Drive. Make sure pop-ups are allowed.");
-    } finally {
-      setIsConnecting(false);
-    }
-  };
 
   // Filter only Closed Won orders that the active user can view (respecting level-wise filters)
   const closedWonOrders = orders.filter((o) => {
@@ -637,35 +629,86 @@ export default function IndentView({
     setDragOverOrderId(null);
   };
 
-  const handleDrop = (e: React.DragEvent, orderId: string) => {
+  const handleFilesAdd = (files: FileList | File[], orderId: string, order: OrderOffer) => {
+    const fileList = Array.from(files);
+    if (fileList.length === 0) return;
+
+    const currentExisting = existingAttachments[orderId] !== undefined
+      ? existingAttachments[orderId]
+      : (order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0
+          ? order.billingDetails.invoiceAttachments
+          : (order.billingDetails?.invoiceFileUrl
+              ? [{ name: order.billingDetails.invoiceFileName || `Invoice_${order.billingDetails.invoiceNumber || "Doc"}.pdf`, url: order.billingDetails.invoiceFileUrl }]
+              : []));
+
+    const currentNew = selectedFiles[orderId] || [];
+    const currentTotal = currentExisting.length + currentNew.length;
+    const remainingSlots = 10 - currentTotal;
+
+    if (remainingSlots <= 0) {
+      setOrderErrors((prev) => ({ ...prev, [orderId]: "Maximum limit of 10 invoice files reached. Remove an existing file to attach a new one." }));
+      return;
+    }
+
+    if (fileList.length > remainingSlots) {
+      setOrderErrors((prev) => ({ ...prev, [orderId]: `You can only add ${remainingSlots} more file(s). Maximum 10 invoice files total allowed.` }));
+      return;
+    }
+
+    const nonPdf = fileList.some((f) => !f.name.toLowerCase().endsWith(".pdf") && f.type !== "application/pdf");
+    if (nonPdf) {
+      setOrderErrors((prev) => ({ ...prev, [orderId]: "Only PDF files are allowed to be uploaded." }));
+      return;
+    }
+
+    setSelectedFiles((prev) => ({
+      ...prev,
+      [orderId]: [...(prev[orderId] || []), ...fileList].slice(0, 10 - currentExisting.length),
+    }));
+    if (existingAttachments[orderId] === undefined) {
+      setExistingAttachments((prev) => ({
+        ...prev,
+        [orderId]: currentExisting,
+      }));
+    }
+    setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
+  };
+
+  const handleDrop = (e: React.DragEvent, orderId: string, order: OrderOffer) => {
     e.preventDefault();
     setDragOverOrderId(null);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-        setOrderErrors((prev) => ({ ...prev, [orderId]: "Only PDF files are allowed to be uploaded." }));
-        return;
-      }
-      setSelectedFiles((prev) => ({ ...prev, [orderId]: file }));
-      setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
+      handleFilesAdd(e.dataTransfer.files, orderId, order);
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, orderId: string) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, orderId: string, order: OrderOffer) => {
     if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-        setOrderErrors((prev) => ({ ...prev, [orderId]: "Only PDF files are allowed to be uploaded." }));
-        e.target.value = ""; // clear input
-        return;
-      }
-      setSelectedFiles((prev) => ({ ...prev, [orderId]: file }));
-      setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
+      handleFilesAdd(e.target.files, orderId, order);
+      e.target.value = "";
     }
   };
 
-  const removeSelectedFile = (orderId: string) => {
-    setSelectedFiles((prev) => ({ ...prev, [orderId]: null }));
+  const removeSelectedNewFile = (orderId: string, index: number) => {
+    setSelectedFiles((prev) => ({
+      ...prev,
+      [orderId]: (prev[orderId] || []).filter((_, i) => i !== index),
+    }));
+  };
+
+  const removeExistingAttachment = (orderId: string, index: number, order: OrderOffer) => {
+    const currentExisting = existingAttachments[orderId] !== undefined
+      ? existingAttachments[orderId]
+      : (order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0
+          ? order.billingDetails.invoiceAttachments
+          : (order.billingDetails?.invoiceFileUrl
+              ? [{ name: order.billingDetails.invoiceFileName || `Invoice_${order.billingDetails.invoiceNumber || "Doc"}.pdf`, url: order.billingDetails.invoiceFileUrl }]
+              : []));
+
+    setExistingAttachments((prev) => ({
+      ...prev,
+      [orderId]: currentExisting.filter((_, i) => i !== index),
+    }));
   };
 
   // Submit mapping
@@ -674,7 +717,14 @@ export default function IndentView({
     const invNum = invoiceNumbers[orderId]?.trim() || order.billingDetails?.invoiceNumber || "";
     const actDispatchDate = actualDispatchDates[orderId]?.trim() || order.billingDetails?.actualDispatchDate || "";
     const invDate = invoiceDates[orderId]?.trim() || order.billingDetails?.invoiceDate || actDispatchDate || new Date().toISOString().split("T")[0];
-    const file = selectedFiles[orderId];
+    const newFiles = selectedFiles[orderId] || [];
+    const currentExisting = existingAttachments[orderId] !== undefined
+      ? existingAttachments[orderId]
+      : (order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0
+          ? order.billingDetails.invoiceAttachments
+          : (order.billingDetails?.invoiceFileUrl
+              ? [{ name: order.billingDetails.invoiceFileName || `Invoice_${order.billingDetails.invoiceNumber || "Doc"}.pdf`, url: order.billingDetails.invoiceFileUrl }]
+              : []));
     const sendEmail = sendEmails[orderId];
     const templateId = selectedTemplates[orderId];
 
@@ -692,26 +742,48 @@ export default function IndentView({
     setOrderSuccess((prev) => ({ ...prev, [orderId]: false }));
 
     try {
-      let fileUrl = order.billingDetails?.invoiceFileUrl || "";
-      let fileName = order.billingDetails?.invoiceFileName || "";
+      const newlyUploadedAttachments: InvoiceAttachment[] = [];
 
-      // If a new file is uploaded, upload it to Google Drive
-      if (file) {
-        // Automatically check/verify access
-        await ensureGoogleDriveAccess();
+      // Upload each new file to Google Drive
+      for (let i = 0; i < newFiles.length; i++) {
+        const file = newFiles[i];
+        setUploadProgressText((prev) => ({
+          ...prev,
+          [orderId]: newFiles.length > 1
+            ? `Uploading ${i + 1} of ${newFiles.length} (${file.name}) to Google Drive...`
+            : `Uploading ${file.name} to Google Drive...`
+        }));
+
         const uploadResult = await uploadInvoiceToDrive(file, order.companyName, invNum, invDate);
-        fileUrl = uploadResult.webViewLink;
-        fileName = uploadResult.name;
+        newlyUploadedAttachments.push({
+          id: uploadResult.id,
+          name: uploadResult.name || file.name,
+          url: uploadResult.webViewLink,
+          size: file.size,
+          uploadedAt: new Date().toISOString(),
+        });
       }
+
+      const allAttachments: InvoiceAttachment[] = [...currentExisting, ...newlyUploadedAttachments].slice(0, 10);
+      const primaryUrl = allAttachments[0]?.url || "";
+      const primaryName = allAttachments[0]?.name || "";
+      const allUrls = allAttachments.map(a => a.url);
 
       // Update the order object in Firestore
       const updatedBilling: BillingDetails = {
         invoiceNumber: invNum,
         invoiceDate: invDate,
-        invoiceFileUrl: fileUrl,
-        invoiceFileName: fileName,
+        invoiceFileUrl: primaryUrl,
+        invoiceFileName: primaryName,
+        invoiceFileUrls: allUrls,
+        invoiceAttachments: allAttachments,
         mappedAt: new Date().toISOString(),
         actualDispatchDate: actDispatchDate,
+        ebillNo: order.billingDetails?.ebillNo,
+        vehicleNo: order.billingDetails?.vehicleNo,
+        transportName: order.billingDetails?.transportName,
+        lrNo: order.billingDetails?.lrNo,
+        dispatchDate: order.billingDetails?.dispatchDate,
       };
 
       const updatedOrder: OrderOffer = {
@@ -731,6 +803,10 @@ export default function IndentView({
             `Product ${index + 1}: ${item.productName}: Qty ${item.quantity} @ ${item.rate} = ${item.amount}`
           ).join('\n');
 
+          const multiLinkString = allAttachments.length > 1
+            ? allAttachments.map((a, i) => `${a.name || `Invoice ${i + 1}`}: ${a.url}`).join("\n")
+            : primaryUrl;
+
           const applyTemplate = (text: string) => {
             return replaceTemplateVars(text, {
               recordId: order.id,
@@ -743,7 +819,7 @@ export default function IndentView({
               totalValue: order.totalValue,
               itemsList: itemsListString,
               invoiceNumber: invNum,
-              invoiceFileLink: fileUrl,
+              invoiceFileLink: multiLinkString,
               payment: order.payment || "",
               paymentTermsOffer: order.paymentTermsOffer || "",
               paymentCreditPeriod: order.paymentCreditPeriod || "",
@@ -767,34 +843,87 @@ export default function IndentView({
           };
 
           const subject = applyTemplate(template.subject);
-          const body = applyTemplate(template.body);
+          const rawBody = applyTemplate(template.body);
+          const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
 
           const dynamicTo = cleanEmailList(template.to ? applyTemplate(template.to) : (order.email || ""));
           const dynamicCc = template.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
           const dynamicBcc = template.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
           const idToken = await auth.currentUser?.getIdToken();
-          const res = await fetch("/api/send-order-email", {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${idToken || ""}`
-            },
-            body: JSON.stringify({
-              to: dynamicTo,
-              cc: dynamicCc,
-              bcc: dynamicBcc,
-              subject: subject,
-              text: body,
-              senderUserId: activeUser?.id,
-              category: "invoice_issuance"
-            }),
+          let resData: any = {};
+          let isOk = false;
+          let deliveryStatus: "Sent" | "Failed" = "Sent";
+          let emailErrorMsg: string | undefined = undefined;
+
+          try {
+            const res = await fetch("/api/send-order-email", {
+              method: "POST",
+              headers: { 
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${idToken || ""}`
+              },
+              body: JSON.stringify({
+                to: dynamicTo,
+                cc: dynamicCc,
+                bcc: dynamicBcc,
+                subject: subject,
+                text: formattedHtml,
+                html: formattedHtml,
+                htmlBody: formattedHtml,
+                plainText: formattedText,
+                senderUserId: activeUser?.id,
+                senderUserName: activeUser?.name,
+                category: "invoice_issuance",
+                orderId: order.id,
+                companyName: order.companyName,
+                clientName: order.clientName,
+              }),
+            });
+            resData = await res.json().catch(() => ({}));
+            isOk = res.ok;
+            deliveryStatus = resData.deliveryStatus || (res.ok ? "Sent" : "Failed");
+            if (!res.ok) {
+              emailErrorMsg = resData.message || "Failed to send invoice notification email.";
+            }
+          } catch (e: any) {
+            isOk = false;
+            deliveryStatus = "Failed";
+            emailErrorMsg = e.message || "Network error while sending email";
+          }
+
+          const newInvoiceEmailSummary: EmailSentStatusSummary = {
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            status: deliveryStatus,
+            timestamp: new Date().toISOString(),
+            subject,
+            error: emailErrorMsg,
+            sentByUserName: activeUser?.name,
+          };
+
+          await onEditOrder({
+            ...updatedOrder,
+            invoiceEmailStatus: newInvoiceEmailSummary,
           });
 
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            throw new Error(errData.message || "Failed to send invoice notification email.");
-          }
+          await saveEmailSentLog({
+            id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            orderId: order.id,
+            companyName: order.companyName,
+            clientName: order.clientName,
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            subject,
+            category: "invoice_issuance",
+            status: deliveryStatus,
+            timestamp: new Date().toISOString(),
+            senderUserId: activeUser?.id,
+            senderUserName: activeUser?.name,
+            error: emailErrorMsg,
+          });
 
           await saveLog({
             id: `log-${Date.now()}`,
@@ -805,13 +934,19 @@ export default function IndentView({
             targetType: "Order",
             targetId: order.id,
             targetName: order.companyName,
-            details: `Email sent to ${dynamicTo}${dynamicCc ? ` (CC: ${dynamicCc})` : ""}${dynamicBcc ? ` (BCC: ${dynamicBcc})` : ""} (Template: ${template.name}) containing mapped invoice #${invNum} details for "${order.companyName}"`
+            details: `Email ${deliveryStatus.toLowerCase()} to ${dynamicTo}${dynamicCc ? ` (CC: ${dynamicCc})` : ""}${dynamicBcc ? ` (BCC: ${dynamicBcc})` : ""} (Template: ${template.name}) containing mapped invoice #${invNum} details for "${order.companyName}"`
           });
         }
       }
 
       setOrderSuccess((prev) => ({ ...prev, [orderId]: true }));
-      setSelectedFiles((prev) => ({ ...prev, [orderId]: null }));
+      setSelectedFiles((prev) => ({ ...prev, [orderId]: [] }));
+      setExistingAttachments((prev) => {
+        const copy = { ...prev };
+        delete copy[orderId];
+        return copy;
+      });
+      setUploadProgressText((prev) => ({ ...prev, [orderId]: "" }));
       setEditingOrderId(null);
 
       // Clean success banner after 3 seconds
@@ -827,6 +962,160 @@ export default function IndentView({
       }));
     } finally {
       setUploadProgress((prev) => ({ ...prev, [orderId]: false }));
+      setUploadProgressText((prev) => ({ ...prev, [orderId]: "" }));
+    }
+  };
+
+  const getEffectiveInvoiceStatus = (order: OrderOffer): EmailSentStatusSummary | undefined => {
+    if (order.invoiceEmailStatus && order.invoiceEmailStatus.timestamp) {
+      return order.invoiceEmailStatus;
+    }
+    const matchingLog = emailSentLogs?.find(
+      (l) => (l.orderId === order.id || l.to === order.email) && (l.category === "invoice_issuance" || l.category === "resend_invoice")
+    );
+    if (matchingLog) {
+      return {
+        to: matchingLog.to,
+        cc: matchingLog.cc,
+        bcc: matchingLog.bcc,
+        status: matchingLog.status,
+        timestamp: matchingLog.timestamp,
+        error: matchingLog.error,
+        subject: matchingLog.subject,
+        sentByUserName: matchingLog.senderUserName,
+      };
+    }
+    return undefined;
+  };
+
+  const handleResendInvoiceEmail = async (order: OrderOffer) => {
+    setResendingInvoiceOrderId(order.id);
+    try {
+      const invNum = order.billingDetails?.invoiceNumber || "";
+      const fileUrl = order.billingDetails?.invoiceFileUrl || "";
+      const hierarchy = resolveUserHierarchyInfo(activeUserId, order.assignedToUserId, users);
+      const template = emailTemplates?.find(
+        (t) => t.isDefault && (t.assignedForm === "invoice_issuance" || (t.assignedForm as string) === "invoice_attached" || t.assignedForm === "any" || !t.assignedForm)
+      ) || emailTemplates?.find((t) => t.isDefault);
+
+      const itemsListString = (order.items || []).map((item, index) =>
+        `Product ${index + 1}: ${item.productName}: Qty ${item.quantity} @ ${item.rate} = ${item.amount}`
+      ).join("\n");
+
+      const applyTemplate = (text: string) => {
+        return replaceTemplateVars(text, {
+          recordId: order.id,
+          clientName: order.clientName || "",
+          companyName: order.companyName || "",
+          email: order.email || "",
+          phone: order.phone || "",
+          billingAddress: order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "",
+          status: order.status,
+          totalValue: order.totalValue,
+          itemsList: itemsListString,
+          invoiceNumber: invNum,
+          invoiceFileLink: fileUrl,
+          payment: order.payment || "",
+          paymentTermsOffer: order.paymentTermsOffer || "",
+          paymentCreditPeriod: order.paymentCreditPeriod || "",
+          delivery: order.delivery || "",
+          otherTerms: order.otherTerms || "",
+          notes: order.notes || "",
+          customerPoNumber: order.closedWonDetails?.customerPoNumber || "",
+          poDate: order.closedWonDetails?.poDate || "",
+          freightTerm: order.closedWonDetails?.freightTerm || "",
+          freightChargedInBill: order.closedWonDetails?.freightChargedInBill || "",
+          freightCostToAol: order.closedWonDetails?.freightCostToAol || "",
+          cartageLabourCharges: order.closedWonDetails?.cartageLabourCharges || "",
+          transporterName: order.closedWonDetails?.transporterName || "",
+          deliveryTerm: order.closedWonDetails?.deliveryTerm || "",
+          destinationAddress: order.closedWonDetails?.destinationAddress || "",
+          dispatchDate: order.closedWonDetails?.dispatchDate || "",
+          dispatchLocation: order.closedWonDetails?.dispatchLocation || "",
+          warehouseManagedBy: order.closedWonDetails?.warehouseManagedBy || "",
+          ...hierarchy,
+        });
+      };
+
+      const subject = applyTemplate(template?.subject || `Invoice Notification: ${invNum} for ${order.companyName || order.clientName}`);
+      const rawBody = applyTemplate(template?.body || `Hello ${order.clientName},\n\nPlease find attached the invoice details for your order.\n\nInvoice Number: ${invNum}\nInvoice Link: ${fileUrl}\nTotal Value: ₹${order.totalValue?.toLocaleString()}\n\nThank you.`);
+      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
+
+      const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : (order.email || ""));
+      const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
+      const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
+
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch("/api/send-order-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken || ""}`,
+        },
+        body: JSON.stringify({
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          subject,
+          text: formattedHtml,
+          html: formattedHtml,
+          htmlBody: formattedHtml,
+          plainText: formattedText,
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          category: "resend_invoice",
+          orderId: order.id,
+          companyName: order.companyName,
+          clientName: order.clientName,
+        }),
+      });
+
+      const resData = await res.json().catch(() => ({}));
+      const deliveryStatus = resData.deliveryStatus || (res.ok ? "Sent" : "Failed");
+      const newSummary: EmailSentStatusSummary = {
+        to: dynamicTo,
+        cc: dynamicCc,
+        bcc: dynamicBcc,
+        status: deliveryStatus,
+        timestamp: new Date().toISOString(),
+        subject,
+        error: res.ok ? undefined : resData.message || "Failed to resend invoice email",
+        sentByUserName: activeUser?.name,
+      };
+
+      onEditOrder({
+        ...order,
+        invoiceEmailStatus: newSummary,
+      });
+
+      const logId = `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      await saveEmailSentLog({
+        id: logId,
+        orderId: order.id,
+        companyName: order.companyName,
+        clientName: order.clientName,
+        to: dynamicTo,
+        cc: dynamicCc,
+        bcc: dynamicBcc,
+        subject,
+        category: "resend_invoice",
+        status: deliveryStatus,
+        timestamp: new Date().toISOString(),
+        senderUserId: activeUser?.id,
+        senderUserName: activeUser?.name,
+        error: res.ok ? undefined : resData.message,
+      });
+
+      if (res.ok) {
+        setEmailBanner({ type: "success", message: `Invoice email successfully sent to ${dynamicTo}` });
+      } else {
+        setEmailBanner({ type: "error", message: `Failed to send email: ${resData.message || "Unknown error"}` });
+      }
+    } catch (err: any) {
+      console.error("Resend error:", err);
+      setEmailBanner({ type: "error", message: `Failed to resend invoice email: ${err.message || err}` });
+    } finally {
+      setResendingInvoiceOrderId(null);
     }
   };
 
@@ -844,6 +1133,29 @@ export default function IndentView({
 
   return (
     <div className="space-y-6" id="indent-view-container">
+      {/* Email Notification Banner */}
+      {emailBanner && (
+        <div
+          className={`p-3.5 rounded-xl border flex items-center justify-between text-xs font-semibold animate-fadeIn ${
+            emailBanner.type === "success"
+              ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+              : "bg-rose-50 text-rose-800 border-rose-200"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {emailBanner.type === "success" ? <Check size={16} className="text-emerald-600" /> : <AlertCircle size={16} className="text-rose-600" />}
+            <span>{emailBanner.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setEmailBanner(null)}
+            className="p-1 hover:bg-black/5 rounded-md text-slate-500 hover:text-slate-800"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* View Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-5 border border-slate-200/85 rounded-2xl shadow-xs">
         <div>
@@ -854,50 +1166,6 @@ export default function IndentView({
           <p className="text-xs text-slate-500 mt-1 max-w-2xl">
             Map invoices and files to finalized customer purchase orders. All invoice files are securely cataloged in Google Drive central folder, sorted automatically into customer subdirectories.
           </p>
-        </div>
-
-        {/* Google Drive Status */}
-        <div className="flex items-center gap-2 self-start md:self-center">
-          {hasDriveAccess ? (
-            <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl text-[10px] font-bold">
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>Google Drive Active</span>
-              {isUserTeamAllowedForDrive(activeUser, driveSettings) && (
-                <button
-                  type="button"
-                  onClick={handleConnectDrive}
-                  disabled={isConnecting}
-                  className="ml-1 text-[10px] text-emerald-800 hover:text-emerald-950 font-semibold underline cursor-pointer"
-                  title="Refresh / Re-authorize Google Drive Access"
-                >
-                  {isConnecting ? "Refreshing..." : "Re-auth"}
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-xl text-[10px] font-bold">
-                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-                Drive Unlinked
-              </span>
-              {isUserTeamAllowedForDrive(activeUser, driveSettings) ? (
-                <button
-                  type="button"
-                  disabled={isConnecting}
-                  onClick={handleConnectDrive}
-                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-1.5 px-3 rounded-xl text-[10px] flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-                  title="Connect / Re-authorize Google Drive"
-                >
-                  {isConnecting ? (
-                    <Loader2 size={10} className="animate-spin" />
-                  ) : (
-                    <Upload size={10} />
-                  )}
-                  <span>Connect Drive</span>
-                </button>
-              ) : null}
-            </div>
-          )}
         </div>
       </div>
 
@@ -1068,7 +1336,22 @@ export default function IndentView({
                             <Calendar size={12} />
                             {order.createdAt ? formatDate(order.createdAt) : ""}
                           </span>
-                          {order.closedWonDetails?.poAttachmentUrl && (
+                          {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                <button
+                                  key={attIdx}
+                                  type="button"
+                                  onClick={() => openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails?.customerPoNumber || "document"}_${attIdx + 1}.pdf`)}
+                                  className="inline-flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-0.5 px-2 rounded-lg text-[9.5px] font-mono transition-all border border-indigo-200 shadow-2xs cursor-pointer"
+                                  title={`View Attached PO: ${att.name}`}
+                                >
+                                  <FileText size={11} className="text-indigo-600 shrink-0" />
+                                  <span>{order.closedWonDetails!.poAttachments!.length === 1 ? "View Attached PO ↗" : `PO ${attIdx + 1} ↗`}</span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : order.closedWonDetails?.poAttachmentUrl ? (
                             <button
                               type="button"
                               onClick={() => openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`)}
@@ -1078,7 +1361,7 @@ export default function IndentView({
                               <FileText size={12} className="text-indigo-600 shrink-0" />
                               <span>View Attached PO ↗</span>
                             </button>
-                          )}
+                          ) : null}
                         </div>
                       </div>
 
@@ -1105,7 +1388,21 @@ export default function IndentView({
                         </div>
                         <div className="flex justify-between items-center border-t border-slate-200/60 pt-1.5 mt-1.5">
                           <span className="text-slate-400 font-bold uppercase tracking-tight">Attached PO File:</span>
-                          {order.closedWonDetails?.poAttachmentUrl ? (
+                          {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 justify-end">
+                              {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                <button
+                                  key={attIdx}
+                                  type="button"
+                                  onClick={() => openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails?.customerPoNumber || "document"}_${attIdx + 1}.pdf`)}
+                                  className="text-indigo-600 hover:text-indigo-800 font-bold underline flex items-center gap-1 text-[9.5px] cursor-pointer"
+                                  title={`Open ${att.name}`}
+                                >
+                                  <FileText size={11} className="text-indigo-600" /> {order.closedWonDetails!.poAttachments!.length === 1 ? "View Customer PO ↗" : (att.name ? (att.name.length > 15 ? `${att.name.substring(0, 12)}...` : att.name) : `PO ${attIdx + 1} ↗`)}
+                                </button>
+                              ))}
+                            </div>
+                          ) : order.closedWonDetails?.poAttachmentUrl ? (
                             <button 
                               type="button"
                               onClick={() => openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`)}
@@ -1172,7 +1469,26 @@ export default function IndentView({
                                     <span className="text-slate-400 font-bold uppercase tracking-tight">Payment Terms:</span>
                                     <span className="text-slate-700 font-bold">{order.payment || "N/A"}</span>
                                   </div>
-                                  {order.closedWonDetails?.poAttachmentUrl && (
+                                  {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                                    <div className="flex flex-col gap-1 pt-1 border-t border-slate-100/50">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document(s):</span>
+                                      <div className="flex flex-wrap gap-1">
+                                        {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                          <a 
+                                            key={attIdx}
+                                            href="#"
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails!.customerPoNumber || "document"}_${attIdx + 1}.pdf`);
+                                            }}
+                                            className="text-indigo-600 hover:text-indigo-800 font-black underline flex items-center gap-1 text-[9.5px]"
+                                          >
+                                            <FileText size={10} /> {att.name || `PO ${attIdx + 1}`} ↗
+                                          </a>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : order.closedWonDetails?.poAttachmentUrl ? (
                                     <div className="flex justify-between items-center pt-1 border-t border-slate-100/50">
                                       <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document:</span>
                                       <a 
@@ -1186,7 +1502,7 @@ export default function IndentView({
                                         <FileText size={10} /> View Customer PO ↗
                                       </a>
                                     </div>
-                                  )}
+                                  ) : null}
                                 </div>
                               </div>
                             </div>
@@ -1288,10 +1604,16 @@ export default function IndentView({
                                           disabled={!teamCanEdit || savingLogisticsId === order.id}
                                           className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
                                         >
-                                          <option value="">Select Warehouse...</option>
-                                          {warehouses.map((wh) => (
-                                            <option key={wh.id} value={wh.name}>{wh.name}</option>
-                                          ))}
+                                          <option value="">Select Warehouse Manager...</option>
+                                          {warehouses.map((wh) => {
+                                            const mgrValue = wh.warehouseManager?.trim() || wh.name?.trim() || wh.warehouseName?.trim() || "";
+                                            const label = wh.warehouseManager?.trim()
+                                              ? `${wh.warehouseManager.trim()}${wh.warehouseName ? ` (${wh.warehouseName})` : ""}`
+                                              : (wh.name || wh.warehouseName || "");
+                                            return (
+                                              <option key={wh.id} value={mgrValue}>{label}</option>
+                                            );
+                                          })}
                                           {getLogisticsValue(order, "warehouseManagedBy") && !warehouses.some(w => w.name === getLogisticsValue(order, "warehouseManagedBy")) && (
                                             <option value={getLogisticsValue(order, "warehouseManagedBy")}>{getLogisticsValue(order, "warehouseManagedBy")}</option>
                                           )}
@@ -1302,14 +1624,25 @@ export default function IndentView({
                                         <label className="text-slate-500 font-bold uppercase tracking-tight text-[9px] block mb-1">
                                           Delivery / Booking Term
                                         </label>
-                                        <input
-                                          type="text"
-                                          placeholder="e.g. Door Delivery / Ex-Godown"
+                                        <select
                                           value={getLogisticsValue(order, "deliveryTerm")}
                                           onChange={(e) => updateLogisticsField(order, "deliveryTerm", e.target.value)}
                                           disabled={!teamCanEdit || savingLogisticsId === order.id}
                                           className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
-                                        />
+                                        >
+                                          <option value="">-- Select Delivery Term --</option>
+                                          {Array.from(new Set([
+                                            "Door Delivery",
+                                            "Transporter Godown Delivery at Destination",
+                                            "Party Vehicle (self Pickup)",
+                                            ...deliveryTerms.map(dt => dt.name),
+                                            ...(getLogisticsValue(order, "deliveryTerm") ? [getLogisticsValue(order, "deliveryTerm")] : [])
+                                          ])).map((term) => (
+                                            <option key={term} value={term}>
+                                              {term}
+                                            </option>
+                                          ))}
+                                        </select>
                                       </div>
 
                                       <div>
@@ -1607,7 +1940,7 @@ export default function IndentView({
                 const isEditing = editingOrderId === order.id;
                 const mappedInv = order.billingDetails?.invoiceNumber;
                 const mappedInvDate = order.billingDetails?.invoiceDate;
-                const fileAttached = order.billingDetails?.invoiceFileUrl;
+                const fileAttached = order.billingDetails?.invoiceFileUrl || (order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0);
                 const mappedActualDispatchDate = order.billingDetails?.actualDispatchDate;
                 const hasDetails = mappedInv || fileAttached;
                 const isDragging = dragOverOrderId === order.id;
@@ -1615,6 +1948,16 @@ export default function IndentView({
                 const localInvoiceDateVal = invoiceDates[order.id] !== undefined ? invoiceDates[order.id] : (mappedInvDate || "");
                 const localActualDispatchDateVal = actualDispatchDates[order.id] !== undefined ? actualDispatchDates[order.id] : (mappedActualDispatchDate || "");
                 const isExpanded = !!expandedOrderIds[order.id];
+
+                const currentExistingAttachments = existingAttachments[order.id] !== undefined
+                  ? existingAttachments[order.id]
+                  : (order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0
+                      ? order.billingDetails.invoiceAttachments
+                      : (order.billingDetails?.invoiceFileUrl
+                          ? [{ name: order.billingDetails.invoiceFileName || `Invoice_${order.billingDetails.invoiceNumber || "Doc"}.pdf`, url: order.billingDetails.invoiceFileUrl }]
+                          : []));
+                const currentNewFiles = selectedFiles[order.id] || [];
+                const totalFilesCount = currentExistingAttachments.length + currentNewFiles.length;
 
                 // Lookup mapped bank details
                 const bank = paymentBanks.find((b) => b.id === order.paymentBankId);
@@ -1627,7 +1970,7 @@ export default function IndentView({
                     }`}
                     onDragOver={(e) => handleDragOver(e, order.id)}
                     onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, order.id)}
+                    onDrop={(e) => handleDrop(e, order.id, order)}
                   >
                     <div className="space-y-5">
                       {/* Order Company & Client Info */}
@@ -1670,7 +2013,22 @@ export default function IndentView({
                             <Calendar size={12} />
                             {order.createdAt ? formatDate(order.createdAt) : ""}
                           </span>
-                          {order.closedWonDetails?.poAttachmentUrl && (
+                          {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                <button
+                                  key={attIdx}
+                                  type="button"
+                                  onClick={() => openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails?.customerPoNumber || "document"}_${attIdx + 1}.pdf`)}
+                                  className="inline-flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-0.5 px-2 rounded-lg text-[9.5px] font-mono transition-all border border-indigo-200 shadow-2xs cursor-pointer"
+                                  title={`View Attached PO: ${att.name}`}
+                                >
+                                  <FileText size={11} className="text-indigo-600 shrink-0" />
+                                  <span>{att.name ? (att.name.length > 18 ? `${att.name.substring(0, 15)}...` : att.name) : `PO ${attIdx + 1}`} ↗</span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : order.closedWonDetails?.poAttachmentUrl ? (
                             <button
                               type="button"
                               onClick={() => openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`)}
@@ -1680,7 +2038,7 @@ export default function IndentView({
                               <FileText size={12} className="text-indigo-600 shrink-0" />
                               <span>View Attached PO ↗</span>
                             </button>
-                          )}
+                          ) : null}
                         </div>
                       </div>
 
@@ -1714,7 +2072,21 @@ export default function IndentView({
                         </div>
                         <div className="flex justify-between items-center border-t border-slate-200/60 pt-1.5 mt-1.5">
                           <span className="text-slate-400 font-bold uppercase tracking-tight">Attached PO File:</span>
-                          {order.closedWonDetails?.poAttachmentUrl ? (
+                          {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 justify-end">
+                              {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                <button
+                                  key={attIdx}
+                                  type="button"
+                                  onClick={() => openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails?.customerPoNumber || "document"}_${attIdx + 1}.pdf`)}
+                                  className="text-indigo-600 hover:text-indigo-800 font-bold underline flex items-center gap-1 text-[9.5px] cursor-pointer"
+                                  title={`Open ${att.name}`}
+                                >
+                                  <FileText size={11} className="text-indigo-600" /> {order.closedWonDetails!.poAttachments!.length === 1 ? "View Customer PO ↗" : (att.name ? (att.name.length > 15 ? `${att.name.substring(0, 12)}...` : att.name) : `PO ${attIdx + 1} ↗`)}
+                                </button>
+                              ))}
+                            </div>
+                          ) : order.closedWonDetails?.poAttachmentUrl ? (
                             <button 
                               type="button"
                               onClick={() => openOrDownloadDocument(order.closedWonDetails!.poAttachmentUrl!, `PO_${order.closedWonDetails?.customerPoNumber || "document"}.pdf`)}
@@ -1782,7 +2154,26 @@ export default function IndentView({
                                     <span className="text-slate-400 font-bold uppercase tracking-tight">Payment Terms:</span>
                                     <span className="text-slate-700 font-bold">{order.payment || "N/A"}</span>
                                   </div>
-                                  {order.closedWonDetails?.poAttachmentUrl && (
+                                  {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                                    <div className="flex flex-col gap-1 pt-1 border-t border-slate-100/50">
+                                      <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document(s):</span>
+                                      <div className="flex flex-wrap gap-1">
+                                        {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                          <a 
+                                            key={attIdx}
+                                            href="#"
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails!.customerPoNumber || "document"}_${attIdx + 1}.pdf`);
+                                            }}
+                                            className="text-indigo-600 hover:text-indigo-800 font-black underline flex items-center gap-1 text-[9.5px]"
+                                          >
+                                            <FileText size={10} /> {att.name || `PO ${attIdx + 1}`} ↗
+                                          </a>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : order.closedWonDetails?.poAttachmentUrl ? (
                                     <div className="flex justify-between items-center pt-1 border-t border-slate-100/50">
                                       <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document:</span>
                                       <a 
@@ -1796,7 +2187,7 @@ export default function IndentView({
                                         <FileText size={10} /> View Customer PO ↗
                                       </a>
                                     </div>
-                                  )}
+                                  ) : null}
                                 </div>
                               </div>
 
@@ -2147,21 +2538,51 @@ export default function IndentView({
                           </div>
 
                           {fileAttached ? (
-                            <div className="flex items-center justify-between border-t border-emerald-100/55 pt-2 mt-1">
-                              <span className="text-[10px] text-slate-500 font-medium truncate flex items-center gap-1.5 max-w-xs">
-                                <FileText size={11} className="text-emerald-600 shrink-0" />
-                                <span className="truncate">{order.billingDetails?.invoiceFileName || "invoice_document.pdf"}</span>
-                              </span>
-                              <a
-                                href="#"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  openOrDownloadDocument(order.billingDetails?.invoiceFileUrl, order.billingDetails?.invoiceFileName || "invoice_document.pdf");
-                                }}
-                                className="inline-flex items-center gap-1 bg-white hover:bg-slate-50 border border-emerald-200 text-emerald-700 font-bold py-1 px-2.5 rounded-lg text-[9px] font-mono transition-all shrink-0"
-                              >
-                                View Invoice ↗
-                              </a>
+                            <div className="border-t border-emerald-100/55 pt-2 mt-1 space-y-1.5">
+                              {order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0 ? (
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[9px] font-bold text-slate-500 uppercase font-mono">
+                                      Attached Invoice Files ({order.billingDetails.invoiceAttachments.length})
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {order.billingDetails.invoiceAttachments.map((att, attIdx) => (
+                                      <a
+                                        key={attIdx}
+                                        href="#"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "document"}_${attIdx + 1}.pdf`);
+                                        }}
+                                        className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 border border-emerald-200 text-emerald-700 font-bold py-1 px-2.5 rounded-lg text-[9px] font-mono transition-all shrink-0 shadow-2xs"
+                                        title={`View Invoice: ${att.name}`}
+                                      >
+                                        <FileText size={11} className="text-emerald-600 shrink-0" />
+                                        <span className="truncate max-w-[180px]">{att.name || `Invoice ${attIdx + 1}`}</span>
+                                        <span className="text-emerald-500 text-[8px]">↗</span>
+                                      </a>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] text-slate-500 font-medium truncate flex items-center gap-1.5 max-w-xs">
+                                    <FileText size={11} className="text-emerald-600 shrink-0" />
+                                    <span className="truncate">{order.billingDetails?.invoiceFileName || "invoice_document.pdf"}</span>
+                                  </span>
+                                  <a
+                                    href="#"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      openOrDownloadDocument(order.billingDetails?.invoiceFileUrl, order.billingDetails?.invoiceFileName || "invoice_document.pdf");
+                                    }}
+                                    className="inline-flex items-center gap-1 bg-white hover:bg-slate-50 border border-emerald-200 text-emerald-700 font-bold py-1 px-2.5 rounded-lg text-[9px] font-mono transition-all shrink-0"
+                                  >
+                                    View Invoice ↗
+                                  </a>
+                                </div>
+                              )}
                             </div>
                           ) : (
                             <p className="text-[9px] text-slate-400 italic">No document file uploaded</p>
@@ -2212,33 +2633,101 @@ export default function IndentView({
                             />
                           </div>
 
-                          {/* Upload Field */}
-                          <div className="space-y-1">
-                            <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
-                              Invoice File (Google Drive)
-                            </label>
+                          {/* Upload Field - Multi File Support up to 10 files */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
+                                Invoice File(s) (Google Drive)
+                              </label>
+                              <span className="text-[9px] font-mono text-slate-400 font-semibold">
+                                {totalFilesCount}/10 files attached
+                              </span>
+                            </div>
 
-                            {selectedFiles[order.id] ? (
-                              <div className="flex items-center justify-between border border-emerald-200 bg-emerald-50/20 p-2.5 rounded-xl">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <FileText className="text-emerald-600 h-4 w-4 shrink-0" />
-                                  <span className="text-[10px] text-slate-700 font-medium truncate">
-                                    {selectedFiles[order.id]?.name}
-                                  </span>
+                            {/* List of existing attachments */}
+                            {currentExistingAttachments.length > 0 && (
+                              <div className="space-y-1">
+                                <span className="text-[8.5px] font-mono text-slate-400 font-bold uppercase block">
+                                  Saved Files:
+                                </span>
+                                <div className="space-y-1">
+                                  {currentExistingAttachments.map((att, attIdx) => (
+                                    <div 
+                                      key={`existing-${attIdx}`}
+                                      className="flex items-center justify-between border border-slate-200 bg-slate-50 p-2 rounded-xl text-[10px]"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <FileText className="text-emerald-600 h-3.5 w-3.5 shrink-0" />
+                                        <span className="font-medium text-slate-700 truncate">
+                                          {att.name || `Invoice_${order.billingDetails?.invoiceNumber || "Doc"}_${attIdx + 1}.pdf`}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "Doc"}_${attIdx + 1}.pdf`)}
+                                          className="text-[9px] font-bold text-emerald-600 hover:text-emerald-700 underline font-mono cursor-pointer"
+                                        >
+                                          View ↗
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => removeExistingAttachment(order.id, attIdx, order)}
+                                          disabled={uploadProgress[order.id]}
+                                          className="text-slate-400 hover:text-rose-500 text-xs font-bold p-1 cursor-pointer"
+                                          title="Remove attachment"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => removeSelectedFile(order.id)}
-                                  className="text-slate-400 hover:text-rose-500 text-xs font-bold p-1 cursor-pointer"
-                                >
-                                  ✕
-                                </button>
                               </div>
-                            ) : (
+                            )}
+
+                            {/* List of newly selected files */}
+                            {currentNewFiles.length > 0 && (
+                              <div className="space-y-1">
+                                <span className="text-[8.5px] font-mono text-emerald-600 font-bold uppercase block">
+                                  New Files To Upload ({currentNewFiles.length}):
+                                </span>
+                                <div className="space-y-1">
+                                  {currentNewFiles.map((file, fileIdx) => (
+                                    <div 
+                                      key={`new-${fileIdx}`}
+                                      className="flex items-center justify-between border border-emerald-200 bg-emerald-50/20 p-2 rounded-xl text-[10px]"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <FileText className="text-emerald-600 h-3.5 w-3.5 shrink-0" />
+                                        <span className="font-medium text-slate-800 truncate">
+                                          {file.name}
+                                        </span>
+                                        <span className="text-[8px] text-slate-400 font-mono shrink-0">
+                                          ({(file.size / 1024).toFixed(1)} KB)
+                                        </span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => removeSelectedNewFile(order.id, fileIdx)}
+                                        disabled={uploadProgress[order.id]}
+                                        className="text-slate-400 hover:text-rose-500 text-xs font-bold p-1 cursor-pointer shrink-0"
+                                        title="Remove file"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Upload Drop Zone if less than 10 files */}
+                            {totalFilesCount < 10 && (
                               <div
                                 onDragOver={(e) => handleDragOver(e, order.id)}
-                                className={`border border-dashed rounded-xl p-4 text-center cursor-pointer transition-all ${
-                                  isDragging ? "border-emerald-500 bg-emerald-50/10" : "border-slate-200 hover:border-slate-300"
+                                className={`border border-dashed rounded-xl p-3.5 text-center cursor-pointer transition-all ${
+                                  isDragging ? "border-emerald-500 bg-emerald-50/10" : "border-slate-200 hover:border-slate-300 bg-slate-50/50"
                                 }`}
                                 onClick={() => document.getElementById(`file-upload-${order.id}`)?.click()}
                               >
@@ -2247,15 +2736,16 @@ export default function IndentView({
                                   id={`file-upload-${order.id}`}
                                   className="hidden"
                                   accept=".pdf"
-                                  onChange={(e) => handleFileChange(e, order.id)}
+                                  multiple
+                                  onChange={(e) => handleFileChange(e, order.id, order)}
                                   disabled={uploadProgress[order.id]}
                                 />
-                                <Upload className="mx-auto h-5 w-5 text-slate-400 mb-1" />
+                                <Upload className="mx-auto h-4 w-4 text-slate-400 mb-1" />
                                 <p className="text-[10px] font-bold text-slate-600">
-                                  Drag & Drop or Click to Upload PDF
+                                  Drag & Drop or Click to Attach PDF Invoices
                                 </p>
-                                <p className="text-[8px] text-slate-400 mt-0.5">
-                                  PDF files only up to 10MB
+                                <p className="text-[8.5px] text-slate-400 mt-0.5">
+                                  PDF files only · Upload up to 10 invoice files ({10 - totalFilesCount} slots available)
                                 </p>
                               </div>
                             )}
@@ -2313,7 +2803,12 @@ export default function IndentView({
                                       delete copy[order.id];
                                       return copy;
                                     });
-                                    setSelectedFiles(prev => ({ ...prev, [order.id]: null }));
+                                    setSelectedFiles(prev => ({ ...prev, [order.id]: [] }));
+                                    setExistingAttachments(prev => {
+                                      const copy = { ...prev };
+                                      delete copy[order.id];
+                                      return copy;
+                                    });
                                   }}
                                   className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-1.5 px-3 rounded-lg text-[10px] transition-all cursor-pointer font-mono"
                                 >
@@ -2335,7 +2830,7 @@ export default function IndentView({
                                 {uploadProgress[order.id] ? (
                                   <>
                                     <Loader2 className="h-3 w-3 animate-spin" />
-                                    <span>Saving...</span>
+                                    <span>{uploadProgressText[order.id] || "Saving..."}</span>
                                   </>
                                 ) : (
                                   <>
@@ -2393,6 +2888,7 @@ export default function IndentView({
                       <th className="p-4 text-right">PO Amount</th>
                       <th className="p-4">Invoice Number</th>
                       <th className="p-4">Invoice Document</th>
+                      <th className="p-4">Email Sent Status</th>
                       <th className="p-4 text-center">Date Mapped</th>
                       <th className="p-4 text-center">Actions</th>
                     </tr>
@@ -2422,7 +2918,24 @@ export default function IndentView({
                             </td>
                             <td className="p-4 font-mono font-bold text-slate-700">
                               <div>{order.closedWonDetails?.customerPoNumber || "N/A"}</div>
-                              {order.closedWonDetails?.poAttachmentUrl ? (
+                              {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                    <button
+                                      key={attIdx}
+                                      type="button"
+                                      onClick={() => {
+                                        openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails?.customerPoNumber || "document"}_${attIdx + 1}.pdf`);
+                                      }}
+                                      className="inline-flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-0.5 px-1.5 rounded-lg text-[9px] font-mono transition-all border border-indigo-200 shadow-2xs cursor-pointer"
+                                      title={att.name || `PO Document ${attIdx + 1}`}
+                                    >
+                                      <FileText size={10} className="text-indigo-600" />
+                                      <span>{order.closedWonDetails!.poAttachments!.length === 1 ? "View PO ↗" : `PO ${attIdx + 1} ↗`}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : order.closedWonDetails?.poAttachmentUrl ? (
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -2449,12 +2962,33 @@ export default function IndentView({
                               </span>
                             </td>
                             <td className="p-4">
-                              {order.billingDetails?.invoiceFileUrl ? (
+                              {order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0 ? (
+                                <div className="flex flex-wrap gap-1.5 items-center">
+                                  {order.billingDetails.invoiceAttachments.map((att, attIdx) => (
+                                    <a
+                                      key={attIdx}
+                                      href="#"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "doc"}_${attIdx + 1}.pdf`);
+                                      }}
+                                      className="inline-flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-1 px-2 rounded-lg text-[9.5px] font-mono transition-all border border-indigo-200 shadow-2xs"
+                                      title={att.name || `Invoice Doc ${attIdx + 1}`}
+                                    >
+                                      <FileText size={10} className="text-indigo-600 shrink-0" />
+                                      <span className="truncate max-w-[110px]">
+                                        {order.billingDetails!.invoiceAttachments!.length === 1 ? (att.name || "Invoice.pdf") : (att.name || `Inv ${attIdx + 1}`)}
+                                      </span>
+                                      <ExternalLink size={9} className="text-indigo-500 shrink-0" />
+                                    </a>
+                                  ))}
+                                </div>
+                              ) : order.billingDetails?.invoiceFileUrl ? (
                                 <a
                                   href="#"
                                   onClick={(e) => {
                                     e.preventDefault();
-                                    openOrDownloadDocument(order.billingDetails.invoiceFileUrl, order.billingDetails.invoiceFileName || "invoice.pdf");
+                                    openOrDownloadDocument(order.billingDetails!.invoiceFileUrl!, order.billingDetails!.invoiceFileName || "invoice.pdf");
                                   }}
                                   className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold py-1 px-2.5 rounded-lg text-[10px] font-mono transition-all border border-indigo-100"
                                   id={`view-invoice-${order.id}`}
@@ -2468,6 +3002,15 @@ export default function IndentView({
                               ) : (
                                 <span className="text-slate-400 italic text-[11px]">No file attached</span>
                               )}
+                            </td>
+                            <td className="p-4 min-w-[200px]">
+                              <EmailSentStatusCell
+                                statusSummary={getEffectiveInvoiceStatus(order)}
+                                onResend={() => handleResendInvoiceEmail(order)}
+                                isResending={resendingInvoiceOrderId === order.id}
+                                canResend={true}
+                                tableType="invoice"
+                              />
                             </td>
                             <td className="p-4 text-center font-mono text-[10px] text-slate-400">
                               {order.billingDetails?.mappedAt
@@ -2606,7 +3149,24 @@ export default function IndentView({
                                         </div>
                                         <div className="flex justify-between items-center border-t border-slate-100 pt-1.5 mt-1">
                                           <span className="text-slate-400 font-bold uppercase tracking-tight">Attached PO File:</span>
-                                          {order.closedWonDetails?.poAttachmentUrl ? (
+                                          {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
+                                            <div className="flex flex-wrap gap-1 justify-end">
+                                              {order.closedWonDetails.poAttachments.map((att, attIdx) => (
+                                                <button
+                                                  key={attIdx}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails?.customerPoNumber || "document"}_${attIdx + 1}.pdf`);
+                                                  }}
+                                                  className="text-indigo-600 hover:text-indigo-800 font-bold underline flex items-center gap-1 text-[9.5px] cursor-pointer"
+                                                  title={`Open ${att.name}`}
+                                                >
+                                                  <FileText size={10} className="text-indigo-600" />
+                                                  {order.closedWonDetails!.poAttachments!.length === 1 ? "View Customer PO ↗" : (att.name ? (att.name.length > 15 ? `${att.name.substring(0, 12)}...` : att.name) : `PO ${attIdx + 1} ↗`)}
+                                                </button>
+                                              ))}
+                                            </div>
+                                          ) : order.closedWonDetails?.poAttachmentUrl ? (
                                             <button
                                               type="button"
                                               onClick={() => {
@@ -2619,6 +3179,40 @@ export default function IndentView({
                                             </button>
                                           ) : (
                                             <span className="text-slate-400 italic text-[9.5px]">No file attached</span>
+                                          )}
+                                        </div>
+                                        <div className="flex justify-between items-center border-t border-slate-100 pt-1.5 mt-1">
+                                          <span className="text-slate-400 font-bold uppercase tracking-tight">Attached Invoice(s):</span>
+                                          {order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0 ? (
+                                            <div className="flex flex-wrap gap-1 justify-end">
+                                              {order.billingDetails.invoiceAttachments.map((att, attIdx) => (
+                                                <button
+                                                  key={attIdx}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "doc"}_${attIdx + 1}.pdf`);
+                                                  }}
+                                                  className="text-emerald-700 hover:text-emerald-900 font-bold underline flex items-center gap-1 text-[9.5px] cursor-pointer"
+                                                  title={`Open ${att.name}`}
+                                                >
+                                                  <FileText size={10} className="text-emerald-600" />
+                                                  {order.billingDetails!.invoiceAttachments!.length === 1 ? "View Invoice PDF ↗" : (att.name ? (att.name.length > 15 ? `${att.name.substring(0, 12)}...` : att.name) : `Invoice ${attIdx + 1} ↗`)}
+                                                </button>
+                                              ))}
+                                            </div>
+                                          ) : order.billingDetails?.invoiceFileUrl ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                openOrDownloadDocument(order.billingDetails!.invoiceFileUrl!, order.billingDetails!.invoiceFileName || `Invoice_${order.billingDetails!.invoiceNumber}.pdf`);
+                                              }}
+                                              className="text-emerald-700 hover:text-emerald-900 font-bold underline flex items-center gap-1 text-[9.5px] cursor-pointer"
+                                              title="Open Invoice PDF"
+                                            >
+                                              <FileText size={11} className="text-emerald-600" /> View Invoice PDF ↗
+                                            </button>
+                                          ) : (
+                                            <span className="text-slate-400 italic text-[9.5px]">No invoice attached</span>
                                           )}
                                         </div>
                                       </div>

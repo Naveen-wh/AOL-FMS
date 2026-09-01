@@ -4,16 +4,16 @@
  */
 
 import React, { useState, useMemo } from "react";
-import { User, SalesLead, ProjectWorkflow, SalesTask, Role, AccessLevel, Product, OrderOffer, Team } from "../types";
-import { canViewLead, canViewTask, canViewOrderOffer, getReportingTreeUsers } from "../data";
+import { User, ProjectWorkflow, SalesTask, Role, AccessLevel, Product, OrderOffer, Team } from "../types";
+import { canViewTask, canViewOrderOffer, getReportingTreeUsers } from "../data";
 import { IndianRupee, CheckCircle, TrendingUp, Target, Package, Building2, Users, BarChart3, Search, Filter, Settings, Save, X, Loader2, Eye, EyeOff, ChevronDown, ChevronUp, Calendar, FileText, ShoppingCart, Percent } from "lucide-react";
 import AdminDriveSettings from "./AdminDriveSettings";
 import { updateUserDetails } from "../lib/firebaseService";
+import { formatCompactRupees, formatQuantityMT } from "../utils";
 
 interface DashboardViewProps {
   activeUserId: string;
   users: User[];
-  leads: SalesLead[];
   workflows: ProjectWorkflow[];
   products?: Product[];
   tasks: SalesTask[];
@@ -27,7 +27,6 @@ interface DashboardViewProps {
 export default function DashboardView({
   activeUserId,
   users,
-  leads,
   workflows,
   products = [],
   tasks,
@@ -109,11 +108,6 @@ export default function DashboardView({
     });
   }, [users, activeUserId, isLevelFilterEnabled, isUserAdmin, reportingTree]);
 
-  // Visible Leads
-  const visibleLeads = useMemo(() => {
-    return leads.filter((lead) => canViewLead(activeUserId, lead, users, isLevelFilterEnabled));
-  }, [leads, activeUserId, users, isLevelFilterEnabled]);
-
   // Visible Orders
   const visibleOrders = useMemo(() => {
     return orders.filter((order) => {
@@ -125,21 +119,21 @@ export default function DashboardView({
     return tasks.filter((task) => canViewTask(activeUserId, task, users));
   }, [tasks, activeUserId, users]);
 
-  // Overall KPIs
-  const totalPipelineValue = visibleLeads.reduce((acc, lead) => acc + (lead.value || 0), 0);
-  const closedWonLeads = visibleLeads.filter((l) => l.status === "Closed Won");
-  const closedWonValue = closedWonLeads.reduce((acc, lead) => acc + (lead.value || 0), 0);
+  // Overall KPIs (derived from Orders & Offers)
+  const totalPipelineValue = visibleOrders.reduce((acc, order) => acc + (Number(order.totalValue) || 0), 0);
+  const closedWonOrders = visibleOrders.filter((o) => o.status === "Closed Won");
+  const closedWonValue = closedWonOrders.reduce((acc, order) => acc + (Number(order.totalValue) || 0), 0);
   const targetQuotaValue = activeUser.targetQuota || 30000;
   const quotaProgressPercentage = Math.min((closedWonValue / targetQuotaValue) * 100, 100);
 
-  // Status counts for lead funnel
+  // Status counts for Order & Offer funnel distribution
   const statusCounts = {
-    New: visibleLeads.filter((l) => l.status === "New").length,
-    Contacted: visibleLeads.filter((l) => l.status === "Contacted").length,
-    Proposal: visibleLeads.filter((l) => l.status === "Proposal").length,
-    Negotiation: visibleLeads.filter((l) => l.status === "Negotiation").length,
-    "Closed Won": visibleLeads.filter((l) => l.status === "Closed Won").length,
-    "Closed Lost": visibleLeads.filter((l) => l.status === "Closed Lost").length,
+    New: visibleOrders.filter((o) => o.status === "New").length,
+    Contacted: visibleOrders.filter((o) => o.status === "Contacted").length,
+    Proposal: visibleOrders.filter((o) => o.status === "Proposal").length,
+    Negotiation: visibleOrders.filter((o) => o.status === "Negotiation").length,
+    "Closed Won": visibleOrders.filter((o) => o.status === "Closed Won").length,
+    "Closed Lost": visibleOrders.filter((o) => o.status === "Closed Lost").length,
   };
 
   const statusColors: Record<string, string> = {
@@ -151,7 +145,7 @@ export default function DashboardView({
     "Closed Lost": "bg-rose-500",
   };
 
-  // Filtered orders & leads based on selected Sales Person in Reports view
+  // Filtered orders based on selected Sales Person in Reports view
   const filteredOrdersForReports = useMemo(() => {
     if (selectedSpFilter === "ALL") return visibleOrders;
     return visibleOrders.filter(
@@ -159,18 +153,10 @@ export default function DashboardView({
     );
   }, [visibleOrders, selectedSpFilter]);
 
-  const filteredLeadsForReports = useMemo(() => {
-    if (selectedSpFilter === "ALL") return visibleLeads;
-    return visibleLeads.filter(
-      (l) => l.assignedToUserId === selectedSpFilter || l.createdByUserId === selectedSpFilter
-    );
-  }, [visibleLeads, selectedSpFilter]);
-
-  // TOP 5 SELLING PRODUCTS REPORT CALCULATION
+  // TOP 5 SELLING PRODUCTS REPORT CALCULATION (from Orders & Offers)
   const topSellingProducts = useMemo(() => {
     const map: Record<string, { productId: string; productName: string; category: string; totalQty: number; totalValue: number; orderCount: number }> = {};
 
-    // 1. Process Order items
     filteredOrdersForReports.forEach((order) => {
       if (order.items && order.items.length > 0) {
         order.items.forEach((item) => {
@@ -198,28 +184,12 @@ export default function DashboardView({
       }
     });
 
-    // 2. Process Leads if products match
-    filteredLeadsForReports.forEach((lead) => {
-      const matchedProd = products.find((p) => p.id === lead.projectId);
-      const key = matchedProd ? matchedProd.name : "Sales Lead Deal";
-      const cat = matchedProd?.category || "Lead";
-      const qty = Number(lead.quantity) || 1;
-      const val = Number(lead.value || lead.amount) || 0;
-
-      if (!map[key]) {
-        map[key] = { productId: matchedProd?.id || key, productName: key, category: cat, totalQty: 0, totalValue: 0, orderCount: 0 };
-      }
-      map[key].totalQty += qty;
-      map[key].totalValue += val;
-      map[key].orderCount += 1;
-    });
-
     const list = Object.values(map);
     list.sort((a, b) => b.totalQty - a.totalQty || b.totalValue - a.totalValue);
     return list.slice(0, 5);
-  }, [filteredOrdersForReports, filteredLeadsForReports, products]);
+  }, [filteredOrdersForReports, products]);
 
-  // TOP 5 COMPANIES / CLIENTS REPORT CALCULATION
+  // TOP 5 COMPANIES / CLIENTS REPORT CALCULATION (from Orders & Offers)
   const topCompanies = useMemo(() => {
     const map: Record<string, { companyName: string; clientName: string; totalQty: number; totalValue: number; orderCount: number }> = {};
 
@@ -242,24 +212,10 @@ export default function DashboardView({
       map[company].orderCount += 1;
     });
 
-    filteredLeadsForReports.forEach((lead) => {
-      const company = lead.companyName || lead.clientName || "Unknown Company";
-      const client = lead.clientName || "Contact";
-      const leadQty = Number(lead.quantity) || 1;
-      const val = Number(lead.value || lead.amount) || 0;
-
-      if (!map[company]) {
-        map[company] = { companyName: company, clientName: client, totalQty: 0, totalValue: 0, orderCount: 0 };
-      }
-      map[company].totalQty += leadQty;
-      map[company].totalValue += val;
-      map[company].orderCount += 1;
-    });
-
     const list = Object.values(map);
     list.sort((a, b) => b.totalQty - a.totalQty || b.totalValue - a.totalValue);
     return list.slice(0, 5);
-  }, [filteredOrdersForReports, filteredLeadsForReports]);
+  }, [filteredOrdersForReports]);
 
   // ALL SALES PERSONS DATA FOR "SP" SUB-TAB (Considering only Orders & Offers)
   const salesPersonsData = useMemo(() => {
@@ -629,10 +585,10 @@ export default function DashboardView({
           <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 flex flex-col md:flex-row md:items-center justify-between gap-2 text-slate-700">
             <div>
               <span id="scope-status" className="font-bold text-xs text-slate-900 block leading-tight">
-                Scope Limit Notification: Showing {visibleLeads.length} leads & {visibleOrders.length} orders
+                Scope Limit Notification: Showing {visibleOrders.length} active orders & offers
               </span>
               <span className="text-[10.5px] text-slate-500">
-                Due to your <strong>{activeUser.role}</strong> scope, active data filtered for team operations.
+                Due to your <strong>{activeUser.role}</strong> scope, active data is filtered for team operations.
               </span>
             </div>
             <div className="flex items-center gap-1.5">
@@ -691,9 +647,9 @@ export default function DashboardView({
                         {/* Compact totals on header when collapsed */}
                         {!isExpanded && (
                           <div className="hidden sm:flex items-center gap-4 text-[11px] font-mono font-bold text-slate-600">
-                            <span>Offers: {m.offerCount} (₹{m.offerRevenue.toLocaleString()})</span>
+                            <span>Offers: {m.offerCount} ({formatCompactRupees(m.offerRevenue)})</span>
                             <span className="text-slate-300">|</span>
-                            <span>Orders: {m.orderCount} (₹{m.orderRevenue.toLocaleString()})</span>
+                            <span>Orders: {m.orderCount} ({formatCompactRupees(m.orderRevenue)})</span>
                           </div>
                         )}
                         {isExpanded ? (
@@ -716,8 +672,8 @@ export default function DashboardView({
                             </span>
                           </div>
                           <div>
-                            <div className="text-lg font-extrabold text-slate-900 font-mono leading-none flex items-baseline gap-1.5">
-                              <span>₹{m.offerRevenue.toLocaleString()}</span>
+                            <div className="text-lg font-extrabold text-slate-900 font-mono leading-none flex items-baseline gap-1.5" title={`₹${m.offerRevenue.toLocaleString('en-IN')}`}>
+                              <span>{formatCompactRupees(m.offerRevenue)}</span>
                             </div>
                             <span className="text-xs font-semibold text-slate-500 mt-1 block">
                               {m.offerCount} pending offer{m.offerCount !== 1 ? 's' : ''}
@@ -734,8 +690,8 @@ export default function DashboardView({
                             </span>
                           </div>
                           <div>
-                            <div className="text-lg font-extrabold text-slate-900 font-mono leading-none flex items-baseline gap-1.5">
-                              <span>₹{m.orderRevenue.toLocaleString()}</span>
+                            <div className="text-lg font-extrabold text-slate-900 font-mono leading-none flex items-baseline gap-1.5" title={`₹${m.orderRevenue.toLocaleString('en-IN')}`}>
+                              <span>{formatCompactRupees(m.orderRevenue)}</span>
                             </div>
                             <span className="text-xs font-semibold text-slate-500 mt-1 block">
                               {m.orderCount} order{m.orderCount !== 1 ? 's' : ''}
@@ -752,8 +708,8 @@ export default function DashboardView({
                             </span>
                           </div>
                           <div>
-                            <div className="text-lg font-extrabold text-slate-900 font-mono leading-none flex items-baseline gap-1.5">
-                              <span>₹{m.invoicedRevenue.toLocaleString()}</span>
+                            <div className="text-lg font-extrabold text-slate-900 font-mono leading-none flex items-baseline gap-1.5" title={`₹${m.invoicedRevenue.toLocaleString('en-IN')}`}>
+                              <span>{formatCompactRupees(m.invoicedRevenue)}</span>
                             </div>
                             <span className="text-xs font-semibold text-slate-500 mt-1 block">
                               {m.invoicedCount} invoice{m.invoicedCount !== 1 ? 's' : ''} mapped
@@ -770,11 +726,11 @@ export default function DashboardView({
                             </span>
                           </div>
                           <div>
-                            <div className="text-lg font-extrabold text-slate-900 font-mono leading-none flex items-baseline gap-1.5">
-                              <span>{m.totalQtySold.toLocaleString()} <span className="text-xs font-bold text-slate-400 uppercase font-mono">KG</span></span>
+                            <div className="text-lg font-extrabold text-slate-900 font-mono leading-none flex items-baseline gap-1.5" title={`${m.totalQtySold.toLocaleString('en-IN')} Kg`}>
+                              <span>{formatQuantityMT(m.totalQtySold)}</span>
                             </div>
-                            <span className="text-xs font-semibold text-slate-500 mt-1 block">
-                              Revenue: ₹{m.qtySoldRevenue.toLocaleString()}
+                            <span className="text-xs font-semibold text-slate-500 mt-1 block" title={`₹${m.qtySoldRevenue.toLocaleString('en-IN')}`}>
+                              Revenue: {formatCompactRupees(m.qtySoldRevenue)}
                             </span>
                           </div>
                         </div>
@@ -795,11 +751,11 @@ export default function DashboardView({
               </div>
               <div className="min-w-0">
                 <span className="text-slate-400 text-[9px] font-bold uppercase tracking-wider font-mono block leading-none">Pipeline Value</span>
-                <span className="text-base font-extrabold text-slate-900 font-mono block mt-0.5 leading-none">
-                  ₹{totalPipelineValue.toLocaleString()}
+                <span className="text-base font-extrabold text-slate-900 font-mono block mt-0.5 leading-none" title={`₹${totalPipelineValue.toLocaleString('en-IN')}`}>
+                  {formatCompactRupees(totalPipelineValue)}
                 </span>
                 <span className="text-slate-500 text-[10px] mt-0.5 block leading-none">
-                  {visibleLeads.length} active leads
+                  {visibleOrders.length} active orders & offers
                 </span>
               </div>
             </div>
@@ -811,11 +767,11 @@ export default function DashboardView({
               </div>
               <div className="min-w-0">
                 <span className="text-slate-400 text-[9px] font-bold uppercase tracking-wider font-mono block leading-none">Closed Revenue</span>
-                <span className="text-base font-extrabold text-slate-900 font-mono block mt-0.5 leading-none">
-                  ₹{closedWonValue.toLocaleString()}
+                <span className="text-base font-extrabold text-slate-900 font-mono block mt-0.5 leading-none" title={`₹${closedWonValue.toLocaleString('en-IN')}`}>
+                  {formatCompactRupees(closedWonValue)}
                 </span>
                 <span className="text-emerald-600 text-[10px] font-semibold mt-0.5 block leading-none">
-                  {closedWonLeads.length} closed deals
+                  {closedWonOrders.length} closed won orders
                 </span>
               </div>
             </div>
@@ -825,7 +781,7 @@ export default function DashboardView({
               <div className="flex justify-between items-center mb-1">
                 <div className="min-w-0">
                   <span className="text-slate-400 text-[9px] font-bold uppercase tracking-wider font-mono block leading-none">Target Quota</span>
-                  <span className="text-xs font-bold text-slate-900 font-mono block mt-0.5">₹{targetQuotaValue.toLocaleString()}</span>
+                  <span className="text-xs font-bold text-slate-900 font-mono block mt-0.5" title={`₹${targetQuotaValue.toLocaleString('en-IN')}`}>{formatCompactRupees(targetQuotaValue)}</span>
                 </div>
                 <div className="bg-blue-50 text-blue-600 p-1 rounded-md shrink-0">
                   <Target size={14} />
@@ -873,11 +829,11 @@ export default function DashboardView({
                   </div>
                   <div>
                     <h3 className="text-sm font-bold text-slate-900 font-mono tracking-tight">Top 5 Selling Products</h3>
-                    <p className="text-[11px] text-slate-500">Ranked by total quantity sold (units/qty)</p>
+                    <p className="text-[11px] text-slate-500">Ranked by total quantity sold (Metric Tonnes)</p>
                   </div>
                 </div>
                 <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono">
-                  By Qty
+                  By Qty (MT)
                 </span>
               </div>
 
@@ -915,11 +871,11 @@ export default function DashboardView({
                           </div>
 
                           <div className="text-right shrink-0">
-                            <span className="text-xs font-extrabold text-emerald-700 font-mono block leading-tight">
-                              {item.totalQty.toLocaleString()} <span className="text-[10px] font-semibold text-slate-500">qty</span>
+                            <span className="text-xs font-extrabold text-emerald-700 font-mono block leading-tight" title={`${item.totalQty.toLocaleString('en-IN')} Kg`}>
+                              {formatQuantityMT(item.totalQty)}
                             </span>
-                            <span className="text-[10px] text-slate-600 font-mono font-semibold">
-                              ₹{item.totalValue.toLocaleString()}
+                            <span className="text-[10px] text-slate-600 font-mono font-semibold" title={`₹${item.totalValue.toLocaleString('en-IN')}`}>
+                              {formatCompactRupees(item.totalValue)}
                             </span>
                           </div>
                         </div>
@@ -949,11 +905,11 @@ export default function DashboardView({
                   </div>
                   <div>
                     <h3 className="text-sm font-bold text-slate-900 font-mono tracking-tight">Top 5 Companies</h3>
-                    <p className="text-[11px] text-slate-500">Ranked by total quantity purchased (units/qty)</p>
+                    <p className="text-[11px] text-slate-500">Ranked by total quantity purchased (Metric Tonnes)</p>
                   </div>
                 </div>
                 <span className="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono">
-                  By Qty
+                  By Qty (MT)
                 </span>
               </div>
 
@@ -991,11 +947,11 @@ export default function DashboardView({
                           </div>
 
                           <div className="text-right shrink-0">
-                            <span className="text-xs font-extrabold text-blue-700 font-mono block leading-tight">
-                              {item.totalQty.toLocaleString()} <span className="text-[10px] font-semibold text-slate-500">qty</span>
+                            <span className="text-xs font-extrabold text-blue-700 font-mono block leading-tight" title={`${item.totalQty.toLocaleString('en-IN')} Kg`}>
+                              {formatQuantityMT(item.totalQty)}
                             </span>
-                            <span className="text-[10px] text-slate-600 font-mono font-semibold">
-                              ₹{item.totalValue.toLocaleString()}
+                            <span className="text-[10px] text-slate-600 font-mono font-semibold" title={`₹${item.totalValue.toLocaleString('en-IN')}`}>
+                              {formatCompactRupees(item.totalValue)}
                             </span>
                           </div>
                         </div>
@@ -1017,24 +973,24 @@ export default function DashboardView({
             </div>
           </div>
 
-          {/* Grid Content: Lead Funnel & Product Catalog */}
+          {/* Grid Content: Order / Offer Funnel & Product Catalog */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            {/* Sales Pipeline Breakdown */}
+            {/* Order / Offer Pipeline Funnel */}
             <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-xs">
-              <h3 className="text-xs font-bold text-slate-900 font-mono uppercase tracking-wider mb-0.5">Lead Funnel Distribution</h3>
-              <p className="text-[10px] text-slate-500 mb-3">Visual stage count showing distribution of currently visible sales cycles.</p>
+              <h3 className="text-xs font-bold text-slate-900 font-mono uppercase tracking-wider mb-0.5">Order / Offer Funnel Distribution</h3>
+              <p className="text-[10px] text-slate-500 mb-3">Visual stage count showing distribution of currently visible sales cycles from Orders & Offers.</p>
 
               <div className="space-y-2">
                 {Object.entries(statusCounts).map(([stageName, count]) => {
                   const maxCount = Math.max(...Object.values(statusCounts), 1);
                   const countPercent = (count / maxCount) * 100;
-                  const totalPercent = visibleLeads.length > 0 ? (count / visibleLeads.length) * 100 : 0;
+                  const totalPercent = visibleOrders.length > 0 ? (count / visibleOrders.length) * 100 : 0;
                   return (
                     <div key={stageName} className="space-y-0.5">
                       <div className="flex justify-between text-[10.5px]">
                         <span className="font-semibold text-slate-700 text-[10.5px]">{stageName}</span>
                         <span className="text-slate-500 font-mono text-[9.5px]">
-                          {count} lead{count !== 1 ? "s" : ""} ({totalPercent.toFixed(0)}%)
+                          {count} {count === 1 ? "record" : "records"} ({totalPercent.toFixed(0)}%)
                         </span>
                       </div>
                       <div className="w-full bg-slate-50 h-2.5 rounded-md overflow-hidden border border-slate-100 flex items-center">
@@ -1053,7 +1009,7 @@ export default function DashboardView({
             <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-xs flex flex-col justify-between gap-3">
               <div>
                 <h3 className="text-xs font-bold text-slate-900 font-mono uppercase tracking-wider mb-0.5">Product Performance Catalog</h3>
-                <p className="text-[10px] text-slate-500 mb-2">Detailed catalog mapping product sales leads and aggregate value.</p>
+                <p className="text-[10px] text-slate-500 mb-2">Detailed catalog mapping product order volume and aggregate value.</p>
 
                 <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1 scrollbar-thin">
                   {products.length === 0 ? (
@@ -1062,8 +1018,28 @@ export default function DashboardView({
                     </div>
                   ) : (
                     products.map((p) => {
-                      const productLeads = visibleLeads.filter((l) => l.projectId === p.id);
-                      const productValue = productLeads.reduce((acc, l) => acc + (l.value || 0), 0);
+                      // Calculate from visibleOrders
+                      let productOrderCount = 0;
+                      let productValue = 0;
+                      let productQty = 0;
+
+                      visibleOrders.forEach((o) => {
+                        if (o.items && o.items.length > 0) {
+                          const matchedItems = o.items.filter(
+                            (it) => it.productId === p.id || it.productName?.toLowerCase() === p.name.toLowerCase()
+                          );
+                          if (matchedItems.length > 0) {
+                            productOrderCount += 1;
+                            matchedItems.forEach((it) => {
+                              const qty = Number(it.quantity) || 1;
+                              const val = Number(it.amount) || (qty * (Number(it.rate) || 0));
+                              productQty += qty;
+                              productValue += val;
+                            });
+                          }
+                        }
+                      });
+
                       return (
                         <div key={p.id} className="p-2 bg-slate-50 border border-slate-200 rounded-md flex items-center justify-between gap-2">
                           <div className="min-w-0">
@@ -1071,9 +1047,9 @@ export default function DashboardView({
                             <span className="text-[9px] bg-slate-200 text-slate-600 font-mono font-semibold px-1 rounded inline-block mt-0.5 leading-none">{p.category}</span>
                           </div>
                           <div className="text-right shrink-0">
-                            <span className="text-[11px] font-bold text-slate-950 font-mono block leading-tight">₹{productValue.toLocaleString()}</span>
-                            <span className="bg-emerald-50 text-emerald-700 text-[9px] font-bold px-1 py-0.12 rounded border border-emerald-100 font-mono leading-none inline-block mt-0.5">
-                              {productLeads.length} leads
+                            <span className="text-[11px] font-bold text-slate-950 font-mono block leading-tight" title={`₹${productValue.toLocaleString('en-IN')}`}>{formatCompactRupees(productValue)}</span>
+                            <span className="bg-emerald-50 text-emerald-700 text-[9px] font-bold px-1 py-0.12 rounded border border-emerald-100 font-mono leading-none inline-block mt-0.5" title={`${productQty.toLocaleString('en-IN')} Kg`}>
+                              {productOrderCount} {productOrderCount === 1 ? "order" : "orders"} • {formatQuantityMT(productQty)}
                             </span>
                           </div>
                         </div>
@@ -1246,10 +1222,9 @@ export default function DashboardView({
                             Total Qty Sold
                           </span>
                           <div className="flex items-baseline gap-1 mt-1">
-                            <span className="text-lg font-extrabold text-emerald-700 font-mono leading-none">
-                              {sp.totalQty.toLocaleString()}
+                            <span className="text-lg font-extrabold text-emerald-700 font-mono leading-none" title={`${sp.totalQty.toLocaleString('en-IN')} Kg`}>
+                              {formatQuantityMT(sp.totalQty)}
                             </span>
-                            <span className="text-[10px] font-semibold text-emerald-800 font-mono">KG</span>
                           </div>
                         </div>
 
@@ -1258,8 +1233,8 @@ export default function DashboardView({
                             Total Sales Revenue
                           </span>
                           <div className="flex items-baseline gap-1 mt-1">
-                            <span className="text-lg font-extrabold text-slate-900 font-mono leading-none">
-                              ₹{sp.totalRevenue.toLocaleString()}
+                            <span className="text-lg font-extrabold text-slate-900 font-mono leading-none" title={`₹${sp.totalRevenue.toLocaleString('en-IN')}`}>
+                              {formatCompactRupees(sp.totalRevenue)}
                             </span>
                           </div>
                         </div>
@@ -1268,7 +1243,7 @@ export default function DashboardView({
                       {/* Quota Target Progress Bar */}
                       <div className="space-y-1">
                         <div className="flex justify-between text-[10.5px]">
-                          <span className="text-slate-500 font-medium">Target Quota (₹{sp.targetQuota.toLocaleString()})</span>
+                          <span className="text-slate-500 font-medium">Target Quota ({formatCompactRupees(sp.targetQuota)})</span>
                           <span className="font-bold text-slate-800 font-mono">{sp.quotaPct.toFixed(0)}%</span>
                         </div>
                         <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden border border-slate-200">
@@ -1293,8 +1268,8 @@ export default function DashboardView({
                               <span className="font-bold text-slate-900 block truncate text-xs">
                                 {sp.topProduct.name}
                               </span>
-                              <span className="text-[10px] text-emerald-700 font-mono font-bold">
-                                {sp.topProduct.qty.toLocaleString()} KG • ₹{sp.topProduct.value.toLocaleString()}
+                              <span className="text-[10px] text-emerald-700 font-mono font-bold" title={`${sp.topProduct.qty.toLocaleString('en-IN')} Kg • ₹${sp.topProduct.value.toLocaleString('en-IN')}`}>
+                                {formatQuantityMT(sp.topProduct.qty)} • {formatCompactRupees(sp.topProduct.value)}
                               </span>
                             </div>
                           ) : (
@@ -1312,8 +1287,8 @@ export default function DashboardView({
                               <span className="font-bold text-slate-900 block truncate text-xs">
                                 {sp.topCompany.name}
                               </span>
-                              <span className="text-[10px] text-blue-700 font-mono font-bold">
-                                {sp.topCompany.qty.toLocaleString()} KG • ₹{sp.topCompany.value.toLocaleString()}
+                              <span className="text-[10px] text-blue-700 font-mono font-bold" title={`${sp.topCompany.qty.toLocaleString('en-IN')} Kg • ₹${sp.topCompany.value.toLocaleString('en-IN')}`}>
+                                {formatQuantityMT(sp.topCompany.qty)} • {formatCompactRupees(sp.topCompany.value)}
                               </span>
                             </div>
                           ) : (
@@ -1346,8 +1321,8 @@ export default function DashboardView({
                                     <span className="text-[10px] text-slate-500">
                                       {sharePct.toFixed(0)}%
                                     </span>
-                                    <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-bold text-[10.5px]">
-                                      {prod.qty.toLocaleString()} KG
+                                    <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-bold text-[10.5px]" title={`${prod.qty.toLocaleString('en-IN')} Kg`}>
+                                      {formatQuantityMT(prod.qty)}
                                     </span>
                                   </div>
                                 </div>
