@@ -37,6 +37,7 @@ import {
 } from "../lib/firebaseService";
 import { auth } from "../firebase";
 import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
+import { dispatchSystemEmail } from "../lib/emailService";
 import { formatDate } from "../utils";
 import { EmailSentStatusCell } from "./EmailSentStatusCell";
 import { 
@@ -161,6 +162,7 @@ export default function IndentView({
   const activeUser = users.find((u) => u.id === activeUserId) || {
     id: activeUserId,
     name: "User",
+    email: auth.currentUser?.email || "",
     role: Role.User,
     teamName: "Sales",
   };
@@ -850,44 +852,35 @@ export default function IndentView({
           const dynamicCc = template.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
           const dynamicBcc = template.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-          const idToken = await auth.currentUser?.getIdToken();
-          let resData: any = {};
-          let isOk = false;
           let deliveryStatus: "Sent" | "Failed" = "Sent";
           let emailErrorMsg: string | undefined = undefined;
 
           try {
-            const res = await fetch("/api/send-order-email", {
-              method: "POST",
-              headers: { 
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${idToken || ""}`
-              },
-              body: JSON.stringify({
-                to: dynamicTo,
-                cc: dynamicCc,
-                bcc: dynamicBcc,
-                subject: subject,
-                text: formattedHtml,
-                html: formattedHtml,
-                htmlBody: formattedHtml,
-                plainText: formattedText,
-                senderUserId: activeUser?.id,
-                senderUserName: activeUser?.name,
-                category: "invoice_issuance",
-                orderId: order.id,
-                companyName: order.companyName,
-                clientName: order.clientName,
-              }),
+            const emailResult = await dispatchSystemEmail({
+              to: dynamicTo,
+              cc: dynamicCc,
+              bcc: dynamicBcc,
+              subject: subject,
+              text: formattedHtml,
+              html: formattedHtml,
+              htmlBody: formattedHtml,
+              plainText: formattedText,
+              senderUserId: activeUser?.id,
+              senderUserName: activeUser?.name,
+              senderEmail: activeUser?.email,
+              fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+              replyTo: activeUser?.email,
+              category: "invoice_issuance",
+              orderId: order.id,
+              companyName: order.companyName,
+              clientName: order.clientName,
             });
-            resData = await res.json().catch(() => ({}));
-            isOk = res.ok;
-            deliveryStatus = resData.deliveryStatus || (res.ok ? "Sent" : "Failed");
-            if (!res.ok) {
-              emailErrorMsg = resData.message || "Failed to send invoice notification email.";
+
+            deliveryStatus = (emailResult.ok && emailResult.deliveryStatus !== "Failed") ? "Sent" : "Failed";
+            if (!emailResult.ok) {
+              emailErrorMsg = emailResult.message || "Failed to send invoice notification email.";
             }
           } catch (e: any) {
-            isOk = false;
             deliveryStatus = "Failed";
             emailErrorMsg = e.message || "Network error while sending email";
           }
@@ -906,23 +899,6 @@ export default function IndentView({
           await onEditOrder({
             ...updatedOrder,
             invoiceEmailStatus: newInvoiceEmailSummary,
-          });
-
-          await saveEmailSentLog({
-            id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-            orderId: order.id,
-            companyName: order.companyName,
-            clientName: order.clientName,
-            to: dynamicTo,
-            cc: dynamicCc,
-            bcc: dynamicBcc,
-            subject,
-            category: "invoice_issuance",
-            status: deliveryStatus,
-            timestamp: new Date().toISOString(),
-            senderUserId: activeUser?.id,
-            senderUserName: activeUser?.name,
-            error: emailErrorMsg,
           });
 
           await saveLog({
@@ -1045,33 +1021,27 @@ export default function IndentView({
       const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
       const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-      const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch("/api/send-order-email", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${idToken || ""}`,
-        },
-        body: JSON.stringify({
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          subject,
-          text: formattedHtml,
-          html: formattedHtml,
-          htmlBody: formattedHtml,
-          plainText: formattedText,
-          senderUserId: activeUser?.id,
-          senderUserName: activeUser?.name,
-          category: "resend_invoice",
-          orderId: order.id,
-          companyName: order.companyName,
-          clientName: order.clientName,
-        }),
+      const emailResult = await dispatchSystemEmail({
+        to: dynamicTo,
+        cc: dynamicCc,
+        bcc: dynamicBcc,
+        subject,
+        text: formattedHtml,
+        html: formattedHtml,
+        htmlBody: formattedHtml,
+        plainText: formattedText,
+        senderUserId: activeUser?.id,
+        senderUserName: activeUser?.name,
+        senderEmail: activeUser?.email,
+        fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+        replyTo: activeUser?.email,
+        category: "resend_invoice",
+        orderId: order.id,
+        companyName: order.companyName,
+        clientName: order.clientName,
       });
 
-      const resData = await res.json().catch(() => ({}));
-      const deliveryStatus = resData.deliveryStatus || (res.ok ? "Sent" : "Failed");
+      const deliveryStatus = emailResult.deliveryStatus || (emailResult.ok ? "Sent" : "Failed");
       const newSummary: EmailSentStatusSummary = {
         to: dynamicTo,
         cc: dynamicCc,
@@ -1079,7 +1049,7 @@ export default function IndentView({
         status: deliveryStatus,
         timestamp: new Date().toISOString(),
         subject,
-        error: res.ok ? undefined : resData.message || "Failed to resend invoice email",
+        error: emailResult.ok ? undefined : (emailResult.message || "Failed to resend invoice email"),
         sentByUserName: activeUser?.name,
       };
 
@@ -1088,28 +1058,10 @@ export default function IndentView({
         invoiceEmailStatus: newSummary,
       });
 
-      const logId = `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-      await saveEmailSentLog({
-        id: logId,
-        orderId: order.id,
-        companyName: order.companyName,
-        clientName: order.clientName,
-        to: dynamicTo,
-        cc: dynamicCc,
-        bcc: dynamicBcc,
-        subject,
-        category: "resend_invoice",
-        status: deliveryStatus,
-        timestamp: new Date().toISOString(),
-        senderUserId: activeUser?.id,
-        senderUserName: activeUser?.name,
-        error: res.ok ? undefined : resData.message,
-      });
-
-      if (res.ok) {
-        setEmailBanner({ type: "success", message: `Invoice email successfully sent to ${dynamicTo}` });
+      if (emailResult.ok && deliveryStatus !== "Failed") {
+        setEmailBanner({ type: "success", message: `Invoice email successfully sent to ${dynamicTo} via Google Apps Script` });
       } else {
-        setEmailBanner({ type: "error", message: `Failed to send email: ${resData.message || "Unknown error"}` });
+        setEmailBanner({ type: "error", message: `Failed to send email: ${emailResult.message || "Unknown error"}` });
       }
     } catch (err: any) {
       console.error("Resend error:", err);

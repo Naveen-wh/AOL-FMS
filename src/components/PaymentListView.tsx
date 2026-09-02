@@ -9,6 +9,7 @@ import { saveLog, savePaymentDetails, saveBadDebtor, deleteBadDebtorDoc, saveEma
 import { auth } from "../firebase";
 import { openOrDownloadDocument } from "../lib/googleDriveService";
 import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
+import { dispatchSystemEmail } from "../lib/emailService";
 import { formatDate } from "../utils";
 import { canViewOrderOffer } from "../data";
 import EmailSentStatusCell from "./EmailSentStatusCell";
@@ -1071,30 +1072,26 @@ export default function PaymentListView({
 
       const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(consolidatedBody);
 
-      const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch("/api/send-order-email", {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${idToken || ""}`
-        },
-        body: JSON.stringify({
-          to: toClean,
-          cc: ccClean,
-          bcc: bccClean,
-          subject: consolidatedSubject,
-          text: formattedHtml,
-          html: formattedHtml,
-          htmlBody: formattedHtml,
-          plainText: formattedText,
-          senderUserId: activeUser?.id,
-          category: "payment_reminder_consolidated"
-        }),
+      const emailResult = await dispatchSystemEmail({
+        to: toClean,
+        cc: ccClean,
+        bcc: bccClean,
+        subject: consolidatedSubject,
+        text: formattedHtml,
+        html: formattedHtml,
+        htmlBody: formattedHtml,
+        plainText: formattedText,
+        senderUserId: activeUser?.id,
+        senderUserName: activeUser?.name,
+        senderEmail: activeUser?.email,
+        fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+        replyTo: activeUser?.email,
+        category: "payment_reminder_consolidated",
+        companyName: consolidatedEmailParty.companyName,
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.message || "Failed to send consolidated payment reminder email.");
+      if (!emailResult.ok) {
+        throw new Error(emailResult.message || "Failed to send consolidated payment reminder email.");
       }
 
       for (let i = 0; i < consolidatedEmailParty.orders.length; i++) {
@@ -1115,22 +1112,6 @@ export default function PaymentListView({
             paymentReminderEmailStatus: newSummary,
           });
         }
-
-        await saveEmailSentLog({
-          id: `log-consolidated-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
-          orderId: order.id,
-          companyName: order.companyName,
-          clientName: order.clientName,
-          to: toClean,
-          cc: ccClean,
-          bcc: bccClean,
-          subject: consolidatedSubject,
-          category: "payment_reminder_consolidated",
-          status: "Sent",
-          timestamp: new Date().toISOString(),
-          senderUserId: activeUser?.id,
-          senderUserName: activeUser?.name,
-        });
 
         await saveLog({
           id: `log-consolidated-${Date.now()}-${i}`,
@@ -1357,30 +1338,26 @@ export default function PaymentListView({
 
         const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(body);
 
-        const idToken = await auth.currentUser?.getIdToken();
-        const res = await fetch("/api/send-order-email", {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${idToken || ""}`
-          },
-          body: JSON.stringify({
-            to: toClean,
-            cc: ccClean,
-            bcc: bccClean,
-            subject: subject,
-            text: formattedHtml,
-            html: formattedHtml,
-            htmlBody: formattedHtml,
-            plainText: formattedText,
-            senderUserId: activeUser?.id,
-            category: "payment_reminder_consolidated"
-          }),
+        const emailResult = await dispatchSystemEmail({
+          to: toClean,
+          cc: ccClean,
+          bcc: bccClean,
+          subject: subject,
+          text: formattedHtml,
+          html: formattedHtml,
+          htmlBody: formattedHtml,
+          plainText: formattedText,
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          senderEmail: activeUser?.email,
+          fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+          replyTo: activeUser?.email,
+          category: "payment_reminder_consolidated",
+          companyName: party.companyName,
         });
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.message || "Failed to send consolidated payment reminder email.");
+        if (!emailResult.ok) {
+          throw new Error(emailResult.message || "Failed to send consolidated payment reminder email.");
         }
 
         for (let j = 0; j < party.orders.length; j++) {
@@ -1401,22 +1378,6 @@ export default function PaymentListView({
               paymentReminderEmailStatus: newSummary,
             });
           }
-
-          await saveEmailSentLog({
-            id: `log-bulk-consolidated-${Date.now()}-${i}-${j}-${Math.random().toString(36).substring(2, 6)}`,
-            orderId: order.id,
-            companyName: order.companyName,
-            clientName: order.clientName,
-            to: toClean,
-            cc: ccClean,
-            bcc: bccClean,
-            subject: subject,
-            category: "payment_reminder_consolidated",
-            status: "Sent",
-            timestamp: new Date().toISOString(),
-            senderUserId: activeUser?.id,
-            senderUserName: activeUser?.name,
-          });
 
           await saveLog({
             id: `log-bulk-consolidated-${Date.now()}-${i}-${j}`,
@@ -1828,33 +1789,27 @@ export default function PaymentListView({
 
         const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(body);
 
-        const idToken = await auth.currentUser?.getIdToken();
-        const res = await fetch("/api/send-order-email", {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${idToken || ""}`
-          },
-          body: JSON.stringify({
-            orderId: order.id,
-            companyName: order.companyName,
-            clientName: order.clientName,
-            to: dynamicTo,
-            cc: dynamicCc,
-            bcc: dynamicBcc,
-            subject,
-            text: formattedHtml,
-            html: formattedHtml,
-            htmlBody: formattedHtml,
-            plainText: formattedText,
-            senderUserId: activeUser?.id,
-            senderUserName: activeUser?.name,
-            category: "payment_reminder"
-          }),
+        const emailResult = await dispatchSystemEmail({
+          orderId: order.id,
+          companyName: order.companyName,
+          clientName: order.clientName,
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          subject,
+          text: formattedHtml,
+          html: formattedHtml,
+          htmlBody: formattedHtml,
+          plainText: formattedText,
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          senderEmail: activeUser?.email,
+          fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+          replyTo: activeUser?.email,
+          category: "payment_reminder"
         });
 
-        const resData = await res.json().catch(() => ({}));
-        const deliveryStatus: EmailDeliveryStatus = res.ok ? "Sent" : "Failed";
+        const deliveryStatus: EmailDeliveryStatus = (emailResult.ok && emailResult.deliveryStatus !== "Failed") ? "Sent" : "Failed";
 
         const newSummary: EmailSentStatusSummary = {
           to: dynamicTo,
@@ -1863,7 +1818,7 @@ export default function PaymentListView({
           status: deliveryStatus,
           timestamp: new Date().toISOString(),
           subject,
-          error: res.ok ? undefined : resData.message,
+          error: emailResult.ok ? undefined : emailResult.message,
           sentByUserName: activeUser?.name,
         };
 
@@ -1872,26 +1827,8 @@ export default function PaymentListView({
           paymentReminderEmailStatus: newSummary,
         });
 
-        const logId = `log-remind-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
-        await saveEmailSentLog({
-          id: logId,
-          orderId: order.id,
-          companyName: order.companyName,
-          clientName: order.clientName,
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          subject,
-          category: "payment_reminder",
-          status: deliveryStatus,
-          timestamp: new Date().toISOString(),
-          senderUserId: activeUser?.id,
-          senderUserName: activeUser?.name,
-          error: res.ok ? undefined : resData.message,
-        });
-
-        if (!res.ok) {
-          throw new Error(resData.message || "Failed to send payment reminder email.");
+        if (!emailResult.ok || deliveryStatus === "Failed") {
+          throw new Error(emailResult.message || "Failed to send payment reminder email.");
         }
 
         await saveLog({

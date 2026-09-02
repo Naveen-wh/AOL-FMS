@@ -742,27 +742,24 @@ export async function getEmailSendingConfig(): Promise<EmailSendingConfig> {
     if (docSnap.exists()) {
       const data = docSnap.data();
       return {
-        mode: data.mode || "single_setted_id",
+        mode: "google_apps_script",
         gasWebUrl: data.gasWebUrl || "",
-        singleConfig: data.singleConfig || {},
-        userConfigs: data.userConfigs || {},
+        userGasConfigs: data.userGasConfigs || {},
         updatedAt: data.updatedAt,
         updatedBy: data.updatedBy,
       };
     }
     return {
-      mode: "single_setted_id",
+      mode: "google_apps_script",
       gasWebUrl: "",
-      singleConfig: {},
-      userConfigs: {},
+      userGasConfigs: {},
     };
   } catch (err) {
     console.error("Error getting email_sending_config settings:", err);
     return {
-      mode: "single_setted_id",
+      mode: "google_apps_script",
       gasWebUrl: "",
-      singleConfig: {},
-      userConfigs: {},
+      userGasConfigs: {},
     };
   }
 }

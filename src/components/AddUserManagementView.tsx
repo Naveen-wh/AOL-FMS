@@ -101,6 +101,7 @@ export default function AddUserManagementView({
   const [editReportsTo, setEditReportsTo] = useState("");
   const [editQuota, setEditQuota] = useState<number>(30000);
   const [editAvatarUrl, setEditAvatarUrl] = useState("");
+  const [editGasWebUrl, setEditGasWebUrl] = useState("");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [editMsg, setEditMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -185,6 +186,7 @@ export default function AddUserManagementView({
     setEditReportsTo(targetUser.reportsTo || "");
     setEditQuota(targetUser.targetQuota || 30000);
     setEditAvatarUrl(targetUser.avatarUrl || "");
+    setEditGasWebUrl(targetUser.gasWebUrl || "");
     setEditMsg(null);
   };
 
@@ -204,6 +206,7 @@ export default function AddUserManagementView({
         reportsTo: editReportsTo || undefined,
         targetQuota: Number(editQuota) || 0,
         avatarUrl: editAvatarUrl.trim() || undefined,
+        gasWebUrl: editGasWebUrl.trim() || undefined,
       });
 
       setEditMsg({ type: "success", text: "User details updated successfully!" });
@@ -620,11 +623,16 @@ export default function AddUserManagementView({
               </div>
 
               {/* Card Footer status indicator */}
-              <div className="text-[9px] font-mono text-slate-400 flex items-center justify-between border-t border-slate-100 pt-1.5">
+              <div className="text-[9px] font-mono text-slate-400 flex flex-wrap items-center justify-between border-t border-slate-100 pt-1.5 gap-1">
                 <span className="flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                   Auth Profile Mapped
                 </span>
+                {u.gasWebUrl && (
+                  <span className="text-[8.5px] font-bold bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded border border-emerald-200" title={`Personal Apps Script: ${u.gasWebUrl}`}>
+                    ⚡ Personal Apps Script Active
+                  </span>
+                )}
                 <span>ID: {u.id}</span>
               </div>
             </div>
@@ -792,6 +800,32 @@ export default function AddUserManagementView({
                     placeholder="https://..."
                     className="w-full bg-slate-50 border border-slate-300 rounded px-2.5 py-1.5 text-xs text-slate-900 font-mono text-[11px] focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                   />
+                </div>
+
+                {/* Personal Google Apps Script Web App URL */}
+                <div className="col-span-2 space-y-1 pt-1 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-slate-700 uppercase block">
+                      Personal Google Apps Script Web App URL (Optional)
+                    </label>
+                    <span className="text-[9px] text-emerald-700 font-bold font-mono">Sends as User's ID</span>
+                  </div>
+                  <input
+                    type="url"
+                    value={editGasWebUrl}
+                    onChange={(e) => {
+                      let val = e.target.value;
+                      if (val.trim().endsWith("/dev")) {
+                        val = val.trim().replace(/\/dev$/, "/exec");
+                      }
+                      setEditGasWebUrl(val);
+                    }}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    className="w-full bg-slate-50 border border-slate-300 rounded px-2.5 py-1.5 text-xs text-slate-900 font-mono text-[11px] focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-slate-500 leading-tight">
+                    Deploy this Apps Script from this user's Google Workspace account to send order & invoice emails directly from their inbox.
+                  </p>
                 </div>
               </div>
 

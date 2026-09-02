@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { EmailTemplate, Role, User, EmailSendingConfig, EmailSendingMode, SmtpCredentials, EmailLimitsConfig, EmailDailyCounts } from "../types";
+import { EmailTemplate, Role, User, EmailSendingConfig, EmailSendingMode, SmtpCredentials, EmailLimitsConfig, EmailDailyCounts, UserGasConfig } from "../types";
 import { saveEmailTemplate, deleteEmailTemplateDoc, saveLog, getEmailSendingConfig, saveEmailSendingConfig, getEmailLimitsConfig, saveEmailLimitsConfig, getEmailDailyCounts, saveEmailSentLog } from "../lib/firebaseService";
 import { auth } from "../firebase";
 import { TEMPLATE_VARIABLE_GROUPS, replaceTemplateVars, getSampleTemplateContext } from "../lib/templateUtils";
-import { Plus, Trash2, Edit2, Copy, Check, Info, Tag, Mail, Server, UserCheck, ShieldCheck, Send, AlertCircle, RefreshCw, Key, Settings, X, CheckCircle2, Lock, Eye, EyeOff, Loader2, Code, FileText, ExternalLink, HelpCircle, Sparkles } from "lucide-react";
+import { dispatchSystemEmail, clearGasConfigCache } from "../lib/emailService";
+import { Plus, Trash2, Edit2, Copy, Check, Info, Tag, Mail, Server, UserCheck, ShieldCheck, Send, AlertCircle, RefreshCw, Key, Settings, X, CheckCircle2, Lock, Eye, EyeOff, Loader2, Code, FileText, ExternalLink, HelpCircle, Sparkles, Search, Users, Globe, User as UserIcon } from "lucide-react";
 import InlineDeleteConfirm from "./InlineDeleteConfirm";
 import RichTextEditor from "./RichTextEditor";
 
@@ -35,41 +36,32 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
 
   // Email Sending Configuration state
   const [sendingConfig, setSendingConfig] = useState<EmailSendingConfig>({
-    mode: "single_setted_id",
-    singleConfig: { smtpHost: "", smtpPort: 587, smtpUser: "", smtpPass: "", fromName: "", secure: false },
-    userConfigs: {},
+    mode: "google_apps_script",
+    gasWebUrl: "",
+    userGasConfigs: {},
   });
   const [isLoadingConfig, setIsLoadingConfig] = useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // User SMTP edit modal state
-  const [userModalOpen, setUserModalOpen] = useState(false);
-  const [selectedUserForSmtp, setSelectedUserForSmtp] = useState<User | null>(null);
-  const [userSmtpForm, setUserSmtpForm] = useState<SmtpCredentials>({
-    smtpHost: "",
-    smtpPort: 587,
-    smtpUser: "",
-    smtpPass: "",
-    fromName: "",
-    secure: false,
-  });
-  const [showPassword, setShowPassword] = useState(false);
-  const [showSinglePassword, setShowSinglePassword] = useState(false);
+  // Per-User Google Apps Script Web App Management states
+  const [userGasConfigs, setUserGasConfigs] = useState<Record<string, { gasWebUrl?: string; fromName?: string; senderEmail?: string }>>({});
+  const [userSearchTerm, setUserSearchTerm] = useState("");
+  const [userFilterStatus, setUserFilterStatus] = useState<"all" | "configured" | "fallback">("all");
+  const [selectedUserForTest, setSelectedUserForTest] = useState<User | null>(null);
+  const [savingUserId, setSavingUserId] = useState<string | null>(null);
+  const [isSavingAllUsers, setIsSavingAllUsers] = useState(false);
+  const [copiedInstructionsUserId, setCopiedInstructionsUserId] = useState<string | null>(null);
 
   // Test email modal state
   const [testModalOpen, setTestModalOpen] = useState(false);
   const [testRecipientEmail, setTestRecipientEmail] = useState("");
-  const [testTargetConfig, setTestTargetConfig] = useState<{ name: string; credentials?: SmtpCredentials; gasWebUrl?: string } | null>(null);
   const [isSendingTest, setIsSendingTest] = useState(false);
   const [testResult, setTestResult] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Google Apps Script Modal Guide
   const [showGasGuideModal, setShowGasGuideModal] = useState(false);
   const [copiedGasScript, setCopiedGasScript] = useState(false);
-
-  // User table search filter
-  const [userSearchTerm, setUserSearchTerm] = useState("");
 
   // Email limits states
   const [limitsConfig, setLimitsConfig] = useState<EmailLimitsConfig>({
@@ -176,18 +168,35 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
       setIsLoadingConfig(true);
       getEmailSendingConfig()
         .then((cfg) => {
+          const userGasMap: Record<string, { gasWebUrl?: string; fromName?: string; senderEmail?: string }> = {
+            ...(cfg.userGasConfigs || {})
+          };
+
+          // Also merge any gasWebUrl that might be saved on user profiles
+          users.forEach((u) => {
+            if (!userGasMap[u.id]) {
+              userGasMap[u.id] = {
+                gasWebUrl: u.gasWebUrl || "",
+                fromName: `${u.name} - Aroma Organics`,
+                senderEmail: u.email,
+              };
+            } else if (!userGasMap[u.id].gasWebUrl && u.gasWebUrl) {
+              userGasMap[u.id].gasWebUrl = u.gasWebUrl;
+            }
+          });
+
           setSendingConfig({
-            mode: cfg.mode || "single_setted_id",
+            mode: "google_apps_script",
             gasWebUrl: cfg.gasWebUrl || "",
-            singleConfig: cfg.singleConfig || { smtpHost: "", smtpPort: 587, smtpUser: "", smtpPass: "", fromName: "", secure: false },
-            userConfigs: cfg.userConfigs || {},
+            userGasConfigs: userGasMap,
             updatedAt: cfg.updatedAt,
             updatedBy: cfg.updatedBy,
           });
+          setUserGasConfigs(userGasMap);
         })
         .finally(() => setIsLoadingConfig(false));
     }
-  }, [isAdmin]);
+  }, [isAdmin, users]);
 
   const resetTemplateForm = () => {
     setName("");
@@ -254,205 +263,189 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
     resetTemplateForm();
   };
 
-  // Save Email Sending Mode or Single Config
-  const handleSaveMode = async (newMode: EmailSendingMode) => {
-    const updated: EmailSendingConfig = {
-      ...sendingConfig,
-      mode: newMode,
-      updatedAt: new Date().toISOString(),
-      updatedBy: activeUser.name,
-    };
-    setSendingConfig(updated);
-    setIsSavingConfig(true);
-    try {
-      await saveEmailSendingConfig(updated);
-      await saveLog({
-        id: `log-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        userId: activeUser.id,
-        userName: activeUser.name,
-        actionType: "Update Email Sending Mode",
-        targetType: "Settings",
-        targetId: "email_sending_config",
-        targetName: "Email Sending Settings",
-        details: `${activeUser.name} changed email sending mode to "${newMode === "single_setted_id" ? "Single Setted ID" : "Logged In User ID"}"`
-      });
-      setStatusMessage({ type: "success", text: `Email sending mode updated to "${newMode === "single_setted_id" ? "Single Setted ID" : "Logged In User ID"}"` });
-      setTimeout(() => setStatusMessage(null), 3500);
-    } catch (err: any) {
-      setStatusMessage({ type: "error", text: `Failed to save email mode: ${err.message}` });
-    } finally {
-      setIsSavingConfig(false);
+  // Google Apps Script Code Generator
+  const getAppsScriptCodeSnippet = () => `/**
+ * Aroma Organics / Google Workspace Automated Sales Email Dispatcher
+ * Dispatches automated order, offer, indent, invoice, and payment reminder emails.
+ */
+
+function setupAndAuthorize() {
+  Logger.log("Authorized successfully for user: " + Session.getActiveUser().getEmail());
+}
+
+function doPost(e) {
+  return handleEmailRequest(e);
+}
+
+function doGet(e) {
+  if (e && e.parameter && (e.parameter.to || e.parameter.payload)) {
+    return handleEmailRequest(e);
+  }
+  return ContentService.createTextOutput(JSON.stringify({
+    status: "online",
+    activeUser: Session.getActiveUser().getEmail() || "Service Account",
+    service: "Sales Portal Google Apps Script Email Gateway"
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function handleEmailRequest(e) {
+  try {
+    var data = {};
+    if (e && e.postData && e.postData.contents) {
+      try { data = JSON.parse(e.postData.contents); } catch (jsonErr) { data = e.parameter || {}; }
+    } else if (e && e.parameter) {
+      if (e.parameter.payload) {
+        try { data = JSON.parse(e.parameter.payload); } catch (pErr) { data = e.parameter; }
+      } else {
+        data = e.parameter;
+      }
     }
-  };
 
-  const handleSaveSingleConfig = async () => {
-    const updated: EmailSendingConfig = {
-      ...sendingConfig,
-      updatedAt: new Date().toISOString(),
-      updatedBy: activeUser.name,
-    };
-    setIsSavingConfig(true);
-    try {
-      await saveEmailSendingConfig(updated);
-      await saveLog({
-        id: `log-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        userId: activeUser.id,
-        userName: activeUser.name,
-        actionType: "Update Single Setted ID Config",
-        targetType: "Settings",
-        targetId: "email_sending_config",
-        targetName: "Single Setted ID SMTP",
-        details: `${activeUser.name} updated Single Setted ID SMTP config (${sendingConfig.singleConfig?.smtpUser || "N/A"})`
-      });
-      setStatusMessage({ type: "success", text: "Single Setted ID SMTP configuration saved successfully!" });
-      setTimeout(() => setStatusMessage(null), 3500);
-    } catch (err: any) {
-      setStatusMessage({ type: "error", text: `Failed to save single SMTP config: ${err.message}` });
-    } finally {
-      setIsSavingConfig(false);
+    var to = data.to;
+    var subject = data.subject || "Sales Portal Notification";
+    var rawBody = data.html || data.text || data.htmlBody || data.body || "";
+
+    if (!to) {
+      return ContentService.createTextOutput(JSON.stringify({ status: "error", message: "Missing recipient 'to' address" })).setMimeType(ContentService.MimeType.JSON);
     }
-  };
 
-  // Open User SMTP Modal
-  const handleOpenUserSmtpModal = (u: User) => {
-    setSelectedUserForSmtp(u);
-    const existing = sendingConfig.userConfigs?.[u.id] || {};
-    setUserSmtpForm({
-      smtpHost: existing.smtpHost || "",
-      smtpPort: existing.smtpPort || 587,
-      smtpUser: existing.smtpUser || u.email || "",
-      smtpPass: existing.smtpPass || "",
-      fromName: existing.fromName || u.name || "",
-      secure: existing.secure || false,
-    });
-    setUserModalOpen(true);
-  };
+    // Clean & Unescape HTML entities (e.g. &lt;table&gt; -> <table>)
+    var cleanBody = rawBody
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
 
-  const handleSaveUserSmtp = async () => {
-    if (!selectedUserForSmtp) return;
-    const updatedUserConfigs = {
-      ...(sendingConfig.userConfigs || {}),
-      [selectedUserForSmtp.id]: { ...userSmtpForm },
+    var hasHtml = /<[a-z][\\s\\S]*>/i.test(cleanBody);
+    var htmlContent = hasHtml
+      ? cleanBody
+      : '<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b;">' + cleanBody.replace(/\\n/g, "<br/>") + '</div>';
+
+    var plainTextContent = cleanBody
+      .replace(/<br\\s*\\/?>/gi, "\\n")
+      .replace(/<\\/p>/gi, "\\n")
+      .replace(/<\\/div>/gi, "\\n")
+      .replace(/<\\/tr>/gi, "\\n")
+      .replace(/<[^>]*>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&");
+
+    // Sender & Identity Settings for Google Workspace
+    var senderName = data.fromName || data.senderUserName || "Sales Portal";
+    var replyToEmail = data.replyTo || data.senderEmail || "";
+
+    var options = {
+      to: to,
+      subject: subject,
+      htmlBody: htmlContent,
+      body: plainTextContent,
+      name: senderName
     };
 
-    const updated: EmailSendingConfig = {
-      ...sendingConfig,
-      userConfigs: updatedUserConfigs,
-      updatedAt: new Date().toISOString(),
-      updatedBy: activeUser.name,
-    };
-
-    setSendingConfig(updated);
-    setIsSavingConfig(true);
-    try {
-      await saveEmailSendingConfig(updated);
-      await saveLog({
-        id: `log-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        userId: activeUser.id,
-        userName: activeUser.name,
-        actionType: "Update User SMTP Credentials",
-        targetType: "User",
-        targetId: selectedUserForSmtp.id,
-        targetName: selectedUserForSmtp.name,
-        details: `${activeUser.name} updated SMTP credentials for user "${selectedUserForSmtp.name}" (${selectedUserForSmtp.email})`
-      });
-      setUserModalOpen(false);
-      setStatusMessage({ type: "success", text: `SMTP credentials saved for user ${selectedUserForSmtp.name}!` });
-      setTimeout(() => setStatusMessage(null), 3500);
-    } catch (err: any) {
-      setStatusMessage({ type: "error", text: `Failed to save user SMTP: ${err.message}` });
-    } finally {
-      setIsSavingConfig(false);
+    if (replyToEmail) {
+      options.replyTo = replyToEmail;
     }
-  };
 
-  const handleRemoveUserSmtp = async (userId: string, userName: string) => {
-    const updatedUserConfigs = { ...(sendingConfig.userConfigs || {}) };
-    delete updatedUserConfigs[userId];
+    if (data.cc) options.cc = data.cc;
+    if (data.bcc) options.bcc = data.bcc;
 
-    const updated: EmailSendingConfig = {
-      ...sendingConfig,
-      userConfigs: updatedUserConfigs,
-      updatedAt: new Date().toISOString(),
-      updatedBy: activeUser.name,
-    };
+    // Dispatch via MailApp (Dispatches directly from the Google account running the script)
+    MailApp.sendEmail(options);
 
-    setSendingConfig(updated);
-    setIsSavingConfig(true);
-    try {
-      await saveEmailSendingConfig(updated);
-      await saveLog({
-        id: `log-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        userId: activeUser.id,
-        userName: activeUser.name,
-        actionType: "Remove User SMTP Credentials",
-        targetType: "User",
-        targetId: userId,
-        targetName: userName,
-        details: `${activeUser.name} removed custom SMTP credentials for user "${userName}"`
-      });
-      setStatusMessage({ type: "success", text: `Removed custom SMTP credentials for ${userName}` });
-      setTimeout(() => setStatusMessage(null), 3500);
-    } catch (err: any) {
-      setStatusMessage({ type: "error", text: `Failed to remove user SMTP: ${err.message}` });
-    } finally {
-      setIsSavingConfig(false);
-    }
-  };
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      message: "Email successfully dispatched via Google Apps Script Web App",
+      to: to,
+      sender: senderName,
+      replyTo: replyToEmail || undefined
+    })).setMimeType(ContentService.MimeType.JSON);
 
-  // Test Email Runner
-  const handleOpenTestModal = (targetName: string, creds?: SmtpCredentials, gasUrl?: string) => {
-    setTestTargetConfig({ name: targetName, credentials: creds, gasWebUrl: gasUrl });
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
+
+  // Test Email Runner for Google Apps Script Web App
+  const handleOpenTestModal = () => {
+    setSelectedUserForTest(null);
     setTestRecipientEmail(activeUser.email || "");
     setTestResult(null);
     setTestModalOpen(true);
   };
 
+  const handleOpenUserTestModal = (user: User) => {
+    setSelectedUserForTest(user);
+    setTestRecipientEmail(activeUser.email || user.email || "");
+    setTestResult(null);
+    setTestModalOpen(true);
+  };
+
   const handleRunTestEmail = async () => {
-    if (!testTargetConfig || !testRecipientEmail) return;
+    if (!testRecipientEmail) return;
     setIsSendingTest(true);
     setTestResult(null);
 
+    const isUserSpecific = !!selectedUserForTest;
+    const testUser = selectedUserForTest || activeUser;
+    const userCustomGasUrl = selectedUserForTest ? (userGasConfigs[selectedUserForTest.id]?.gasWebUrl || "").trim() : "";
+    const activeGasUrl = userCustomGasUrl || sendingConfig.gasWebUrl?.trim();
+
     try {
-      const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch("/api/test-email-config", {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${idToken || ""}`
-        },
-        body: JSON.stringify({
-          gasWebUrl: testTargetConfig.gasWebUrl,
-          smtpHost: testTargetConfig.credentials?.smtpHost,
-          smtpPort: testTargetConfig.credentials?.smtpPort,
-          smtpUser: testTargetConfig.credentials?.smtpUser,
-          smtpPass: testTargetConfig.credentials?.smtpPass,
-          fromName: testTargetConfig.credentials?.fromName,
-          secure: testTargetConfig.credentials?.secure,
-          testRecipient: testRecipientEmail,
-        }),
+      const result = await dispatchSystemEmail({
+        to: testRecipientEmail,
+        subject: isUserSpecific
+          ? `[Test] User Direct Email Check for ${testUser.name} (${new Date().toLocaleDateString()})`
+          : `[Test] Sales Management Portal - Company Gateway Check (${new Date().toLocaleDateString()})`,
+        text: `<div style="font-family: Arial, sans-serif; padding: 16px; color: #1e293b;">
+          <h2 style="color: #059669; margin-top: 0;">✓ Google Apps Script Email Dispatch Successful!</h2>
+          <p>${isUserSpecific
+            ? `This live test email was dispatched directly through <strong>${testUser.name}'s</strong> personal Google Apps Script Web App (sending from <strong>${testUser.email}</strong>).`
+            : `This live test email was dispatched via the Default Company Gateway Google Apps Script Web App.`
+          }</p>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 16px 0;" />
+          <p><strong>Configured Sender:</strong> ${testUser.name} (${testUser.email || "N/A"})</p>
+          <p><strong>Role & Team:</strong> ${testUser.role} - ${testUser.teamName || "General"}</p>
+          <p><strong>Recipient:</strong> ${testRecipientEmail}</p>
+          <p><strong>Gateway Mode:</strong> ${userCustomGasUrl ? "Personal Deployed Web App" : "Company Default Web App"}</p>
+          <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+          <p style="font-size: 12px; color: #64748b; margin-top: 20px;">Automated order notifications, invoice alerts, and payment reminders triggered by ${testUser.name} will now originate seamlessly from their account.</p>
+        </div>`,
+        fromName: `${testUser.name} - Aroma Organics`,
+        senderUserName: testUser.name,
+        senderUserId: testUser.id,
+        senderEmail: testUser.email,
+        replyTo: testUser.email,
+        category: "test_email",
+        gasWebUrl: activeGasUrl || undefined,
       });
 
-      const data = await res.json();
-      if (res.ok && data.status === "success") {
-        setTestResult({ type: "success", text: data.message || `Test email successfully delivered to ${testRecipientEmail}!` });
+      if (result.ok && result.deliveryStatus !== "Failed") {
+        setTestResult({
+          type: "success",
+          text: `Test email successfully delivered to ${testRecipientEmail} via Google Apps Script (${testUser.name})!`,
+        });
       } else {
-        setTestResult({ type: "error", text: data.message || "Failed to send test email" });
+        setTestResult({
+          type: "error",
+          text: result.message || "Failed to send test email. Please check your Google Apps Script URL and permissions.",
+        });
       }
     } catch (err: any) {
-      setTestResult({ type: "error", text: err.message || "Network error connecting to test email server" });
+      setTestResult({ type: "error", text: err.message || "Network error connecting to email service" });
     } finally {
       setIsSendingTest(false);
     }
   };
 
   const handleSaveGasConfig = async () => {
+    let cleanUrl = (sendingConfig.gasWebUrl || "").trim();
+    if (cleanUrl.endsWith("/dev")) {
+      cleanUrl = cleanUrl.replace(/\/dev$/, "/exec");
+    }
+
     const updated: EmailSendingConfig = {
       ...sendingConfig,
+      gasWebUrl: cleanUrl,
       mode: "google_apps_script",
       updatedAt: new Date().toISOString(),
       updatedBy: activeUser.name,
@@ -461,6 +454,7 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
     setIsSavingConfig(true);
     try {
       await saveEmailSendingConfig(updated);
+      clearGasConfigCache();
       await saveLog({
         id: `log-${Date.now()}`,
         timestamp: new Date().toISOString(),
@@ -469,16 +463,139 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
         actionType: "Update Email Config",
         targetType: "Settings",
         targetId: "email_sending_config",
-        targetName: "Google Apps Script Web App",
-        details: `${activeUser.name} updated Google Apps Script Web App URL (${sendingConfig.gasWebUrl || "N/A"})`
+        targetName: "Company Default Google Apps Script URL",
+        details: `${activeUser.name} updated Company Default Google Apps Script Web App URL to: ${cleanUrl || "N/A"}`
       });
-      setStatusMessage({ type: "success", text: "Google Apps Script Web App configuration saved successfully!" });
+      setStatusMessage({ type: "success", text: "Company Default Google Apps Script URL saved successfully!" });
       setTimeout(() => setStatusMessage(null), 3500);
     } catch (err: any) {
       setStatusMessage({ type: "error", text: `Failed to save Google Apps Script URL: ${err.message}` });
     } finally {
       setIsSavingConfig(false);
     }
+  };
+
+  const handleSaveIndividualUserGasUrl = async (user: User) => {
+    setSavingUserId(user.id);
+    let currentUrl = (userGasConfigs[user.id]?.gasWebUrl || "").trim();
+    if (currentUrl.endsWith("/dev")) {
+      currentUrl = currentUrl.replace(/\/dev$/, "/exec");
+    }
+
+    const updatedUserConfigs = {
+      ...(sendingConfig.userGasConfigs || {}),
+      [user.id]: {
+        gasWebUrl: currentUrl,
+        fromName: `${user.name} - Aroma Organics`,
+        senderEmail: user.email,
+      },
+    };
+
+    const updatedConfig: EmailSendingConfig = {
+      ...sendingConfig,
+      userGasConfigs: updatedUserConfigs,
+      updatedAt: new Date().toISOString(),
+      updatedBy: activeUser.name,
+    };
+
+    setSendingConfig(updatedConfig);
+    setUserGasConfigs(updatedUserConfigs);
+
+    try {
+      await saveEmailSendingConfig(updatedConfig);
+      clearGasConfigCache();
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Update Email Config",
+        targetType: "Settings",
+        targetId: "email_sending_config",
+        targetName: `Google Apps Script URL for ${user.name}`,
+        details: `${activeUser.name} updated Google Apps Script Web App URL for ${user.name} (${user.email}) to: ${currentUrl || "Default Company Gateway"}`
+      });
+      setStatusMessage({ type: "success", text: `Apps Script URL for ${user.name} saved successfully!` });
+      setTimeout(() => setStatusMessage(null), 3000);
+    } catch (err: any) {
+      setStatusMessage({ type: "error", text: `Failed to save URL for ${user.name}: ${err.message}` });
+    } finally {
+      setSavingUserId(null);
+    }
+  };
+
+  const handleSaveAllUserGasUrls = async () => {
+    setIsSavingAllUsers(true);
+    
+    const cleanedConfigs: Record<string, { gasWebUrl?: string; fromName?: string; senderEmail?: string }> = {};
+    for (const [uid, conf] of Object.entries(userGasConfigs) as [string, { gasWebUrl?: string; fromName?: string; senderEmail?: string }][]) {
+      let url = (conf?.gasWebUrl || "").trim();
+      if (url.endsWith("/dev")) url = url.replace(/\/dev$/, "/exec");
+      const u = users.find((x) => x.id === uid);
+      cleanedConfigs[uid] = {
+        gasWebUrl: url,
+        fromName: conf?.fromName || (u ? `${u.name} - Aroma Organics` : undefined),
+        senderEmail: conf?.senderEmail || u?.email,
+      };
+    }
+
+    const updatedConfig: EmailSendingConfig = {
+      ...sendingConfig,
+      userGasConfigs: cleanedConfigs,
+      updatedAt: new Date().toISOString(),
+      updatedBy: activeUser.name,
+    };
+
+    setSendingConfig(updatedConfig);
+    setUserGasConfigs(cleanedConfigs);
+
+    try {
+      await saveEmailSendingConfig(updatedConfig);
+      clearGasConfigCache();
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Update Email Config",
+        targetType: "Settings",
+        targetId: "email_sending_config",
+        targetName: "All Per-User Google Apps Script URLs",
+        details: `${activeUser.name} saved per-user Google Apps Script Web App URLs for all users.`
+      });
+      setStatusMessage({ type: "success", text: "All user Google Apps Script URLs saved successfully!" });
+      setTimeout(() => setStatusMessage(null), 3500);
+    } catch (err: any) {
+      setStatusMessage({ type: "error", text: `Failed to save user URLs: ${err.message}` });
+    } finally {
+      setIsSavingAllUsers(false);
+    }
+  };
+
+  const handleCopyInstructionsForUser = (user: User) => {
+    const text = `Hi ${user.name},
+
+Please follow these 4 quick steps to deploy your Google Apps Script email dispatcher so the Sales Portal can send emails directly from your email (${user.email}):
+
+1. Open Google Apps Script: Go to https://script.google.com and click "New project".
+2. Erase any existing text in Code.gs and paste the exact code below:
+----------------------------------------
+${getAppsScriptCodeSnippet()}
+----------------------------------------
+3. In the top bar, select "setupAndAuthorize" in the function dropdown (next to Debug) and click "Run".
+   - Click "Review Permissions" -> Choose your account (${user.email}) -> Advanced -> Go to Untitled project (unsafe) -> Allow.
+4. Deploy as Web App:
+   - Click "Deploy" (top right) -> "New deployment"
+   - Click the gear icon -> Select "Web app"
+   - Execute as: "Me (${user.email})"
+   - Who has access: "Anyone" (Required for the portal webhook)
+   - Click "Deploy" and copy your Web App URL (starts with https://script.google.com/macros/s/.../exec)
+
+Please reply with your Web App URL so Admin can add it to your profile in the portal!`;
+
+    navigator.clipboard.writeText(text);
+    setCopiedInstructionsUserId(user.id);
+    setTimeout(() => setCopiedInstructionsUserId(null), 2500);
   };
 
   const filteredGroups = TEMPLATE_VARIABLE_GROUPS.filter((group) => {
@@ -492,15 +609,33 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
     return Array.from(new Set(TEMPLATE_VARIABLE_GROUPS.flatMap((g) => g.variables.map((v) => v.key))));
   }, []);
 
-  const filteredUsers = users.filter((u) => {
-    if (!userSearchTerm) return true;
-    const term = userSearchTerm.toLowerCase();
-    return (
-      u.name.toLowerCase().includes(term) ||
-      u.email.toLowerCase().includes(term) ||
-      (u.teamName || "").toLowerCase().includes(term)
-    );
-  });
+  const { filteredUsersForGas, configuredUsersCount, fallbackUsersCount } = useMemo(() => {
+    let configured = 0;
+    const list = users.filter((u) => {
+      const customUrl = (userGasConfigs[u.id]?.gasWebUrl || "").trim();
+      const hasCustom = !!customUrl;
+      if (hasCustom) configured++;
+
+      const query = userSearchTerm.toLowerCase();
+      const matchesSearch =
+        u.name.toLowerCase().includes(query) ||
+        (u.email || "").toLowerCase().includes(query) ||
+        (u.teamName && u.teamName.toLowerCase().includes(query)) ||
+        u.role.toLowerCase().includes(query);
+
+      if (!matchesSearch) return false;
+
+      if (userFilterStatus === "configured") return hasCustom;
+      if (userFilterStatus === "fallback") return !hasCustom;
+      return true;
+    });
+
+    return {
+      filteredUsersForGas: list,
+      configuredUsersCount: configured,
+      fallbackUsersCount: users.length - configured,
+    };
+  }, [users, userSearchTerm, userFilterStatus, userGasConfigs]);
 
   return (
     <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200">
@@ -511,7 +646,7 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
             <Mail className="text-indigo-600" size={22} /> Email Center & Notifications
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Manage automated email templates, event placeholders, and configure SMTP email sending options (Single Setted ID or Logged-in User ID)
+            Manage automated email templates, dynamic event placeholders, and Google Apps Script Web App email dispatcher
           </p>
         </div>
 
@@ -917,144 +1052,33 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
         </div>
       )}
 
-      {/* TAB 2: EMAIL SENDER & SMTP CONFIGURATION (ADMIN ONLY) */}
+      {/* TAB 2: EMAIL SENDER CONFIGURATION (GOOGLE APPS SCRIPT ONLY) (ADMIN ONLY) */}
       {mainTab === "sending_settings" && isAdmin && (
         <div className="space-y-6">
-          {/* Mode Selection Heading & Interactive Selector */}
-          <div>
-            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <Server size={18} className="text-indigo-600" /> Outgoing Email Sending Option
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Select how outgoing system emails should be dispatched: via Google Apps Script Web App (Recommended), Single Setted ID, or Individual Logged-In User Credentials.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Option 1: Google Apps Script Web App */}
-            <div
-              onClick={() => handleSaveMode("google_apps_script")}
-              className={`p-4 rounded-xl border-2 transition-all cursor-pointer relative flex flex-col justify-between ${
-                sendingConfig.mode === "google_apps_script"
-                  ? "border-emerald-600 bg-emerald-50/40 shadow-xs"
-                  : "border-slate-200 bg-white hover:border-slate-300"
-              }`}
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2.5 rounded-xl ${sendingConfig.mode === "google_apps_script" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}>
-                    <Code size={20} />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                      Google Apps Script
-                      <span className="bg-emerald-100 text-emerald-800 text-[9px] px-1.5 py-0.5 rounded-full font-bold">Recommended</span>
-                    </h4>
-                    <p className="text-[11px] text-slate-500">Google Workspace Email Gateway</p>
-                  </div>
-                </div>
-                <input
-                  type="radio"
-                  name="email_sending_mode"
-                  checked={sendingConfig.mode === "google_apps_script"}
-                  onChange={() => handleSaveMode("google_apps_script")}
-                  className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 mt-1 cursor-pointer"
-                />
-              </div>
-              <p className="text-xs text-slate-600 mt-3">
-                Dispatches emails via a <strong>Google Apps Script Web App</strong> URL using your authenticated Google Workspace or Gmail account. No SMTP passwords required!
+          {/* Mode Selection Heading & Status */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs">
+            <div>
+              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <Code size={18} className="text-emerald-600" /> Google Apps Script Email Dispatcher
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                All outgoing system emails are routed securely through your deployed <strong>Google Apps Script Web App</strong> (Gmail / Google Workspace Gateway). No SMTP credentials or passwords are required in the portal.
               </p>
-              {sendingConfig.mode === "google_apps_script" && (
-                <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-md inline-flex items-center gap-1 w-fit">
-                  <CheckCircle2 size={12} /> Currently Active Mode
-                </div>
-              )}
             </div>
-
-            {/* Option 2: Single Setted ID */}
-            <div
-              onClick={() => handleSaveMode("single_setted_id")}
-              className={`p-4 rounded-xl border-2 transition-all cursor-pointer relative flex flex-col justify-between ${
-                sendingConfig.mode === "single_setted_id"
-                  ? "border-indigo-600 bg-indigo-50/40 shadow-xs"
-                  : "border-slate-200 bg-white hover:border-slate-300"
-              }`}
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2.5 rounded-xl ${sendingConfig.mode === "single_setted_id" ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600"}`}>
-                    <Server size={20} />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-slate-900 text-sm">Single Setted ID</h4>
-                    <p className="text-[11px] text-slate-500">Global Centralized SMTP Account</p>
-                  </div>
-                </div>
-                <input
-                  type="radio"
-                  name="email_sending_mode"
-                  checked={sendingConfig.mode === "single_setted_id"}
-                  onChange={() => handleSaveMode("single_setted_id")}
-                  className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 mt-1 cursor-pointer"
-                />
-              </div>
-              <p className="text-xs text-slate-600 mt-3">
-                All outgoing system emails will be sent using a <strong>single centralized SMTP credential set</strong> configured below.
-              </p>
-              {sendingConfig.mode === "single_setted_id" && (
-                <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-indigo-700 bg-indigo-100 px-2.5 py-1 rounded-md inline-flex items-center gap-1 w-fit">
-                  <CheckCircle2 size={12} /> Currently Active Mode
-                </div>
-              )}
-            </div>
-
-            {/* Option 3: Logged In User ID */}
-            <div
-              onClick={() => handleSaveMode("logged_in_user_id")}
-              className={`p-4 rounded-xl border-2 transition-all cursor-pointer relative flex flex-col justify-between ${
-                sendingConfig.mode === "logged_in_user_id"
-                  ? "border-indigo-600 bg-indigo-50/40 shadow-xs"
-                  : "border-slate-200 bg-white hover:border-slate-300"
-              }`}
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2.5 rounded-xl ${sendingConfig.mode === "logged_in_user_id" ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600"}`}>
-                    <UserCheck size={20} />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-slate-900 text-sm">Logged In User ID</h4>
-                    <p className="text-[11px] text-slate-500">Per-User Email Credentials</p>
-                  </div>
-                </div>
-                <input
-                  type="radio"
-                  name="email_sending_mode"
-                  checked={sendingConfig.mode === "logged_in_user_id"}
-                  onChange={() => handleSaveMode("logged_in_user_id")}
-                  className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 mt-1 cursor-pointer"
-                />
-              </div>
-              <p className="text-xs text-slate-600 mt-3">
-                Emails will be dispatched using the <strong>logged-in user's individual SMTP credentials</strong>.
-              </p>
-              {sendingConfig.mode === "logged_in_user_id" && (
-                <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-indigo-700 bg-indigo-100 px-2.5 py-1 rounded-md inline-flex items-center gap-1 w-fit">
-                  <CheckCircle2 size={12} /> Currently Active Mode
-                </div>
-              )}
+            <div className="flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 px-3 py-1.5 rounded-xl text-xs font-bold shrink-0">
+              <CheckCircle2 size={14} className="text-emerald-600" /> Active Dispatch Method
             </div>
           </div>
 
           {/* GOOGLE APPS SCRIPT CONFIGURATION PANEL */}
-          <div className="bg-emerald-50/60 border border-emerald-200 rounded-xl p-4 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-200 pb-3">
+          <div className="bg-emerald-50/60 border border-emerald-200 rounded-2xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-200 pb-4">
               <div>
                 <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                  <Code size={16} className="text-emerald-700" /> Google Apps Script Web App Integration
+                  <Code size={16} className="text-emerald-700" /> Google Apps Script Web App Deployment URL
                 </h4>
-                <p className="text-xs text-slate-600">
-                  Enter your deployed Google Apps Script Web App URL to send emails directly via Gmail without SMTP server configuration.
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Enter your deployed Google Apps Script Web App URL to dispatch emails automatically via your Google Workspace or Gmail account.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -1068,7 +1092,7 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
                 {sendingConfig.gasWebUrl && (
                   <button
                     type="button"
-                    onClick={() => handleOpenTestModal("Google Apps Script Web App", undefined, sendingConfig.gasWebUrl)}
+                    onClick={handleOpenTestModal}
                     className="flex items-center gap-1.5 bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-emerald-800 cursor-pointer transition-colors shadow-2xs"
                   >
                     <Send size={13} /> Test Apps Script Email
@@ -1079,7 +1103,7 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
 
             <div className="space-y-2">
               <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider">
-                Google Apps Script Web App URL
+                Company Default Google Apps Script Web App URL
               </label>
               <div className="flex flex-col sm:flex-row gap-2">
                 <input
@@ -1100,280 +1124,222 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
                   disabled={isSavingConfig}
                   className="flex items-center justify-center gap-1.5 bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-xs font-bold hover:bg-emerald-800 cursor-pointer transition-colors shadow-2xs disabled:opacity-50 shrink-0"
                 >
-                  {isSavingConfig ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />} Save Apps Script URL
+                  {isSavingConfig ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />} Save Default Gateway URL
                 </button>
               </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Used as the company-wide fallback email gateway whenever a user does not have an individual Web App URL configured below.
+              </p>
             </div>
           </div>
 
-          {/* Configuration Form 1: Single Setted ID Settings */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
+          {/* PER-USER GOOGLE APPS SCRIPT WEB APP URLS (OPTION 1) */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
               <div>
-                <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                  <Server size={16} className="text-indigo-600" /> Single Setted ID SMTP Configuration
-                </h4>
-                <p className="text-xs text-slate-500">
-                  Configure global SMTP host, port, username, and password for centralized email dispatch
+                <div className="flex items-center gap-2">
+                  <span className="bg-indigo-100 text-indigo-800 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full">
+                    Option 1 Enabled
+                  </span>
+                  <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <Users size={18} className="text-indigo-600" /> Per-User Personal Web App URLs
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  Save deployed Google Apps Script Web App URLs for individual users. When a logged-in user creates an order, issues an invoice, or triggers a payment reminder, the email will dispatch directly from <strong>their own Google Workspace / Gmail account</strong>!
                 </p>
               </div>
-              {sendingConfig.singleConfig?.smtpHost && (
+
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={() => handleOpenTestModal("Single Setted ID SMTP", sendingConfig.singleConfig || {})}
-                  className="flex items-center gap-1.5 bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-emerald-700 cursor-pointer transition-colors shadow-2xs"
+                  onClick={handleSaveAllUserGasUrls}
+                  disabled={isSavingAllUsers}
+                  className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer disabled:opacity-50"
                 >
-                  <Send size={13} /> Test Single SMTP Email
+                  {isSavingAllUsers ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save All User URLs
                 </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">SMTP Host Server</label>
-                <input
-                  type="text"
-                  placeholder="e.g. smtp.gmail.com or mail.company.com"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                  value={sendingConfig.singleConfig?.smtpHost || ""}
-                  onChange={(e) =>
-                    setSendingConfig({
-                      ...sendingConfig,
-                      singleConfig: { ...(sendingConfig.singleConfig || {}), smtpHost: e.target.value },
-                    })
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">SMTP Port</label>
-                <input
-                  type="number"
-                  placeholder="587 or 465"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                  value={sendingConfig.singleConfig?.smtpPort || 587}
-                  onChange={(e) => {
-                    const portNum = Number(e.target.value);
-                    setSendingConfig({
-                      ...sendingConfig,
-                      singleConfig: {
-                        ...(sendingConfig.singleConfig || {}),
-                        smtpPort: portNum,
-                        secure: portNum === 465,
-                      },
-                    });
-                  }}
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Display Sender Name</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Aroma Organic Sales Team"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                  value={sendingConfig.singleConfig?.fromName || ""}
-                  onChange={(e) =>
-                    setSendingConfig({
-                      ...sendingConfig,
-                      singleConfig: { ...(sendingConfig.singleConfig || {}), fromName: e.target.value },
-                    })
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Account Email / Username</label>
-                <input
-                  type="email"
-                  placeholder="e.g. sales@aromaorganic.in"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                  value={sendingConfig.singleConfig?.smtpUser || ""}
-                  onChange={(e) =>
-                    setSendingConfig({
-                      ...sendingConfig,
-                      singleConfig: { ...(sendingConfig.singleConfig || {}), smtpUser: e.target.value },
-                    })
-                  }
-                />
-              </div>
-
-              <div className="relative">
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Account Password / App Pass</label>
-                <div className="relative">
-                  <input
-                    type={showSinglePassword ? "text" : "password"}
-                    placeholder="Enter SMTP password or app key"
-                    className="w-full p-2.5 pr-9 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                    value={sendingConfig.singleConfig?.smtpPass || ""}
-                    onChange={(e) =>
-                      setSendingConfig({
-                        ...sendingConfig,
-                        singleConfig: { ...(sendingConfig.singleConfig || {}), smtpPass: e.target.value },
-                      })
-                    }
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowSinglePassword(!showSinglePassword)}
-                    className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
-                  >
-                    {showSinglePassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 pt-5">
-                <input
-                  type="checkbox"
-                  id="single_smtp_secure"
-                  checked={sendingConfig.singleConfig?.secure || false}
-                  onChange={(e) =>
-                    setSendingConfig({
-                      ...sendingConfig,
-                      singleConfig: {
-                        ...(sendingConfig.singleConfig || {}),
-                        secure: e.target.checked,
-                        smtpPort: e.target.checked ? 465 : (sendingConfig.singleConfig?.smtpPort === 465 ? 587 : (sendingConfig.singleConfig?.smtpPort || 587)),
-                      },
-                    })
-                  }
-                  className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer"
-                />
-                <label htmlFor="single_smtp_secure" className="text-xs font-semibold text-slate-700 cursor-pointer">
-                  Direct SSL/TLS (Port 465) / STARTTLS (Port 587)
-                </label>
               </div>
             </div>
 
-            <div className="flex justify-end pt-2">
-              <button
-                type="button"
-                onClick={handleSaveSingleConfig}
-                disabled={isSavingConfig}
-                className="flex items-center gap-1.5 bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-indigo-700 cursor-pointer transition-colors shadow-2xs disabled:opacity-50"
-              >
-                {isSavingConfig ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />} Save Single Setted ID Config
-              </button>
-            </div>
-          </div>
-
-          {/* Configuration Table 2: Logged In User Email Credentials Matrix */}
-          <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-              <div>
-                <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                  <UserCheck size={16} className="text-indigo-600" /> Logged In User Credentials Matrix
-                </h4>
-                <p className="text-xs text-slate-500">
-                  Configure custom SMTP login credentials for each user. Active when "Logged In User ID" mode is selected.
-                </p>
-              </div>
-
-              <div className="w-full sm:w-64">
+            {/* Filter & Summary Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200/80">
+              {/* Search input */}
+              <div className="relative flex-1 max-w-sm">
+                <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Search user by name, email..."
-                  className="w-full p-2 text-xs rounded-xl border border-slate-200 bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="Search user by name, email, role, or team..."
                   value={userSearchTerm}
                   onChange={(e) => setUserSearchTerm(e.target.value)}
+                  className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 font-medium text-slate-800"
                 />
+              </div>
+
+              {/* Status Filter Buttons */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setUserFilterStatus("all")}
+                  className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                    userFilterStatus === "all" ? "bg-indigo-600 text-white" : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+                  }`}
+                >
+                  All ({users.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserFilterStatus("configured")}
+                  className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 ${
+                    userFilterStatus === "configured" ? "bg-emerald-600 text-white" : "bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Configured ({configuredUsersCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserFilterStatus("fallback")}
+                  className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 ${
+                    userFilterStatus === "fallback" ? "bg-amber-600 text-white" : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Fallback ({fallbackUsersCount})
+                </button>
               </div>
             </div>
 
-            <div className="overflow-x-auto rounded-xl border border-slate-150">
-              <table className="w-full text-left text-xs text-slate-700">
-                <thead className="bg-slate-50 text-[10px] font-bold uppercase text-slate-500 tracking-wider border-b border-slate-200">
-                  <tr>
-                    <th className="p-3">User Details</th>
-                    <th className="p-3">Role & Team</th>
-                    <th className="p-3">Configured SMTP Credentials</th>
-                    <th className="p-3">Status</th>
-                    <th className="p-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredUsers.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="p-4 text-center text-slate-400 italic text-xs">
-                        No users found
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredUsers.map((u) => {
-                      const userSmtp = sendingConfig.userConfigs?.[u.id];
-                      const isConfigured = !!(userSmtp?.smtpHost && userSmtp?.smtpUser);
+            {/* Users List Table / Card Rows */}
+            <div className="space-y-3">
+              {filteredUsersForGas.map((u) => {
+                const userGasUrl = userGasConfigs[u.id]?.gasWebUrl || "";
+                const hasPersonalGas = !!userGasUrl.trim();
+                const isSavingThis = savingUserId === u.id;
+                const isCopiedInstructions = copiedInstructionsUserId === u.id;
 
-                      return (
-                        <tr key={u.id} className="hover:bg-slate-50/70 transition-colors">
-                          <td className="p-3">
-                            <div className="font-bold text-slate-900">{u.name}</div>
-                            <div className="text-[11px] text-slate-500">{u.email}</div>
-                          </td>
-                          <td className="p-3">
-                            <div className="font-semibold text-slate-700 capitalize">{u.role}</div>
-                            <div className="text-[10px] text-slate-400">{u.teamName || "No Team"}</div>
-                          </td>
-                          <td className="p-3">
-                            {isConfigured ? (
-                              <div>
-                                <div className="font-mono text-xs font-semibold text-indigo-700">{userSmtp.smtpUser}</div>
-                                <div className="text-[10px] text-slate-500 font-mono">
-                                  {userSmtp.smtpHost}:{userSmtp.smtpPort} {userSmtp.fromName ? `(${userSmtp.fromName})` : ""}
-                                </div>
-                              </div>
-                            ) : (
-                              <span className="text-slate-400 italic text-xs">Not configured (Uses fallback)</span>
-                            )}
-                          </td>
-                          <td className="p-3">
-                            {isConfigured ? (
-                              <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center gap-1">
-                                <Check size={11} /> Configured
+                return (
+                  <div
+                    key={`user-gas-row-${u.id}`}
+                    className={`p-4 rounded-xl border transition-all ${
+                      hasPersonalGas
+                        ? "bg-white border-emerald-200/90 shadow-2xs hover:border-emerald-300"
+                        : "bg-slate-50/70 border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                      {/* User Info */}
+                      <div className="flex items-center gap-3 min-w-[240px]">
+                        <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs overflow-hidden">
+                          {u.avatarUrl ? (
+                            <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
+                          ) : (
+                            u.name.substring(0, 2).toUpperCase()
+                          )}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-900 text-xs">{u.name}</span>
+                            <span className="text-[10px] font-semibold bg-slate-200/80 text-slate-700 px-1.5 py-0.5 rounded">
+                              {u.role}
+                            </span>
+                            {hasPersonalGas ? (
+                              <span className="text-[9px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Personal Web App Active
                               </span>
                             ) : (
-                              <span className="bg-slate-100 text-slate-500 border border-slate-200 px-2 py-0.5 rounded-full text-[10px] font-semibold">
-                                Unconfigured
+                              <span className="text-[9px] font-semibold bg-slate-100 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded-full">
+                                Uses Company Default
                               </span>
                             )}
-                          </td>
-                          <td className="p-3 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handleOpenUserSmtpModal(u)}
-                                className="flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer border border-indigo-200"
-                              >
-                                <Edit2 size={13} /> {isConfigured ? "Edit SMTP" : "Configure SMTP"}
-                              </button>
-                              {isConfigured && (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenTestModal(`${u.name}'s SMTP`, userSmtp)}
-                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
-                                    title="Test user SMTP email"
-                                  >
-                                    <Send size={15} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveUserSmtp(u.id, u.name)}
-                                    className="p-1 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                                    title="Remove custom credentials"
-                                  >
-                                    <Trash2 size={15} />
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+                          </div>
+                          <div className="text-[11px] text-slate-500 font-mono mt-0.5 flex items-center gap-2">
+                            <span>{u.email || "No email assigned"}</span>
+                            {u.teamName && <span className="text-slate-400">• {u.teamName}</span>}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Gas URL Input & Actions */}
+                      <div className="flex-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="url"
+                            placeholder="Paste user's Google Apps Script Web App URL (https://script.google.com/macros/s/.../exec)"
+                            value={userGasUrl}
+                            onChange={(e) => {
+                              let val = e.target.value;
+                              if (val.trim().endsWith("/dev")) {
+                                val = val.trim().replace(/\/dev$/, "/exec");
+                              }
+                              setUserGasConfigs((prev) => ({
+                                ...prev,
+                                [u.id]: {
+                                  ...(prev[u.id] || {}),
+                                  gasWebUrl: val,
+                                  senderEmail: u.email,
+                                  fromName: `${u.name} - Aroma Organics`,
+                                },
+                              }));
+                            }}
+                            className={`w-full py-2 px-3 text-xs rounded-xl border outline-none font-mono transition-all ${
+                              hasPersonalGas
+                                ? "bg-white border-emerald-300 text-slate-900 focus:ring-2 focus:ring-emerald-500"
+                                : "bg-white border-slate-200 text-slate-600 focus:ring-2 focus:ring-indigo-500"
+                            }`}
+                          />
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {/* Save Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleSaveIndividualUserGasUrl(u)}
+                            disabled={isSavingThis}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-2 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                            title="Save this user's Google Apps Script URL"
+                          >
+                            {isSavingThis ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                            <span>Save</span>
+                          </button>
+
+                          {/* Test Email via this user's gateway */}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenUserTestModal(u)}
+                            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs px-3 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1"
+                            title={`Send a test email using ${u.name}'s Google Apps Script gateway`}
+                          >
+                            <Send size={13} />
+                            <span>Test</span>
+                          </button>
+
+                          {/* Copy Deployment Instructions for this user */}
+                          <button
+                            type="button"
+                            onClick={() => handleCopyInstructionsForUser(u)}
+                            className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                              isCopiedInstructions
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-300"
+                                : "bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200"
+                            }`}
+                            title="Copy step-by-step deployment instructions personalized for this user"
+                          >
+                            {isCopiedInstructions ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {filteredUsersForGas.length === 0 && (
+                <div className="bg-slate-50 border border-dashed border-slate-300 rounded-xl p-8 text-center space-y-2">
+                  <Users size={24} className="mx-auto text-slate-400" />
+                  <p className="text-xs font-bold text-slate-700">No users match the search filter</p>
+                  <p className="text-[11px] text-slate-500">Try clearing your search term or selecting "All Users".</p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1620,152 +1586,21 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
         </div>
       )}
 
-      {/* MODAL 1: USER SMTP CREDENTIALS EDIT MODAL */}
-      {userModalOpen && selectedUserForSmtp && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-5 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-start border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
-                  <Key className="text-indigo-600" size={18} /> Configure User SMTP Credentials
-                </h3>
-                <p className="text-xs text-slate-500">
-                  {selectedUserForSmtp.name} ({selectedUserForSmtp.email})
-                </p>
-              </div>
-              <button
-                onClick={() => setUserModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="sm:col-span-2">
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Display Sender Name</label>
-                <input
-                  type="text"
-                  placeholder="e.g. John Doe (Sales Lead)"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                  value={userSmtpForm.fromName || ""}
-                  onChange={(e) => setUserSmtpForm({ ...userSmtpForm, fromName: e.target.value })}
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">SMTP Host Server</label>
-                <input
-                  type="text"
-                  placeholder="e.g. smtp.gmail.com"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                  value={userSmtpForm.smtpHost || ""}
-                  onChange={(e) => setUserSmtpForm({ ...userSmtpForm, smtpHost: e.target.value })}
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">SMTP Port</label>
-                <input
-                  type="number"
-                  placeholder="587 or 465"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                  value={userSmtpForm.smtpPort || 587}
-                  onChange={(e) => {
-                    const portNum = Number(e.target.value);
-                    setUserSmtpForm({
-                      ...userSmtpForm,
-                      smtpPort: portNum,
-                      secure: portNum === 465,
-                    });
-                  }}
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">SMTP Email / Username</label>
-                <input
-                  type="email"
-                  placeholder="e.g. john@aromaorganic.in"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                  value={userSmtpForm.smtpUser || ""}
-                  onChange={(e) => setUserSmtpForm({ ...userSmtpForm, smtpUser: e.target.value })}
-                />
-              </div>
-
-              <div className="relative">
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">SMTP Password / App Key</label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    placeholder="Enter SMTP password"
-                    className="w-full p-2.5 pr-9 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                    value={userSmtpForm.smtpPass || ""}
-                    onChange={(e) => setUserSmtpForm({ ...userSmtpForm, smtpPass: e.target.value })}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
-                  >
-                    {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="sm:col-span-2 flex items-center gap-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="user_smtp_secure"
-                  checked={userSmtpForm.secure || false}
-                  onChange={(e) => {
-                    setUserSmtpForm({
-                      ...userSmtpForm,
-                      secure: e.target.checked,
-                      smtpPort: e.target.checked ? 465 : (userSmtpForm.smtpPort === 465 ? 587 : (userSmtpForm.smtpPort || 587)),
-                    });
-                  }}
-                  className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer"
-                />
-                <label htmlFor="user_smtp_secure" className="text-xs font-semibold text-slate-700 cursor-pointer">
-                  Direct SSL/TLS (Port 465) / STARTTLS (Port 587)
-                </label>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setUserModalOpen(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveUserSmtp}
-                disabled={isSavingConfig}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-2xs flex items-center gap-1.5 disabled:opacity-50"
-              >
-                {isSavingConfig ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />} Save User Credentials
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 2: TEST EMAIL MODAL */}
-      {testModalOpen && testTargetConfig && (
+      {/* TEST EMAIL MODAL (GOOGLE APPS SCRIPT) */}
+      {testModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
             <div className="flex justify-between items-start border-b border-slate-100 pb-3">
               <div>
                 <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
-                  <Send className="text-emerald-600" size={18} /> Test Email Configuration
+                  <Send className="text-emerald-600" size={18} /> Test Apps Script Email Gateway
                 </h3>
-                <p className="text-xs text-slate-500">
-                  Target: <strong>{testTargetConfig.name}</strong>{" "}
-                  {testTargetConfig.credentials?.smtpUser ? `(${testTargetConfig.credentials.smtpUser})` : testTargetConfig.gasWebUrl ? `(Google Apps Script)` : ""}
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {selectedUserForTest ? (
+                    <span>Testing user dispatch for <strong>{selectedUserForTest.name}</strong> ({selectedUserForTest.email || "N/A"})</span>
+                  ) : (
+                    <span>Testing <strong>Company Default Gateway</strong></span>
+                  )}
                 </p>
               </div>
               <button
@@ -1776,12 +1611,27 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
               </button>
             </div>
 
+            {/* Target URL Info Box */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-[11px] text-slate-700 space-y-1 font-mono">
+              <div className="text-[10px] uppercase font-bold text-slate-400">Target Web App URL</div>
+              <div className="truncate text-slate-800 font-semibold">
+                {selectedUserForTest
+                  ? (userGasConfigs[selectedUserForTest.id]?.gasWebUrl || sendingConfig.gasWebUrl || "No URL Configured (Will fail)")
+                  : (sendingConfig.gasWebUrl || "No URL Configured (Will fail)")}
+              </div>
+              <div className="text-[10px] text-slate-500 font-sans mt-0.5">
+                {selectedUserForTest && userGasConfigs[selectedUserForTest.id]?.gasWebUrl
+                  ? `⚡ Using ${selectedUserForTest.name}'s personal Google Apps Script Web App`
+                  : `○ Using Company Default Gateway`}
+              </div>
+            </div>
+
             <div>
               <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Recipient Test Email</label>
               <input
                 type="email"
                 placeholder="Enter email to receive test message"
-                className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                className="w-full p-2.5 text-xs rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
                 value={testRecipientEmail}
                 onChange={(e) => setTestRecipientEmail(e.target.value)}
               />
@@ -1891,7 +1741,16 @@ export default function EmailTemplateManagementView({ templates, isAdmin, active
                 <button
                   type="button"
                   onClick={() => {
-                    const code = `function doPost(e) {
+                    const code = `/**
+ * Aroma Organics / Google Workspace Automated Sales Email Dispatcher
+ * Dispatches automated order, offer, indent, invoice, and payment reminder emails.
+ */
+
+function setupAndAuthorize() {
+  Logger.log("Authorized successfully for user: " + Session.getActiveUser().getEmail());
+}
+
+function doPost(e) {
   return handleEmailRequest(e);
 }
 
@@ -1901,6 +1760,7 @@ function doGet(e) {
   }
   return ContentService.createTextOutput(JSON.stringify({
     status: "online",
+    activeUser: Session.getActiveUser().getEmail() || "Service Account",
     service: "Sales Portal Google Apps Script Email Gateway"
   })).setMimeType(ContentService.MimeType.JSON);
 }
@@ -1927,35 +1787,71 @@ function handleEmailRequest(e) {
     }
 
     var to = data.to;
-    var subject = data.subject || "No Subject";
-    var body = data.text || data.html || data.body || "";
-    var isHtml = /<[a-z][\\s\\S]*>/i.test(body);
+    var subject = data.subject || "Sales Portal Notification";
+    var rawBody = data.html || data.text || data.htmlBody || data.body || "";
 
     if (!to) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "error",
-        message: "Missing recipient 'to' address"
+        message: "Missing recipient 'to' email address"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    var options = { to: to, subject: subject };
-    if (data.cc) options.cc = data.cc;
-    if (data.bcc) options.bcc = data.bcc;
-    if (data.fromName) options.name = data.fromName;
+    // Clean & Unescape any escaped HTML entities (e.g. &lt;table&gt; -> <table>)
+    var cleanBody = rawBody
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
 
-    if (isHtml) {
-      options.htmlBody = body;
-      options.body = body.replace(/<[^>]*>/g, "");
-    } else {
-      options.body = body;
+    var hasHtml = /<[a-z][\\s\\S]*>/i.test(cleanBody);
+    var htmlContent = hasHtml
+      ? cleanBody
+      : '<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b;">' + cleanBody.replace(/\\n/g, "<br/>") + '</div>';
+
+    var plainTextContent = cleanBody
+      .replace(/<br\\s*\\/?>/gi, "\\n")
+      .replace(/<\\/p>/gi, "\\n")
+      .replace(/<\\/div>/gi, "\\n")
+      .replace(/<\\/tr>/gi, "\\n")
+      .replace(/<[^>]*>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&");
+
+    // Sender & Identity Settings for Google Workspace
+    var senderName = data.fromName || data.senderUserName || "Sales Portal";
+    var replyToEmail = data.replyTo || data.senderEmail || "";
+
+    var options = {
+      to: to,
+      subject: subject,
+      htmlBody: htmlContent,
+      body: plainTextContent,
+      name: senderName
+    };
+
+    if (replyToEmail) {
+      options.replyTo = replyToEmail;
     }
 
+    if (data.cc) {
+      options.cc = data.cc;
+    }
+
+    if (data.bcc) {
+      options.bcc = data.bcc;
+    }
+
+    // Dispatch via MailApp
     MailApp.sendEmail(options);
 
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
-      message: "Email successfully sent via Google Apps Script Web App",
-      to: to
+      message: "Email successfully dispatched via Google Apps Script",
+      to: to,
+      subject: subject,
+      sender: senderName,
+      replyTo: replyToEmail || undefined
     })).setMimeType(ContentService.MimeType.JSON);
 
   } catch (err) {
@@ -1977,7 +1873,16 @@ function handleEmailRequest(e) {
               </div>
 
               <pre className="p-3 bg-slate-900 text-emerald-400 text-[11px] rounded-xl font-mono overflow-x-auto max-h-56 leading-relaxed border border-slate-800">
-{`function doPost(e) {
+{`/**
+ * Aroma Organics / Google Workspace Automated Sales Email Dispatcher
+ * Dispatches automated order, offer, indent, invoice, and payment reminder emails.
+ */
+
+function setupAndAuthorize() {
+  Logger.log("Authorized successfully for user: " + Session.getActiveUser().getEmail());
+}
+
+function doPost(e) {
   return handleEmailRequest(e);
 }
 
@@ -1987,6 +1892,7 @@ function doGet(e) {
   }
   return ContentService.createTextOutput(JSON.stringify({
     status: "online",
+    activeUser: Session.getActiveUser().getEmail() || "Service Account",
     service: "Sales Portal Google Apps Script Email Gateway"
   })).setMimeType(ContentService.MimeType.JSON);
 }
@@ -1995,54 +1901,73 @@ function handleEmailRequest(e) {
   try {
     var data = {};
     if (e && e.postData && e.postData.contents) {
-      try { data = JSON.parse(e.postData.contents); } catch (err) { data = e.parameter || {}; }
+      try { data = JSON.parse(e.postData.contents); } catch (jsonErr) { data = e.parameter || {}; }
     } else if (e && e.parameter) {
       if (e.parameter.payload) {
-        try { data = JSON.parse(e.parameter.payload); } catch (err) { data = e.parameter; }
+        try { data = JSON.parse(e.parameter.payload); } catch (pErr) { data = e.parameter; }
       } else {
         data = e.parameter;
       }
     }
 
     var to = data.to;
-    var subject = data.subject || "No Subject";
-    var body = data.text || data.html || data.body || "";
-    var isHtml = /<[a-z][\\s\\S]*>/i.test(body);
+    var subject = data.subject || "Sales Portal Notification";
+    var rawBody = data.html || data.text || data.htmlBody || data.body || "";
 
     if (!to) {
       return ContentService.createTextOutput(JSON.stringify({ status: "error", message: "Missing recipient 'to' address" })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    var options = { to: to, subject: subject };
-    if (data.cc) options.cc = data.cc;
-    if (data.bcc) options.bcc = data.bcc;
-    if (data.fromName) options.name = data.fromName;
-
-    // Un-escape escaped HTML tags like &lt;b&gt; -> <b> and &lt;table&gt; -> <table>
-    var rawText = data.html || data.text || data.body || "";
-    var cleanBody = rawText
+    // Clean & Unescape HTML entities (e.g. &lt;table&gt; -> <table>)
+    var cleanBody = rawBody
       .replace(/&lt;/g, "<")
       .replace(/&gt;/g, ">")
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'");
 
-    var hasHtml = /<[a-z][\s\S]*>/i.test(cleanBody);
-    var htmlContent = hasHtml ? cleanBody : '<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6;">' + cleanBody.replace(/\n/g, "<br/>") + '</div>';
-    var plainTextContent = htmlContent
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/p>/gi, "\n")
-      .replace(/<\/div>/gi, "\n")
-      .replace(/<\/tr>/gi, "\n")
+    var hasHtml = /<[a-z][\\s\\S]*>/i.test(cleanBody);
+    var htmlContent = hasHtml
+      ? cleanBody
+      : '<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b;">' + cleanBody.replace(/\\n/g, "<br/>") + '</div>';
+
+    var plainTextContent = cleanBody
+      .replace(/<br\\s*\\/?>/gi, "\\n")
+      .replace(/<\\/p>/gi, "\\n")
+      .replace(/<\\/div>/gi, "\\n")
+      .replace(/<\\/tr>/gi, "\\n")
       .replace(/<[^>]*>/g, "")
       .replace(/&nbsp;/g, " ")
       .replace(/&amp;/g, "&");
 
-    options.htmlBody = htmlContent;
-    options.body = plainTextContent;
+    // Sender & Identity Settings for Google Workspace
+    var senderName = data.fromName || data.senderUserName || "Sales Portal";
+    var replyToEmail = data.replyTo || data.senderEmail || "";
 
+    var options = {
+      to: to,
+      subject: subject,
+      htmlBody: htmlContent,
+      body: plainTextContent,
+      name: senderName
+    };
+
+    if (replyToEmail) {
+      options.replyTo = replyToEmail;
+    }
+
+    if (data.cc) options.cc = data.cc;
+    if (data.bcc) options.bcc = data.bcc;
+
+    // Dispatch via MailApp
     MailApp.sendEmail(options);
 
-    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Email successfully sent via Google Apps Script Web App", to: to })).setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      message: "Email successfully sent via Google Apps Script Web App",
+      to: to,
+      sender: senderName,
+      replyTo: replyToEmail || undefined
+    })).setMimeType(ContentService.MimeType.JSON);
 
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
@@ -2237,42 +2162,28 @@ function handleEmailRequest(e) {
                           setIsSendingPreviewTest(true);
                           setPreviewTestStatus(null);
                           try {
-                            const token = await auth.currentUser?.getIdToken();
-                            const res = await fetch("/api/send-order-email", {
-                              method: "POST",
-                              headers: {
-                                "Content-Type": "application/json",
-                                Authorization: `Bearer ${token}`,
-                              },
-                              body: JSON.stringify({
-                                to: previewTestEmail,
-                                subject: evaluatedSubject,
-                                text: formattedHtmlBody,
-                                html: formattedHtmlBody,
-                                htmlBody: formattedHtmlBody,
-                                plainText: plainTextBody,
-                                category: previewData.assignedForm || "general",
-                                fromName: "Aroma Organics Sales Portal",
-                              }),
-                            });
-                            const data = await res.json();
-                            const isSuccess = data.status === "success" && data.deliveryStatus !== "Failed";
-                            if (isSuccess) {
-                              setPreviewTestStatus({ type: "success", text: `Test email sent to ${previewTestEmail}!` });
-                            } else {
-                              setPreviewTestStatus({ type: "error", text: data.message || "Failed to send test email" });
-                            }
-
-                            await saveEmailSentLog({
-                              id: `log-test-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                            const result = await dispatchSystemEmail({
                               to: previewTestEmail,
                               subject: evaluatedSubject,
+                              text: formattedHtmlBody,
+                              html: formattedHtmlBody,
+                              htmlBody: formattedHtmlBody,
+                              plainText: plainTextBody,
                               category: previewData.assignedForm || "general",
-                              status: isSuccess ? "Sent" : "Failed",
-                              timestamp: new Date().toISOString(),
-                              senderUserId: auth.currentUser?.uid,
-                              error: isSuccess ? undefined : data.message,
+                              fromName: `${activeUser.name} - Sales Portal`,
+                              senderUserName: activeUser.name,
+                              senderUserId: activeUser.id,
+                              senderEmail: activeUser.email,
+                              replyTo: activeUser.email,
+                              gasWebUrl: sendingConfig.gasWebUrl?.trim() || undefined,
                             });
+
+                            const isSuccess = result.ok && result.deliveryStatus !== "Failed";
+                            if (isSuccess) {
+                              setPreviewTestStatus({ type: "success", text: `Test email sent to ${previewTestEmail} via Google Apps Script!` });
+                            } else {
+                              setPreviewTestStatus({ type: "error", text: result.message || "Failed to send test email" });
+                            }
                           } catch (err: any) {
                             setPreviewTestStatus({ type: "error", text: err.message || "Network error" });
                           } finally {

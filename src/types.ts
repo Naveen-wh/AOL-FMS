@@ -29,6 +29,7 @@ export interface User {
   avatarUrl?: string;
   targetQuota: number; // Monthly sales quota
   showOnDashboard?: boolean;
+  gasWebUrl?: string; // Optional user-specific Google Apps Script Web App URL to send emails from this user's account
 }
 
 export interface PoAttachment {
@@ -340,9 +341,16 @@ export interface SmtpCredentials {
   secure?: boolean;
 }
 
+export interface UserGasConfig {
+  gasWebUrl?: string;
+  fromName?: string;
+  senderEmail?: string;
+}
+
 export interface EmailSendingConfig {
   mode: EmailSendingMode;
   gasWebUrl?: string;
+  userGasConfigs?: Record<string, UserGasConfig>;
   singleConfig?: SmtpCredentials;
   userConfigs?: Record<string, SmtpCredentials>;
   updatedAt?: string;

@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import nodemailer from "nodemailer";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -112,31 +111,6 @@ async function writeFirestoreDocWithUserToken(docPath: string, data: Record<stri
   } catch {
     return false;
   }
-}
-
-function createSmtpTransporter(host: string, port: number | string, user: string, pass: string, secureFlag?: boolean) {
-  const numPort = Number(port) || 587;
-  // Direct SMTPS (Implicit TLS) is only used on port 465.
-  // Ports 587, 25, 2525 use Explicit TLS via STARTTLS, so secure MUST be false.
-  const isDirectSsl = numPort === 465;
-
-  return nodemailer.createTransport({
-    host: host.trim(),
-    port: numPort,
-    secure: isDirectSsl,
-    requireTLS: !isDirectSsl && (numPort === 587 || !!secureFlag),
-    auth: {
-      user: user.trim(),
-      pass: pass.trim(),
-    },
-    tls: {
-      rejectUnauthorized: false,
-      minVersion: "TLSv1.2",
-    },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
-  });
 }
 
 async function startServer() {
@@ -467,10 +441,6 @@ async function startServer() {
     const plainText = req.body.plainText || (typeof text === "string" ? text.replace(/<[^>]*>/g, "") : "");
 
     // Fetch email sending settings from Firestore (using user token via REST, or Admin SDK)
-    let sendingMode = "single_setted_id";
-    let singleConfig: any = null;
-    let userConfig: any = null;
-
     let configData: any = null;
 
     // 1. Try authenticated REST fetch with user token
@@ -487,47 +457,19 @@ async function startServer() {
           configData = docSnap.data();
         }
       } catch {
-        // Admin SDK not authenticated in preview container, fallback smoothly
+        // Admin SDK fallback
       }
     }
 
-    let gasWebUrl = configData?.gasWebUrl || req.body.gasWebUrl || process.env.GAS_WEB_URL;
-
-    if (configData) {
-      sendingMode = configData.mode || "single_setted_id";
-      singleConfig = configData.singleConfig || null;
-
-      if (sendingMode === "logged_in_user_id" && senderUserId && configData.userConfigs) {
-        userConfig = configData.userConfigs[senderUserId] || null;
-      }
+    let gasWebUrl = req.body.gasWebUrl?.trim();
+    if (!gasWebUrl && senderUserId && configData?.userGasConfigs?.[senderUserId]?.gasWebUrl) {
+      gasWebUrl = configData.userGasConfigs[senderUserId].gasWebUrl.trim();
     }
-
-    // Determine active SMTP configuration
-    let activeSmtpHost = process.env.SMTP_HOST;
-    let activeSmtpPort: number | string = Number(process.env.SMTP_PORT) || 587;
-    let activeSmtpUser = process.env.SMTP_USER;
-    let activeSmtpPass = process.env.SMTP_PASS;
-    let activeFromName = process.env.SMTP_FROM_NAME || "Sales Management Portal";
-    let activeSecure: any = Number(process.env.SMTP_PORT) === 465;
-    let selectedSource = "environment";
-
-    if (sendingMode === "logged_in_user_id" && userConfig && userConfig.smtpHost && userConfig.smtpUser && userConfig.smtpPass) {
-      activeSmtpHost = userConfig.smtpHost;
-      activeSmtpPort = userConfig.smtpPort || 587;
-      activeSmtpUser = userConfig.smtpUser;
-      activeSmtpPass = userConfig.smtpPass;
-      activeFromName = userConfig.fromName || activeSmtpUser;
-      activeSecure = userConfig.secure;
-      selectedSource = `user_credentials (${senderUserId})`;
-    } else if (singleConfig && singleConfig.smtpHost && singleConfig.smtpUser && singleConfig.smtpPass) {
-      activeSmtpHost = singleConfig.smtpHost;
-      activeSmtpPort = singleConfig.smtpPort || 587;
-      activeSmtpUser = singleConfig.smtpUser;
-      activeSmtpPass = singleConfig.smtpPass;
-      activeFromName = singleConfig.fromName || activeSmtpUser;
-      activeSecure = singleConfig.secure;
-      selectedSource = "single_setted_id";
+    if (!gasWebUrl) {
+      gasWebUrl = configData?.gasWebUrl?.trim() || process.env.GAS_WEB_URL;
     }
+    const fromName = req.body.fromName || senderUserName || "Sales Management Portal";
+    const senderEmail = req.body.senderEmail || "";
 
     const logId = `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const logTimestamp = new Date().toISOString();
@@ -550,13 +492,12 @@ async function startServer() {
         warning: warningMsg || null,
         senderUserId: senderUserId || null,
         senderUserName: senderUserName || null,
-        senderEmail: sendingMode === "google_apps_script" ? "Google Apps Script" : (activeSmtpUser || null),
+        senderEmail: senderEmail || "Google Apps Script Gateway",
       };
 
       try {
         await db.collection("email_sent_logs").doc(logId).set(logEntry);
       } catch (err) {
-        // If Admin SDK lacks service account write permissions, try with user token REST API
         if (idToken) {
           try {
             await writeFirestoreDocWithUserToken(`email_sent_logs/${logId}`, logEntry, idToken);
@@ -568,121 +509,61 @@ async function startServer() {
       return logEntry;
     };
 
-    // --- GOOGLE APPS SCRIPT MAIL SENDING ROUTE ---
-    if (sendingMode === "google_apps_script" || (gasWebUrl && (!activeSmtpHost || !activeSmtpUser || !activeSmtpPass))) {
-      if (!gasWebUrl) {
-        console.log(`[Email Google Apps Script] Mode: ${sendingMode}, but Web App URL is missing.`);
-        const logEntry = await saveLogToDb("Failed", "Google Apps Script Web App URL is not configured in settings.");
-        return res.status(400).json({ 
-          status: "error", 
-          message: "Google Apps Script Web App URL is not configured in settings. Please provide the Web App URL.", 
-          log: logEntry 
-        });
-      }
-
-      const gasPayload = {
-        to,
-        cc,
-        bcc,
-        subject,
-        text: htmlText,
-        html: htmlText,
-        htmlBody: htmlText,
-        plainText: plainText,
-        fromName: activeFromName || senderUserName || "Sales Management Portal",
-        senderUserId,
-        senderUserName,
-        category,
-        orderId,
-        invoiceNumber,
-        companyName,
-        clientName,
-      };
-
-      const result = await sendEmailViaGAS(gasWebUrl, gasPayload);
-
-      if (result.ok) {
-        const logEntry = await saveLogToDb("Sent");
-        return res.json({
-          status: "success",
-          deliveryStatus: "Sent",
-          sendingMode: "google_apps_script",
-          source: "google_apps_script_web_app",
-          senderEmail: "Google Apps Script",
-          log: logEntry,
-        });
-      } else {
-        const logEntry = await saveLogToDb("Failed", result.message);
-        return res.json({
-          status: "success",
-          deliveryStatus: "Failed",
-          simulated: true,
-          sendingMode: "google_apps_script",
-          source: "google_apps_script_web_app",
-          warning: `Google Apps Script notice: ${result.message}. Recorded in logs.`,
-          log: logEntry,
-        });
-      }
-    }
-
-    if (!activeSmtpHost || !activeSmtpUser || !activeSmtpPass) {
-      console.log(`[Email Simulation] Mode: ${sendingMode}, Source: ${selectedSource}, SenderUserId: ${senderUserId || 'N/A'}, To: ${to}, Subject: ${subject}`);
-      const logEntry = await saveLogToDb("Simulated", undefined, "SMTP credentials not configured (simulation mode)");
-      return res.json({ 
-        status: "success", 
-        deliveryStatus: "Simulated",
-        simulated: true, 
-        sendingMode,
-        source: selectedSource,
-        message: "Email simulated successfully (SMTP credentials not configured)",
-        log: logEntry
+    if (!gasWebUrl || !gasWebUrl.trim()) {
+      console.log(`[Email Dispatch] Google Apps Script Web App URL is missing. Cannot dispatch to ${to}`);
+      const logEntry = await saveLogToDb("Failed", "Google Apps Script Web App URL is not configured. Please enter the deployed Web App URL in Email Settings.");
+      return res.status(400).json({ 
+        status: "error", 
+        message: "Google Apps Script Web App URL is not configured. Please enter the deployed Web App URL in Email Settings.", 
+        log: logEntry 
       });
     }
 
-    try {
-      const transporter = createSmtpTransporter(
-        activeSmtpHost,
-        activeSmtpPort,
-        activeSmtpUser,
-        activeSmtpPass,
-        activeSecure
-      );
+    const gasPayload = {
+      to,
+      cc,
+      bcc,
+      subject,
+      text: htmlText,
+      html: htmlText,
+      htmlBody: htmlText,
+      plainText: plainText,
+      fromName: fromName,
+      senderUserId,
+      senderUserName,
+      category,
+      orderId,
+      invoiceNumber,
+      companyName,
+      clientName,
+    };
 
-      await transporter.sendMail({
-        from: `"${activeFromName}" <${activeSmtpUser}>`,
-        to,
-        ...(cc ? { cc } : {}),
-        ...(bcc ? { bcc } : {}),
-        subject,
-        text: plainText,
-        html: htmlText,
-      });
+    const result = await sendEmailViaGAS(gasWebUrl, gasPayload);
 
+    if (result.ok) {
       const logEntry = await saveLogToDb("Sent");
-      res.json({ 
-        status: "success", 
+      return res.json({
+        status: "success",
         deliveryStatus: "Sent",
-        sendingMode, 
-        source: selectedSource, 
-        senderEmail: activeSmtpUser,
-        log: logEntry
+        sendingMode: "google_apps_script",
+        source: "google_apps_script_web_app",
+        senderEmail: "Google Apps Script",
+        log: logEntry,
       });
-    } catch (error: any) {
-      console.error("Error sending email via SMTP, falling back to simulation:", error);
-      const logEntry = await saveLogToDb("Failed", error.message || "Unexpected SMTP error");
-      res.json({ 
-        status: "success", 
+    } else {
+      const logEntry = await saveLogToDb("Failed", result.message);
+      return res.status(400).json({
+        status: "error",
         deliveryStatus: "Failed",
-        simulated: true, 
-        sendingMode,
-        source: selectedSource,
-        warning: `SMTP error (${error.message || "Unexpected socket close"}), email recorded & simulated successfully.`,
-        log: logEntry
+        sendingMode: "google_apps_script",
+        source: "google_apps_script_web_app",
+        message: `Google Apps Script returned: ${result.message}`,
+        log: logEntry,
       });
     }
   });
 
-  // API route to test email configuration
+  // API route to test email configuration via Google Apps Script
   app.post("/api/test-email-config", async (req, res) => {
     // Verify Authentication to prevent unauthorized test email usage
     const authHeader = req.headers.authorization;
@@ -696,66 +577,54 @@ async function startServer() {
       return res.status(401).json({ status: "error", message: `Unauthorized: Invalid token: ${err.message}` });
     }
 
-    const { gasWebUrl, smtpHost, smtpPort, smtpUser, smtpPass, fromName, secure, testRecipient } = req.body;
+    let { gasWebUrl, fromName, testRecipient } = req.body;
 
     if (!testRecipient) {
       return res.status(400).json({ status: "error", message: "Missing recipient email address for testing" });
     }
 
-    if (gasWebUrl) {
-      const testPayload = {
-        to: testRecipient,
-        subject: "Google Apps Script Email Test - Sales Management Portal",
-        text: `Hello!\n\nThis is a test email confirming that your Google Apps Script Web App integration is working properly.\n\nSent at: ${new Date().toLocaleString()}`,
-        html: `<div style="font-family: sans-serif; padding: 20px; border: 1px solid #10b981; border-radius: 8px;">
-          <h2 style="color: #059669; margin-top: 0;">Google Apps Script Test Successful</h2>
-          <p>Your Google Apps Script Web App URL is active and sending emails successfully!</p>
-          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 15px 0;" />
-          <p style="font-size: 12px; color: #64748b;">Sent at: ${new Date().toLocaleString()}</p>
-        </div>`,
-        fromName: fromName || "Sales Management Portal",
-      };
-
-      const result = await sendEmailViaGAS(gasWebUrl, testPayload);
-
-      if (result.ok) {
-        return res.json({ status: "success", message: `Test email successfully sent to ${testRecipient} via Google Apps Script!` });
-      } else {
-        return res.status(400).json({ status: "error", message: result.message });
+    if (!gasWebUrl) {
+      // Try fetching from Firestore settings
+      try {
+        const docRef = db.collection("settings").doc("email_sending_config");
+        const docSnap = await docRef.get();
+        if (docSnap.exists) {
+          gasWebUrl = docSnap.data()?.gasWebUrl;
+        }
+      } catch {
+        // Fallback
+      }
+      if (!gasWebUrl) {
+        gasWebUrl = process.env.GAS_WEB_URL;
       }
     }
 
-    if (!smtpHost || !smtpUser || !smtpPass) {
-      return res.status(400).json({ status: "error", message: "Missing required SMTP details or Google Apps Script Web App URL" });
+    if (!gasWebUrl || !gasWebUrl.trim()) {
+      return res.status(400).json({ 
+        status: "error", 
+        message: "Google Apps Script Web App URL is required. Please provide the deployed URL in Email Settings." 
+      });
     }
 
-    try {
-      const transporter = createSmtpTransporter(
-        smtpHost,
-        smtpPort || 587,
-        smtpUser,
-        smtpPass,
-        secure
-      );
+    const testPayload = {
+      to: testRecipient,
+      subject: "Google Apps Script Email Test - Sales Management Portal",
+      text: `Hello!\n\nThis is a test email confirming that your Google Apps Script Web App integration is working properly.\n\nSent at: ${new Date().toLocaleString()}`,
+      html: `<div style="font-family: sans-serif; padding: 20px; border: 1px solid #10b981; border-radius: 8px;">
+        <h2 style="color: #059669; margin-top: 0;">Google Apps Script Test Successful</h2>
+        <p>Your Google Apps Script Web App URL is active and sending emails successfully without requiring SMTP email passwords!</p>
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 15px 0;" />
+        <p style="font-size: 12px; color: #64748b;">Sent at: ${new Date().toLocaleString()}</p>
+      </div>`,
+      fromName: fromName || "Sales Management Portal",
+    };
 
-      await transporter.verify();
+    const result = await sendEmailViaGAS(gasWebUrl, testPayload);
 
-      await transporter.sendMail({
-        from: `"${fromName || 'Sales Portal'}" <${smtpUser}>`,
-        to: testRecipient,
-        subject: "SMTP Configuration Test - Sales Management Portal",
-        text: `Hello!\n\nThis is a test email confirming that your SMTP email sending configuration for ${smtpUser} is configured and working properly.\n\nSent at: ${new Date().toLocaleString()}`,
-        html: `<div style="font-family: sans-serif; padding: 20px; border: 1px solid #e2e8f0; rounded: 8px;">
-          <h2 style="color: #059669; margin-top: 0;">SMTP Test Successful</h2>
-          <p>Your SMTP email configuration for <strong>${smtpUser}</strong> is verified and working correctly.</p>
-          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 15px 0;" />
-          <p style="font-size: 12px; color: #64748b;">Sent at: ${new Date().toLocaleString()}</p>
-        </div>`,
-      });
-
-      res.json({ status: "success", message: `Test email successfully sent to ${testRecipient}` });
-    } catch (error: any) {
-      res.status(500).json({ status: "error", message: error.message || "Failed to verify or send test email via SMTP" });
+    if (result.ok) {
+      return res.json({ status: "success", message: `Test email successfully sent to ${testRecipient} via Google Apps Script!` });
+    } else {
+      return res.status(400).json({ status: "error", message: result.message });
     }
   });
 

@@ -15,6 +15,7 @@ import {
 } from "../lib/firebaseService";
 import { auth } from "../firebase";
 import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
+import { dispatchSystemEmail } from "../lib/emailService";
 import { Plus, Search, Edit2, Trash2, ShieldAlert, Lock, Unlock, Filter, IndianRupee, Calendar, X, Check, HelpCircle, Building2, ShoppingCart, Percent, ShoppingBag, Upload, FileText, Loader2, Mail, FileSpreadsheet, Eye, Phone, User as UserIcon, RefreshCw, ChevronDown, Layers, TrendingUp, BarChart3, Clock, CheckCircle2, CalendarDays, ArrowUpDown } from "lucide-react";
 import InlineDeleteConfirm from "./InlineDeleteConfirm";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
@@ -1253,31 +1254,27 @@ export default function OrdersOffersView({
       const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
       const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-      const idToken = await auth.currentUser?.getIdToken();
       try {
-        const res = await fetch("/api/send-order-email", {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${idToken || ""}`
-          },
-          body: JSON.stringify({
-            to: dynamicTo,
-            cc: dynamicCc,
-            bcc: dynamicBcc,
-            subject: subject,
-            text: formattedHtml,
-            html: formattedHtml,
-            htmlBody: formattedHtml,
-            plainText: formattedText,
-            senderUserId: activeUser?.id,
-            category: "create_order",
-            companyName: newCompanyName,
-            clientName: newClientName
-          })
+        const emailResult = await dispatchSystemEmail({
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          subject: subject,
+          text: formattedHtml,
+          html: formattedHtml,
+          htmlBody: formattedHtml,
+          plainText: formattedText,
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          senderEmail: activeUser?.email,
+          fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+          replyTo: activeUser?.email,
+          category: "create_order",
+          companyName: newCompanyName,
+          clientName: newClientName,
         });
-        const resData = await res.json().catch(() => ({}));
-        const deliveryStatus: EmailDeliveryStatus = (res.ok && resData.deliveryStatus !== "Failed") ? "Sent" : "Failed";
+
+        const deliveryStatus: EmailDeliveryStatus = (emailResult.ok && emailResult.deliveryStatus !== "Failed") ? "Sent" : "Failed";
         initialEmailSummary = {
           to: dynamicTo,
           cc: dynamicCc,
@@ -1285,27 +1282,21 @@ export default function OrdersOffersView({
           status: deliveryStatus,
           timestamp: new Date().toISOString(),
           subject,
-          error: res.ok ? undefined : (resData.message || "Failed to send order email"),
+          error: emailResult.ok ? undefined : (emailResult.message || "Failed to send order email"),
           sentByUserName: activeUser?.name,
         };
-
-        await saveEmailSentLog({
-          id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          companyName: newCompanyName,
-          clientName: newClientName,
+      } catch (err: any) {
+        console.error("Email sending failed for new order:", err);
+        initialEmailSummary = {
           to: dynamicTo,
           cc: dynamicCc,
           bcc: dynamicBcc,
-          subject,
-          category: "create_order",
-          status: deliveryStatus,
+          status: "Failed",
           timestamp: new Date().toISOString(),
-          senderUserId: activeUser?.id,
-          senderUserName: activeUser?.name,
-          error: res.ok ? undefined : resData.message
-        });
-      } catch (err: any) {
-        console.error("Email sending failed for new order:", err);
+          subject,
+          error: err.message || "Email sending exception",
+          sentByUserName: activeUser?.name,
+        };
       }
     }
 
@@ -1631,32 +1622,28 @@ export default function OrdersOffersView({
       const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
       const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-      const idToken = await auth.currentUser?.getIdToken();
       try {
-        const res = await fetch("/api/send-order-email", {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${idToken || ""}`
-          },
-          body: JSON.stringify({
-            to: dynamicTo,
-            cc: dynamicCc,
-            bcc: dynamicBcc,
-            subject: subject,
-            text: formattedHtml,
-            html: formattedHtml,
-            htmlBody: formattedHtml,
-            plainText: formattedText,
-            senderUserId: activeUser?.id,
-            category: "edit_order",
-            orderId: editingOrder.id,
-            companyName: editCompanyName || editingOrder.companyName,
-            clientName: editClientName || editingOrder.clientName
-          })
+        const emailResult = await dispatchSystemEmail({
+          to: dynamicTo,
+          cc: dynamicCc,
+          bcc: dynamicBcc,
+          subject: subject,
+          text: formattedHtml,
+          html: formattedHtml,
+          htmlBody: formattedHtml,
+          plainText: formattedText,
+          senderUserId: activeUser?.id,
+          senderUserName: activeUser?.name,
+          senderEmail: activeUser?.email,
+          fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+          replyTo: activeUser?.email,
+          category: "edit_order",
+          orderId: editingOrder.id,
+          companyName: editCompanyName || editingOrder.companyName,
+          clientName: editClientName || editingOrder.clientName
         });
-        const resData = await res.json().catch(() => ({}));
-        const deliveryStatus: EmailDeliveryStatus = (res.ok && resData.deliveryStatus !== "Failed") ? "Sent" : "Failed";
+
+        const deliveryStatus: EmailDeliveryStatus = (emailResult.ok && emailResult.deliveryStatus !== "Failed") ? "Sent" : "Failed";
         const newSummary: EmailSentStatusSummary = {
           to: dynamicTo,
           cc: dynamicCc,
@@ -1664,7 +1651,7 @@ export default function OrdersOffersView({
           status: deliveryStatus,
           timestamp: new Date().toISOString(),
           subject,
-          error: res.ok ? undefined : (resData.message || "Failed to send order email"),
+          error: emailResult.ok ? undefined : (emailResult.message || "Failed to send order email"),
           sentByUserName: activeUser?.name,
         };
 
@@ -1680,23 +1667,6 @@ export default function OrdersOffersView({
           totalValue: computedTotal,
           items: finalItems,
           emailStatus: newSummary
-        });
-
-        await saveEmailSentLog({
-          id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          orderId: editingOrder.id,
-          companyName: editCompanyName || editingOrder.companyName,
-          clientName: editClientName || editingOrder.clientName,
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          subject,
-          category: "edit_order",
-          status: deliveryStatus,
-          timestamp: new Date().toISOString(),
-          senderUserId: activeUser?.id,
-          senderUserName: activeUser?.name,
-          error: res.ok ? undefined : resData.message
         });
       } catch (err: any) {
         console.error("Email sending failed for edit order:", err);
@@ -1899,33 +1869,27 @@ export default function OrdersOffersView({
       const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
       const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
 
-      const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch("/api/send-order-email", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${idToken || ""}`,
-        },
-        body: JSON.stringify({
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          subject,
-          text: formattedHtml,
-          html: formattedHtml,
-          htmlBody: formattedHtml,
-          plainText: formattedText,
-          senderUserId: activeUser?.id,
-          senderUserName: activeUser?.name,
-          category: "resend_order",
-          orderId: order.id,
-          companyName: order.companyName,
-          clientName: order.clientName,
-        }),
+      const emailResult = await dispatchSystemEmail({
+        to: dynamicTo,
+        cc: dynamicCc,
+        bcc: dynamicBcc,
+        subject,
+        text: formattedHtml,
+        html: formattedHtml,
+        htmlBody: formattedHtml,
+        plainText: formattedText,
+        senderUserId: activeUser?.id,
+        senderUserName: activeUser?.name,
+        senderEmail: activeUser?.email,
+        fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+        replyTo: activeUser?.email,
+        category: "resend_order",
+        orderId: order.id,
+        companyName: order.companyName,
+        clientName: order.clientName,
       });
 
-      const resData = await res.json().catch(() => ({}));
-      const deliveryStatus = resData.deliveryStatus || (res.ok ? "Sent" : "Failed");
+      const deliveryStatus = emailResult.deliveryStatus || (emailResult.ok ? "Sent" : "Failed");
       const newSummary: EmailSentStatusSummary = {
         to: dynamicTo,
         cc: dynamicCc,
@@ -1933,7 +1897,7 @@ export default function OrdersOffersView({
         status: deliveryStatus,
         timestamp: new Date().toISOString(),
         subject,
-        error: res.ok ? undefined : resData.message || "Sending failed",
+        error: emailResult.ok ? undefined : (emailResult.message || "Sending failed"),
         sentByUserName: activeUser?.name,
       };
 
@@ -1942,28 +1906,10 @@ export default function OrdersOffersView({
         emailStatus: newSummary,
       });
 
-      const logId = `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-      await saveEmailSentLog({
-        id: logId,
-        orderId: order.id,
-        companyName: order.companyName,
-        clientName: order.clientName,
-        to: dynamicTo,
-        cc: dynamicCc,
-        bcc: dynamicBcc,
-        subject,
-        category: "resend_order",
-        status: deliveryStatus,
-        timestamp: new Date().toISOString(),
-        senderUserId: activeUser?.id,
-        senderUserName: activeUser?.name,
-        error: res.ok ? undefined : resData.message,
-      });
-
-      if (res.ok) {
-        showEmailBanner("success", `Email successfully sent to ${dynamicTo}`);
+      if (emailResult.ok && deliveryStatus !== "Failed") {
+        showEmailBanner("success", `Email successfully sent to ${dynamicTo} via Google Apps Script`);
       } else {
-        showEmailBanner("error", `Failed to send email: ${resData.message || "Unknown error"}`);
+        showEmailBanner("error", `Failed to send email: ${emailResult.message || "Unknown error"}`);
       }
     } catch (err: any) {
       console.error("Resend error:", err);
