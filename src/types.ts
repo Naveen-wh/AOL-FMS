@@ -234,6 +234,9 @@ export interface ActionLog {
   targetId: string;
   targetName: string;
   details: string;
+  pastData?: any;
+  newData?: any;
+  deletedData?: any;
 }
 
 export interface TeamTabSettings {

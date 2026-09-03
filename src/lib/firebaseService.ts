@@ -366,6 +366,7 @@ export function subscribeCollection<T>(
 
 export async function saveTask(task: SalesTask): Promise<void> {
   try {
+    await cacheBeforeWrite("tasks", task.id, task);
     await setDoc(doc(db, "tasks", task.id), cleanUndefined(task));
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `tasks/${task.id}`);
@@ -374,6 +375,7 @@ export async function saveTask(task: SalesTask): Promise<void> {
 
 export async function deleteTaskDoc(taskId: string): Promise<void> {
   try {
+    await cacheBeforeDelete("tasks", taskId);
     await deleteDoc(doc(db, "tasks", taskId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `tasks/${taskId}`);
@@ -382,9 +384,42 @@ export async function deleteTaskDoc(taskId: string): Promise<void> {
 
 export async function saveWorkflow(workflow: ProjectWorkflow): Promise<void> {
   try {
+    await cacheBeforeWrite("workflows", workflow.id, workflow);
     await setDoc(doc(db, "workflows", workflow.id), cleanUndefined(workflow));
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `workflows/${workflow.id}`);
+  }
+}
+
+// In-memory caches to hold past, new, and deleted states for log mapping
+const lastFetchedStates: Record<string, any> = {};
+const lastNewStates: Record<string, any> = {};
+const lastDeletedStates: Record<string, any> = {};
+
+async function cacheBeforeWrite(colName: string, docId: string, newData?: any) {
+  try {
+    const snap = await getDoc(doc(db, colName, docId));
+    if (snap.exists()) {
+      lastFetchedStates[docId] = snap.data();
+    } else {
+      delete lastFetchedStates[docId];
+    }
+    if (newData) {
+      lastNewStates[docId] = newData;
+    }
+  } catch (err) {
+    console.warn(`[FirebaseService] Error caching state for ${colName}/${docId}:`, err);
+  }
+}
+
+async function cacheBeforeDelete(colName: string, docId: string) {
+  try {
+    const snap = await getDoc(doc(db, colName, docId));
+    if (snap.exists()) {
+      lastDeletedStates[docId] = snap.data();
+    }
+  } catch (err) {
+    console.warn(`[FirebaseService] Error caching state for deletion of ${colName}/${docId}:`, err);
   }
 }
 
@@ -412,6 +447,21 @@ export async function saveLog(log: ActionLog): Promise<void> {
   try {
     const enabled = await isAuditLogEnabled();
     if (enabled) {
+      const targetId = log.targetId;
+      if (targetId) {
+        if (lastFetchedStates[targetId] !== undefined) {
+          log.pastData = lastFetchedStates[targetId];
+          delete lastFetchedStates[targetId];
+        }
+        if (lastNewStates[targetId] !== undefined) {
+          log.newData = lastNewStates[targetId];
+          delete lastNewStates[targetId];
+        }
+        if (lastDeletedStates[targetId] !== undefined) {
+          log.deletedData = lastDeletedStates[targetId];
+          delete lastDeletedStates[targetId];
+        }
+      }
       await setDoc(doc(db, "logs", log.id), cleanUndefined(log));
     }
   } catch (err: any) {
@@ -440,6 +490,7 @@ export async function updateUserDetails(userId: string, updates: Partial<User>, 
       email: normId,
       updatedAt: new Date().toISOString()
     };
+    await cacheBeforeWrite("users", normId, { ...existingUser, ...updates });
     await setDoc(userRef, payload, { merge: true });
   } catch (err: any) {
     const msg = err?.message || String(err);
@@ -483,6 +534,7 @@ export async function saveTeamTabSettings(
 
 export async function saveClient(client: Client): Promise<void> {
   try {
+    await cacheBeforeWrite("clients", client.id, client);
     await setDoc(doc(db, "clients", client.id), cleanUndefined(client));
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `clients/${client.id}`);
@@ -491,6 +543,7 @@ export async function saveClient(client: Client): Promise<void> {
 
 export async function deleteClientDoc(clientId: string): Promise<void> {
   try {
+    await cacheBeforeDelete("clients", clientId);
     await deleteDoc(doc(db, "clients", clientId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `clients/${clientId}`);
@@ -499,6 +552,7 @@ export async function deleteClientDoc(clientId: string): Promise<void> {
 
 export async function saveTeam(team: Team): Promise<void> {
   try {
+    await cacheBeforeWrite("teams", team.id, team);
     await setDoc(doc(db, "teams", team.id), cleanUndefined(team));
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `teams/${team.id}`);
@@ -507,6 +561,7 @@ export async function saveTeam(team: Team): Promise<void> {
 
 export async function deleteTeamDoc(teamId: string): Promise<void> {
   try {
+    await cacheBeforeDelete("teams", teamId);
     await deleteDoc(doc(db, "teams", teamId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `teams/${teamId}`);
@@ -515,6 +570,7 @@ export async function deleteTeamDoc(teamId: string): Promise<void> {
 
 export async function saveProduct(product: Product): Promise<void> {
   try {
+    await cacheBeforeWrite("products", product.id, product);
     await setDoc(doc(db, "products", product.id), cleanUndefined(product));
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `products/${product.id}`);
@@ -523,6 +579,7 @@ export async function saveProduct(product: Product): Promise<void> {
 
 export async function deleteProductDoc(productId: string): Promise<void> {
   try {
+    await cacheBeforeDelete("products", productId);
     await deleteDoc(doc(db, "products", productId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `products/${productId}`);
@@ -531,6 +588,7 @@ export async function deleteProductDoc(productId: string): Promise<void> {
 
 export async function saveOrder(order: OrderOffer): Promise<void> {
   try {
+    await cacheBeforeWrite("orders", order.id, order);
     await setDoc(doc(db, "orders", order.id), cleanUndefined(order));
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `orders/${order.id}`);
@@ -539,6 +597,7 @@ export async function saveOrder(order: OrderOffer): Promise<void> {
 
 export async function deleteOrderDoc(orderId: string): Promise<void> {
   try {
+    await cacheBeforeDelete("orders", orderId);
     await deleteDoc(doc(db, "orders", orderId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `orders/${orderId}`);
@@ -774,6 +833,7 @@ export async function saveEmailSendingConfig(config: EmailSendingConfig): Promis
 
 export async function savePaymentDetails(paymentDetails: PaymentDetails): Promise<void> {
   try {
+    await cacheBeforeWrite("payment_details", paymentDetails.orderId, paymentDetails);
     await setDoc(doc(db, "payment_details", paymentDetails.orderId), cleanUndefined(paymentDetails), { merge: true });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `payment_details/${paymentDetails.orderId}`);
@@ -969,6 +1029,7 @@ export function subscribeBadDebtors(onUpdate: (data: BadDebtor[]) => void) {
 
 export async function saveBadDebtor(debtor: BadDebtor): Promise<void> {
   try {
+    await cacheBeforeWrite("bad_debtors", debtor.id, debtor);
     await setDoc(doc(db, "bad_debtors", debtor.id), cleanUndefined(debtor), { merge: true });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `bad_debtors/${debtor.id}`);
@@ -977,6 +1038,7 @@ export async function saveBadDebtor(debtor: BadDebtor): Promise<void> {
 
 export async function deleteBadDebtorDoc(id: string): Promise<void> {
   try {
+    await cacheBeforeDelete("bad_debtors", id);
     await deleteDoc(doc(db, "bad_debtors", id));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `bad_debtors/${id}`);

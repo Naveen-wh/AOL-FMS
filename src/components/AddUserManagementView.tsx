@@ -261,11 +261,11 @@ export default function AddUserManagementView({
         </div>
 
         {canAddUser ? (
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto shrink-0">
             <button
               type="button"
               onClick={() => setIsImportOpen(true)}
-              className="bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs px-4 py-2 rounded-lg flex items-center gap-2 transition-all shadow-md cursor-pointer"
+              className="bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer w-full sm:w-auto"
             >
               <FileSpreadsheet size={16} className="text-emerald-400" />
               <span>Import Users (Sheets / CSV)</span>
@@ -274,7 +274,7 @@ export default function AddUserManagementView({
             <button
               type="button"
               onClick={() => setShowAddForm(!showAddForm)}
-              className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2 rounded-lg flex items-center gap-2 transition-all shadow-md cursor-pointer"
+              className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer w-full sm:w-auto"
             >
               <UserPlus size={16} />
               {showAddForm ? "Hide Add Form" : "Add New User Details"}
@@ -494,9 +494,9 @@ export default function AddUserManagementView({
       )}
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 flex-1 min-w-[240px]">
-          <div className="relative flex-1">
+      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center gap-2 w-full md:flex-1 md:min-w-[240px]">
+          <div className="relative w-full">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
             <input
               type="text"
@@ -508,14 +508,14 @@ export default function AddUserManagementView({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap w-full md:w-auto justify-between md:justify-end">
           {/* Role Filter */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5 flex-1 md:flex-initial">
             <span className="text-[10px] font-bold text-slate-400 uppercase font-mono">Role:</span>
             <select
               value={selectedRoleFilter}
               onChange={(e) => setSelectedRoleFilter(e.target.value)}
-              className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-semibold focus:outline-none"
+              className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-800 font-semibold focus:outline-none w-full md:w-auto"
             >
               <option key="rf-all" value="ALL">All Roles</option>
               <option key="rf-adm" value={Role.Admin}>Admin</option>
@@ -527,12 +527,12 @@ export default function AddUserManagementView({
           </div>
 
           {/* Team Filter */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5 flex-1 md:flex-initial">
             <span className="text-[10px] font-bold text-slate-400 uppercase font-mono">Team:</span>
             <select
               value={selectedTeamFilter}
               onChange={(e) => setSelectedTeamFilter(e.target.value)}
-              className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-semibold focus:outline-none"
+              className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-800 font-semibold focus:outline-none w-full md:w-auto"
             >
               <option key="tf-all" value="ALL">All Teams</option>
               {uniqueTeams.map((t, idx) => (

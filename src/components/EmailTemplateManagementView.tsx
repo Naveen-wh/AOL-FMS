@@ -640,7 +640,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
   return (
     <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200">
       {/* Top Header & Sub-Tab Navigation */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5 border-b border-slate-100 pb-4">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5 border-b border-slate-100 pb-4">
         <div>
           <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
             <Mail className="text-indigo-600" size={22} /> Email Center & Notifications
@@ -651,11 +651,11 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5 bg-slate-100 p-1 rounded-xl w-full md:w-auto">
           <button
             type="button"
             onClick={() => setMainTab("templates")}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`flex items-center justify-center gap-1.5 px-3.5 py-2 sm:py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex-1 sm:flex-initial text-center ${
               mainTab === "templates"
                 ? "bg-white text-indigo-600 shadow-xs"
                 : "text-slate-600 hover:text-slate-900"
@@ -667,7 +667,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
             <button
               type="button"
               onClick={() => setMainTab("sending_settings")}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              className={`flex items-center justify-center gap-1.5 px-3.5 py-2 sm:py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex-1 sm:flex-initial text-center ${
                 mainTab === "sending_settings"
                   ? "bg-white text-indigo-600 shadow-xs"
                   : "text-slate-600 hover:text-slate-900"
@@ -696,7 +696,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
       {/* TAB 1: EMAIL TEMPLATES MANAGEMENT */}
       {mainTab === "templates" && (
         <div>
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="text-sm font-bold text-slate-800">Email Notification Templates</h3>
               <p className="text-xs text-slate-500">Configure email layout, subjects, dynamic placeholders, and auto-recipients</p>
@@ -715,7 +715,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                   setAssignedForm("any");
                   setActiveGroupFilter("all");
                 }}
-                className="flex items-center gap-1.5 bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm font-semibold hover:bg-indigo-700 cursor-pointer shadow-2xs transition-colors"
+                className="flex items-center justify-center gap-1.5 bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm font-semibold hover:bg-indigo-700 cursor-pointer shadow-2xs transition-colors w-full sm:w-auto shrink-0"
               >
                 <Plus size={16} /> Add Template
               </button>
@@ -852,7 +852,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                 />
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">To (Placeholders / Emails)</label>
                   <input
@@ -871,7 +871,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                     onChange={(e) => setCc(e.target.value)}
                   />
                 </div>
-                <div>
+                <div className="sm:col-span-2 lg:col-span-1">
                   <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">BCC</label>
                   <input
                     placeholder="e.g. {{managerEmail}}, archive@company.com"
@@ -883,8 +883,8 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Email Body (Rich Text)</label>
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                       <Sparkles size={11} /> Auto-Send Format: HTML View
@@ -903,7 +903,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                         assignedForm: assignedForm,
                       });
                     }}
-                    className="flex items-center gap-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs"
+                    className="flex items-center justify-center gap-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs w-full sm:w-auto"
                   >
                     <Eye size={13} /> Live Preview Draft
                   </button>
@@ -916,20 +916,20 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                 />
               </div>
 
-              <div className="flex items-center justify-between pt-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
                 <div className="flex items-center gap-2">
                   <input
                     type="checkbox"
                     checked={isDefault}
                     onChange={(e) => setIsDefault(e.target.checked)}
                     id="is-default-template"
-                    className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer"
+                    className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer shrink-0"
                   />
                   <label htmlFor="is-default-template" className="text-xs font-semibold text-slate-700 cursor-pointer">
                     Set as Default Template for this Form / Event
                   </label>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
                   <button
                     type="button"
                     onClick={() => {
@@ -943,21 +943,21 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                         assignedForm: assignedForm,
                       });
                     }}
-                    className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+                    className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 flex-1 sm:flex-initial"
                   >
                     <Eye size={14} /> Preview Email
                   </button>
                   <button
                     type="button"
                     onClick={resetTemplateForm}
-                    className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                    className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer flex-1 sm:flex-initial text-center"
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
                     onClick={handleSaveTemplate}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-2xs"
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-2xs flex-1 sm:flex-initial text-center"
                   >
                     Save Email Template
                   </button>
@@ -968,8 +968,8 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
 
           <div className="space-y-2">
             {templates.map(tmpl => (
-              <div key={tmpl.id} className="flex justify-between items-start p-3.5 border border-slate-200 rounded-xl bg-white shadow-2xs hover:border-indigo-200 transition-all">
-                <div className="flex-1">
+              <div key={tmpl.id} className="flex flex-col md:flex-row md:items-center justify-between p-3.5 border border-slate-200 rounded-xl bg-white shadow-2xs hover:border-indigo-200 transition-all gap-4">
+                <div className="flex-1 min-w-0">
                   <div className="font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
                     {tmpl.name}
                     {tmpl.isDefault && <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[9px] px-1.5 py-0.5 rounded-full font-semibold">Default</span>}
@@ -992,7 +992,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end border-t md:border-t-0 pt-3 md:pt-0 shrink-0">
                   <button
                     onClick={() => {
                       handleOpenLivePreview({
@@ -1005,14 +1005,14 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                         assignedForm: tmpl.assignedForm || "any",
                       });
                     }}
-                    className="flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                    className="flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex-1 md:flex-initial"
                     title="Live Preview Template with Sample Data"
                   >
                     <Eye size={13} /> Live Preview
                   </button>
 
                   {isAdmin && (
-                    <>
+                    <div className="flex items-center gap-1.5">
                       <button onClick={() => {
                         setEditingTemplate(tmpl);
                         setName(tmpl.name);
@@ -1043,7 +1043,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                           });
                         }}
                       />
-                    </>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1072,7 +1072,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
 
           {/* GOOGLE APPS SCRIPT CONFIGURATION PANEL */}
           <div className="bg-emerald-50/60 border border-emerald-200 rounded-2xl p-5 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-200 pb-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-emerald-200 pb-4">
               <div>
                 <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
                   <Code size={16} className="text-emerald-700" /> Google Apps Script Web App Deployment URL
@@ -1081,11 +1081,11 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                   Enter your deployed Google Apps Script Web App URL to dispatch emails automatically via your Google Workspace or Gmail account.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowGasGuideModal(true)}
-                  className="flex items-center gap-1.5 bg-white border border-emerald-300 text-emerald-800 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-emerald-100/50 cursor-pointer transition-colors shadow-2xs"
+                  className="flex items-center justify-center gap-1.5 bg-white border border-emerald-300 text-emerald-800 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-emerald-100/50 cursor-pointer transition-colors shadow-2xs w-full sm:w-auto text-center"
                 >
                   <FileText size={13} className="text-emerald-700" /> View Apps Script Code & Setup Steps
                 </button>
@@ -1093,7 +1093,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                   <button
                     type="button"
                     onClick={handleOpenTestModal}
-                    className="flex items-center gap-1.5 bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-emerald-800 cursor-pointer transition-colors shadow-2xs"
+                    className="flex items-center justify-center gap-1.5 bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-emerald-800 cursor-pointer transition-colors shadow-2xs w-full sm:w-auto text-center"
                   >
                     <Send size={13} /> Test Apps Script Email
                   </button>
@@ -1134,15 +1134,15 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
           </div>
 
           {/* PER-USER GOOGLE APPS SCRIPT WEB APP URLS (OPTION 1) */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="bg-indigo-100 text-indigo-800 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full">
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-6 shadow-xs space-y-5">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+              <div className="flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="bg-indigo-100 text-indigo-800 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full shrink-0">
                     Option 1 Enabled
                   </span>
                   <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Users size={18} className="text-indigo-600" /> Per-User Personal Web App URLs
+                    <Users size={18} className="text-indigo-600 shrink-0" /> Per-User Personal Web App URLs
                   </h3>
                 </div>
                 <p className="text-xs text-slate-500 mt-1">
@@ -1150,12 +1150,12 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 w-full lg:w-auto">
                 <button
                   type="button"
                   onClick={handleSaveAllUserGasUrls}
                   disabled={isSavingAllUsers}
-                  className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                  className="flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer disabled:opacity-50 w-full lg:w-auto"
                 >
                   {isSavingAllUsers ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save All User URLs
                 </button>
@@ -1163,9 +1163,9 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
             </div>
 
             {/* Filter & Summary Bar */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200/80">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200/80">
               {/* Search input */}
-              <div className="relative flex-1 max-w-sm">
+              <div className="relative w-full md:max-w-sm">
                 <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
                 <input
                   type="text"
@@ -1177,11 +1177,11 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
               </div>
 
               {/* Status Filter Buttons */}
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5 w-full md:w-auto">
                 <button
                   type="button"
                   onClick={() => setUserFilterStatus("all")}
-                  className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                  className={`px-2.5 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer flex-1 sm:flex-initial text-center ${
                     userFilterStatus === "all" ? "bg-indigo-600 text-white" : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
                   }`}
                 >
@@ -1190,7 +1190,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                 <button
                   type="button"
                   onClick={() => setUserFilterStatus("configured")}
-                  className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 ${
+                  className={`px-2.5 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 flex-1 sm:flex-initial text-center ${
                     userFilterStatus === "configured" ? "bg-emerald-600 text-white" : "bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
                   }`}
                 >
@@ -1199,7 +1199,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                 <button
                   type="button"
                   onClick={() => setUserFilterStatus("fallback")}
-                  className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 ${
+                  className={`px-2.5 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 flex-1 sm:flex-initial text-center ${
                     userFilterStatus === "fallback" ? "bg-amber-600 text-white" : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
                   }`}
                 >
@@ -1225,9 +1225,9 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                         : "bg-slate-50/70 border-slate-200 hover:border-slate-300"
                     }`}
                   >
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                    <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
                       {/* User Info */}
-                      <div className="flex items-center gap-3 min-w-[240px]">
+                      <div className="flex items-center gap-3 min-w-[240px] w-full xl:w-auto">
                         <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs overflow-hidden">
                           {u.avatarUrl ? (
                             <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
@@ -1235,31 +1235,31 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                             u.name.substring(0, 2).toUpperCase()
                           )}
                         </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-900 text-xs">{u.name}</span>
-                            <span className="text-[10px] font-semibold bg-slate-200/80 text-slate-700 px-1.5 py-0.5 rounded">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-slate-900 text-xs truncate max-w-[120px]">{u.name}</span>
+                            <span className="text-[10px] font-semibold bg-slate-200/80 text-slate-700 px-1.5 py-0.5 rounded shrink-0">
                               {u.role}
                             </span>
                             {hasPersonalGas ? (
-                              <span className="text-[9px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                              <span className="text-[9px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0">
                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Personal Web App Active
                               </span>
                             ) : (
-                              <span className="text-[9px] font-semibold bg-slate-100 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded-full">
+                              <span className="text-[9px] font-semibold bg-slate-100 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded-full shrink-0">
                                 Uses Company Default
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-slate-500 font-mono mt-0.5 flex items-center gap-2">
-                            <span>{u.email || "No email assigned"}</span>
-                            {u.teamName && <span className="text-slate-400">• {u.teamName}</span>}
+                          <div className="text-[11px] text-slate-500 font-mono mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 truncate">
+                            <span className="truncate max-w-[180px] sm:max-w-[240px]">{u.email || "No email assigned"}</span>
+                            {u.teamName && <span className="text-slate-400 font-sans text-[10px]">• {u.teamName}</span>}
                           </div>
                         </div>
                       </div>
 
                       {/* Gas URL Input & Actions */}
-                      <div className="flex-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                      <div className="flex-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full xl:w-auto">
                         <div className="relative flex-1">
                           <input
                             type="url"
@@ -1289,13 +1289,13 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                         </div>
 
                         {/* Action Buttons */}
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto justify-end">
                           {/* Save Button */}
                           <button
                             type="button"
                             onClick={() => handleSaveIndividualUserGasUrl(u)}
                             disabled={isSavingThis}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-2 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-2.5 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50 flex-1 sm:flex-initial"
                             title="Save this user's Google Apps Script URL"
                           >
                             {isSavingThis ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
@@ -1306,7 +1306,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                           <button
                             type="button"
                             onClick={() => handleOpenUserTestModal(u)}
-                            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs px-3 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1"
+                            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs px-3 py-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1 flex-1 sm:flex-initial"
                             title={`Send a test email using ${u.name}'s Google Apps Script gateway`}
                           >
                             <Send size={13} />
@@ -1317,7 +1317,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
                           <button
                             type="button"
                             onClick={() => handleCopyInstructionsForUser(u)}
-                            className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                            className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
                               isCopiedInstructions
                                 ? "bg-emerald-50 text-emerald-700 border-emerald-300"
                                 : "bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200"
@@ -1344,7 +1344,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
           </div>
 
           {/* Daily Email Limits & Abuse Control Panel */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-6">
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-4 sm:p-6 shadow-xs space-y-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
               <div>
                 <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
@@ -1357,7 +1357,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
               <button
                 onClick={handleSaveLimits}
                 disabled={isSavingLimits}
-                className="inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-medium text-xs px-4 py-2.5 rounded-lg transition-colors cursor-pointer"
+                className="inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold text-xs px-4 py-2.5 rounded-lg transition-colors cursor-pointer w-full md:w-auto shrink-0"
               >
                 {isSavingLimits ? (
                   <>
@@ -1371,7 +1371,7 @@ Please reply with your Web App URL so Admin can add it to your profile in the po
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
               {/* Event 1: Create Order & Offer */}
               <div className="bg-slate-50/50 border border-slate-100 rounded-xl p-4 space-y-3 flex flex-col justify-between">
                 <div className="space-y-3">

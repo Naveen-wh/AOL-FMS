@@ -2365,47 +2365,49 @@ export default function OrdersOffersView({
       </div>
 
       {/* Date Range Filter Bar */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         {/* Date Field Type Selector + Custom Date Inputs */}
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1.5 text-xs text-slate-700 font-bold font-mono">
-            <Calendar size={14} className="text-indigo-600" />
-            <span>FILTER DATE BY:</span>
-          </div>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full lg:w-auto">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5 text-xs text-slate-700 font-bold font-mono">
+              <Calendar size={14} className="text-indigo-600" />
+              <span>FILTER DATE BY:</span>
+            </div>
 
-          {/* Date Type Toggle: Create Date vs Invoice Date */}
-          <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200">
-            <button
-              type="button"
-              onClick={() => {
-                setDateFilterType("createdAt");
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
-                dateFilterType === "createdAt"
-                  ? "bg-white text-indigo-700 shadow-xs border border-slate-200"
-                  : "text-slate-500 hover:text-slate-800"
-              }`}
-            >
-              Create Date
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setDateFilterType("invoiceDate");
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
-                dateFilterType === "invoiceDate"
-                  ? "bg-white text-indigo-700 shadow-xs border border-slate-200"
-                  : "text-slate-500 hover:text-slate-800"
-              }`}
-            >
-              Invoice Date
-            </button>
+            {/* Date Type Toggle: Create Date vs Invoice Date */}
+            <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+              <button
+                type="button"
+                onClick={() => {
+                  setDateFilterType("createdAt");
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  dateFilterType === "createdAt"
+                    ? "bg-white text-indigo-700 shadow-xs border border-slate-200"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Create Date
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDateFilterType("invoiceDate");
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  dateFilterType === "invoiceDate"
+                    ? "bg-white text-indigo-700 shadow-xs border border-slate-200"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Invoice Date
+              </button>
+            </div>
           </div>
 
           {/* Date Pickers */}
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+            <div className="flex items-center justify-between sm:justify-start gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 flex-1 sm:flex-initial">
               <span className="text-[10px] font-bold text-slate-400 font-mono uppercase">From</span>
               <input
                 type="date"
@@ -2414,11 +2416,11 @@ export default function OrdersOffersView({
                   setStartDate(e.target.value);
                   setActiveDatePreset("Custom");
                 }}
-                className="text-xs text-slate-700 font-mono bg-transparent outline-none cursor-pointer"
+                className="text-xs text-slate-700 font-mono bg-transparent outline-none cursor-pointer text-right sm:text-left"
               />
             </div>
-            <span className="text-slate-300 font-bold font-mono text-xs">to</span>
-            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
+            <span className="text-slate-300 font-bold font-mono text-xs text-center">to</span>
+            <div className="flex items-center justify-between sm:justify-start gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 flex-1 sm:flex-initial">
               <span className="text-[10px] font-bold text-slate-400 font-mono uppercase">To</span>
               <input
                 type="date"
@@ -2427,41 +2429,43 @@ export default function OrdersOffersView({
                   setEndDate(e.target.value);
                   setActiveDatePreset("Custom");
                 }}
-                className="text-xs text-slate-700 font-mono bg-transparent outline-none cursor-pointer"
+                className="text-xs text-slate-700 font-mono bg-transparent outline-none cursor-pointer text-right sm:text-left"
               />
             </div>
           </div>
         </div>
 
         {/* Presets & Reset */}
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5 w-full lg:w-auto justify-start lg:justify-end">
           <span className="text-[10px] font-bold text-slate-400 font-mono uppercase mr-1">Presets:</span>
-          {["All Time", "Today", "This Week", "This Month", "Last Month", "This FY"].map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              onClick={() => applyDatePreset(preset)}
-              className={`px-2.5 py-1 rounded-lg text-xs font-semibold font-mono transition-all cursor-pointer ${
-                activeDatePreset === preset
-                  ? "bg-indigo-600 text-white shadow-xs"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200/60"
-              }`}
-            >
-              {preset}
-            </button>
-          ))}
+          <div className="flex flex-wrap items-center gap-1.5 flex-1 sm:flex-initial">
+            {["All Time", "Today", "This Week", "This Month", "Last Month", "This FY"].map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => applyDatePreset(preset)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold font-mono transition-all cursor-pointer flex-1 sm:flex-initial text-center ${
+                  activeDatePreset === preset
+                    ? "bg-indigo-600 text-white shadow-xs"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200/60"
+                }`}
+              >
+                {preset}
+              </button>
+            ))}
 
-          {(startDate || endDate || activeDatePreset !== "All Time") && (
-            <button
-              type="button"
-              onClick={clearDateFilter}
-              className="px-2.5 py-1 rounded-lg text-xs font-semibold font-mono text-rose-600 hover:bg-rose-50 border border-rose-200 flex items-center gap-1 transition-all ml-1 cursor-pointer"
-              title="Clear date filter"
-            >
-              <X size={12} />
-              Reset
-            </button>
-          )}
+            {(startDate || endDate || activeDatePreset !== "All Time") && (
+              <button
+                type="button"
+                onClick={clearDateFilter}
+                className="px-2.5 py-1 rounded-lg text-xs font-semibold font-mono text-rose-600 hover:bg-rose-50 border border-rose-200 flex items-center justify-center gap-1 transition-all ml-1 cursor-pointer flex-1 sm:flex-initial"
+                title="Clear date filter"
+              >
+                <X size={12} />
+                Reset
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

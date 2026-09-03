@@ -131,7 +131,16 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
     const receivedAmt = pDet ? pDet.amountReceived : 0;
     const pendingAmt = pDet ? pDet.pendingAmount : Math.max(0, totalAmt - receivedAmt);
     const actualDispatchDate = getOrderActualDispatchDate(o);
-    const dueInfo = calculateDueDate(actualDispatchDate, o.payment);
+    const dueInfo = o.isBadDebtor && o.badDebtorRecord
+      ? {
+          dueDateFormatted: formatDate(o.badDebtorRecord.dueDate),
+          dueDateObj: o.badDebtorRecord.dueDate ? new Date(o.badDebtorRecord.dueDate) : null,
+          daysRemaining: -(o.badDebtorRecord.overdueDays || 0),
+          isOverdue: (o.badDebtorRecord.overdueDays || 0) > 0,
+          statusLabel: (o.badDebtorRecord.overdueDays || 0) > 0 ? `Overdue by ${o.badDebtorRecord.overdueDays} days` : "Due Today/Soon",
+          paymentDaysCount: 0,
+        }
+      : calculateDueDate(actualDispatchDate, o.payment);
     const invNum = o.billingDetails?.invoiceNumber || "N/A";
     const poNum = o.closedWonDetails?.customerPoNumber || "N/A";
     const dispDate = actualDispatchDate ? formatDate(actualDispatchDate) : "N/A";
@@ -1805,10 +1814,19 @@ export default function PaymentListView({
       for (let i = 0; i < selectedList.length; i++) {
         const order = selectedList[i];
         const actualDispatchDate = getOrderActualDispatchDate(order);
-        const dueInfo = calculateDueDate(
-          actualDispatchDate,
-          order.payment
-        );
+        const dueInfo = order.isBadDebtor && order.badDebtorRecord
+          ? {
+              dueDateFormatted: formatDate(order.badDebtorRecord.dueDate),
+              dueDateObj: order.badDebtorRecord.dueDate ? new Date(order.badDebtorRecord.dueDate) : null,
+              daysRemaining: -(order.badDebtorRecord.overdueDays || 0),
+              isOverdue: (order.badDebtorRecord.overdueDays || 0) > 0,
+              statusLabel: (order.badDebtorRecord.overdueDays || 0) > 0 ? `Overdue by ${order.badDebtorRecord.overdueDays} days` : "Due Today/Soon",
+              paymentDaysCount: 0,
+            }
+          : calculateDueDate(
+              actualDispatchDate,
+              order.payment
+            );
 
         const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
         const totalAmt = getOrderTotalInvoiceAmount(order);
@@ -2676,7 +2694,16 @@ export default function PaymentListView({
                                           const rec = pDet ? pDet.amountReceived : 0;
                                           const pend = pDet ? pDet.pendingAmount : Math.max(0, tot - rec);
                                           const actualDispatchDate = getOrderActualDispatchDate(o);
-                                          const due = calculateDueDate(actualDispatchDate, o.payment);
+                                          const due = o.isBadDebtor && o.badDebtorRecord
+                                            ? {
+                                                dueDateFormatted: formatDate(o.badDebtorRecord.dueDate),
+                                                dueDateObj: o.badDebtorRecord.dueDate ? new Date(o.badDebtorRecord.dueDate) : null,
+                                                daysRemaining: -(o.badDebtorRecord.overdueDays || 0),
+                                                isOverdue: (o.badDebtorRecord.overdueDays || 0) > 0,
+                                                statusLabel: (o.badDebtorRecord.overdueDays || 0) > 0 ? `Overdue by ${o.badDebtorRecord.overdueDays} days` : "Due Today/Soon",
+                                                paymentDaysCount: 0,
+                                              }
+                                            : calculateDueDate(actualDispatchDate, o.payment);
 
                                           return (
                                             <tr key={o.id} className="hover:bg-slate-50">
@@ -2947,17 +2974,20 @@ export default function PaymentListView({
               <div className="overflow-x-auto scrollbar-thin">
                 <table className="w-full text-left text-xs min-w-[1100px]">
                   <thead>
-                    <tr className="bg-slate-50 text-slate-600 font-mono font-bold text-[10px] uppercase border-b border-slate-200/85">
-                      <th className="p-3.5">Company & Client Contact</th>
-                      <th className="p-3.5">Sales Person</th>
-                      <th className="p-3.5">Customer PO #</th>
-                      <th className="p-3.5">Invoice # & Date</th>
-                      <th className="p-3.5 text-right">Invoice / Order Amount</th>
-                      <th className="p-3.5 text-right">Received / Pending</th>
-                      <th className="p-3.5">Due Date</th>
-                      <th className="p-3.5 text-center">Overdue Days</th>
-                      <th className="p-3.5">Status & Remarks</th>
-                      <th className="p-3.5 text-center">Actions</th>
+                    <tr className="bg-slate-50 border-b border-slate-200 font-mono font-bold text-slate-500 uppercase tracking-wider text-[10px]">
+                      <th className="p-4 w-12 text-center"></th>
+                      <th className="p-4">Client / Company</th>
+                      <th className="p-4">Sales Person</th>
+                      <th className="p-4">Invoice # & PO</th>
+                      <th className="p-4 text-right">Order Amount</th>
+                      <th className="p-4 text-right">Amount Received</th>
+                      <th className="p-4 text-right">Pending Amount</th>
+                      <th className="p-4">Invoice Date</th>
+                      <th className="p-4">Payment Terms / Days</th>
+                      <th className="p-4">Due Date</th>
+                      <th className="p-4 text-center">Overdue Days</th>
+                      <th className="p-4">Status & Remarks</th>
+                      <th className="p-4 text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700 font-sans">
@@ -2968,55 +2998,82 @@ export default function PaymentListView({
 
                       return (
                         <tr key={bd.id} className="hover:bg-slate-50/80 transition-colors">
-                          <td className="p-3.5">
-                            <div className="font-extrabold text-slate-900 text-xs">{bd.companyName}</div>
-                            {bd.clientName && (
-                              <div className="text-[11px] text-slate-600 flex items-center gap-1 mt-0.5">
-                                <User2 size={11} className="text-slate-400 shrink-0" />
-                                <span>{bd.clientName}</span>
+                          <td className="p-4 text-center w-12 text-slate-300">-</td>
+                          <td className="p-4">
+                            <div className="flex items-center gap-2">
+                              <div className="p-1.5 bg-rose-50 text-rose-700 rounded-lg shrink-0">
+                                <Building2 size={15} />
                               </div>
-                            )}
+                              <div>
+                                <p className="font-bold text-slate-900">{bd.companyName}</p>
+                                {bd.clientName && (
+                                  <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+                                    <User2 size={11} className="text-slate-400 shrink-0" />
+                                    <span>{bd.clientName}</span>
+                                  </p>
+                                )}
+                              </div>
+                            </div>
                             {bd.email && (
-                              <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
+                              <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1 mt-1 ml-8">
                                 <Mail size={10} className="shrink-0" />
                                 <span>{bd.email}</span>
                               </div>
                             )}
                           </td>
-                          <td className="p-3.5 font-medium text-slate-800">
-                            <div className="flex items-center gap-1.5 text-xs font-semibold">
-                              <User2 size={12} className="text-slate-400 shrink-0" />
-                              <span>{getAssignedUserName(bd.assignedToUserId)}</span>
+                          <td className="p-4">
+                            <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+                              <User2 size={12} className="text-rose-600 shrink-0" />
+                              <span className="text-[11px] font-semibold text-slate-800 font-sans truncate max-w-[130px]" title={getAssignedUserName(bd.assignedToUserId)}>
+                                {getAssignedUserName(bd.assignedToUserId)}
+                              </span>
                             </div>
                           </td>
-                          <td className="p-3.5 font-mono text-slate-700 font-medium">
-                            {bd.customerPo || <span className="text-slate-400 italic">N/A</span>}
+                          <td className="p-4 font-mono">
+                            <span className="inline-flex items-center gap-1 bg-rose-50 text-rose-800 font-bold text-[10px] px-2 py-0.5 rounded border border-rose-150">
+                              <AlertTriangle size={10} className="shrink-0 text-rose-600" />
+                              {bd.invoiceNumber || "N/A"}
+                            </span>
+                            <span className="block text-[10px] text-slate-500 font-semibold mt-1">
+                              PO: {bd.customerPo || "N/A"}
+                            </span>
                           </td>
-                          <td className="p-3.5 font-mono">
-                            <div className="font-bold text-slate-900">{bd.invoiceNumber}</div>
-                            <div className="text-[10px] text-slate-500">{formatDate(bd.invoiceDate)}</div>
-                          </td>
-                          <td className="p-3.5 text-right font-mono font-black text-slate-900 text-sm">
+                          <td className="p-4 text-right font-mono font-extrabold text-slate-900">
                             ₹{formatIndianNumber(bd.invoiceAmount || bd.orderAmount || 0)}
                           </td>
-                          <td className="p-3.5 text-right font-mono">
-                            <div className="text-xs font-bold text-emerald-700">
-                              ₹{formatIndianNumber(totalReceived)} Rec'd
-                            </div>
-                            <div className={`text-[10px] font-bold ${pendingAmt > 0 ? "text-rose-600" : "text-slate-400"}`}>
-                              ₹{formatIndianNumber(pendingAmt)} Pending
-                            </div>
+                          <td className="p-4 text-right font-mono font-bold text-emerald-700">
+                            ₹{formatIndianNumber(totalReceived)}
                           </td>
-                          <td className="p-3.5 font-mono text-slate-700 font-medium">
-                            {formatDate(bd.dueDate)}
+                          <td className="p-4 text-right font-mono font-bold text-rose-600">
+                            ₹{formatIndianNumber(pendingAmt)}
                           </td>
-                          <td className="p-3.5 text-center font-mono">
-                            <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-rose-200">
-                              <Clock size={10} />
+                          <td className="p-4 font-mono text-[11px]">
+                            {bd.invoiceDate ? (
+                              <div className="flex items-center gap-1 text-slate-700 font-semibold">
+                                <Calendar size={12} className="text-slate-400 shrink-0" />
+                                {formatDate(bd.invoiceDate)}
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 italic text-[10px]">N/A</span>
+                            )}
+                          </td>
+                          <td className="p-4 font-mono text-[11px]">
+                            <span className="font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                              Manual (Bad Debt)
+                            </span>
+                          </td>
+                          <td className="p-4 font-mono">
+                            <span className="font-black text-xs text-rose-600 block">
+                              {formatDate(bd.dueDate)}
+                            </span>
+                          </td>
+                          <td className="p-4 text-center">
+                            <span className="inline-flex items-center gap-1 bg-rose-50 text-rose-700 text-[10px] font-mono font-bold px-2.5 py-1 rounded-full border border-rose-200">
+                              <AlertTriangle size={11} />
                               {bd.overdueDays} Days
                             </span>
                           </td>
-                          <td className="p-3.5">
+                          <td className="p-4">
                             <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-extrabold font-mono uppercase mb-1 ${
                               displayStatus === "Written Off"
                                 ? "bg-slate-100 text-slate-700 border border-slate-200"
@@ -3034,7 +3091,7 @@ export default function PaymentListView({
                               <p className="text-[11px] text-slate-500 line-clamp-1 italic">{bd.comments}</p>
                             )}
                           </td>
-                          <td className="p-3.5 text-center">
+                          <td className="p-4 text-center">
                             <div className="flex items-center justify-center gap-1">
                               {/* Manage Payment Receipts Button */}
                               <button
@@ -3441,7 +3498,16 @@ export default function PaymentListView({
                                           const rec = pDet ? pDet.amountReceived : 0;
                                           const pend = pDet ? pDet.pendingAmount : Math.max(0, tot - rec);
                                           const actualDispatchDate = getOrderActualDispatchDate(o);
-                                          const due = calculateDueDate(actualDispatchDate, o.payment);
+                                          const due = o.isBadDebtor && o.badDebtorRecord
+                                            ? {
+                                                dueDateFormatted: formatDate(o.badDebtorRecord.dueDate),
+                                                dueDateObj: o.badDebtorRecord.dueDate ? new Date(o.badDebtorRecord.dueDate) : null,
+                                                daysRemaining: -(o.badDebtorRecord.overdueDays || 0),
+                                                isOverdue: (o.badDebtorRecord.overdueDays || 0) > 0,
+                                                statusLabel: (o.badDebtorRecord.overdueDays || 0) > 0 ? `Overdue by ${o.badDebtorRecord.overdueDays} days` : "Due Today/Soon",
+                                                paymentDaysCount: 0,
+                                              }
+                                            : calculateDueDate(actualDispatchDate, o.payment);
 
                                           return (
                                             <tr key={o.id} className="hover:bg-slate-50">
@@ -3895,7 +3961,21 @@ export default function PaymentListView({
                       const isSelected = !!selectedOrderIds[order.id];
                       const dispatchDateStr = getOrderActualDispatchDate(order);
                       const paymentTermsStr = order.payment;
-                      const dueInfo = calculateDueDate(dispatchDateStr, paymentTermsStr);
+                      let dueInfo;
+                      if (order.isBadDebtor && order.badDebtorRecord) {
+                        const bd = order.badDebtorRecord;
+                        const overdueDaysCount = parseInt(bd.overdueDays || "0", 10);
+                        dueInfo = {
+                          dueDateFormatted: formatDate(bd.dueDate),
+                          dueDateObj: bd.dueDate ? new Date(bd.dueDate) : null,
+                          daysRemaining: -overdueDaysCount,
+                          isOverdue: overdueDaysCount > 0,
+                          statusLabel: overdueDaysCount > 0 ? `${overdueDaysCount} Days Overdue` : "Due Today/Soon",
+                          paymentDaysCount: 0,
+                        };
+                      } else {
+                        dueInfo = calculateDueDate(dispatchDateStr, paymentTermsStr);
+                      }
 
                       const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
                       const totalAmt = getOrderTotalInvoiceAmount(order);
@@ -3952,8 +4032,12 @@ export default function PaymentListView({
 
                           {/* Invoice & PO */}
                           <td className="p-4 font-mono">
-                            <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 font-bold text-[10px] px-2 py-0.5 rounded border border-emerald-150">
-                              <Check size={10} className="stroke-[3]" />
+                            <span className={`inline-flex items-center gap-1 font-bold text-[10px] px-2 py-0.5 rounded border ${
+                              order.isBadDebtor
+                                ? "bg-rose-50 text-rose-800 border-rose-150"
+                                : "bg-emerald-50 text-emerald-800 border-emerald-150"
+                            }`}>
+                              {order.isBadDebtor ? <AlertTriangle size={10} className="shrink-0 text-rose-600" /> : <Check size={10} className="stroke-[3]" />}
                               {order.billingDetails?.invoiceNumber}
                             </span>
                             <span className="block text-[10px] text-slate-500 font-semibold mt-1">
@@ -3990,13 +4074,21 @@ export default function PaymentListView({
 
                           {/* Payment Terms / Days */}
                           <td className="p-4 font-mono text-[11px]">
-                            <span className="font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                              {paymentTermsStr || "30 Days"}
-                            </span>
-                            {dueInfo.paymentDaysCount > 0 && (
-                              <span className="block text-[9px] text-slate-400 mt-0.5">
-                                ({dueInfo.paymentDaysCount} days credit)
+                            {order.isBadDebtor ? (
+                              <span className="font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                                Manual (Bad Debt)
                               </span>
+                            ) : (
+                              <>
+                                <span className="font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                  {paymentTermsStr || "30 Days"}
+                                </span>
+                                {dueInfo.paymentDaysCount > 0 && (
+                                  <span className="block text-[9px] text-slate-400 mt-0.5">
+                                    ({dueInfo.paymentDaysCount} days credit)
+                                  </span>
+                                )}
+                              </>
                             )}
                           </td>
 

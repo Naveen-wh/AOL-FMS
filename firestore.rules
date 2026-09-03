@@ -1,23 +1,386 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // =========================================================================
-    // DEVELOPMENT MODE SECURITY RULES
-    // =========================================================================
-    // NOTE FOR PRODUCTION DEPLOYMENT:
-    // These rules allow open read/write access for authenticated users during
-    // development and testing. Before launching to production, revert to strict
-    // schema-validated and role-restricted rules.
-    // =========================================================================
 
+    // ==========================================
+    // 1. GLOBAL SAFETY NET (DEFAULT-DENY)
+    // ==========================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ==========================================
+    // 2. REUSABLE SECURITY UTILITIES & HELPER FUNCTIONS
+    // ==========================================
+    
+    // Checks if user is authenticated with Firebase
     function isSignedIn() {
       return request.auth != null;
     }
 
-    // Allow read and write access for development (authenticated or open dev environment)
-    match /{document=**} {
-      allow read, write: if isSignedIn() || true;
+    // Verifies that the user has a verified email address from the identity provider
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Verifies if the authenticated user is the designated production root admin
+    function isAdmin() {
+      return isVerified() && request.auth.token.email.lower() == "gcp@aromaorganic.in";
+    }
+
+    // Helper to get incoming request payload data
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // Helper to get existing document data from Firestore
+    function existing() {
+      return resource.data;
+    }
+
+    // Validates that alphanumeric/hyphen ID string lengths are safe to prevent Denial of Wallet
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Preapproved developers and administrators who can auto-provision profiles on first sign-in
+    function isPreapprovedAdmin(email) {
+      return email == "gcp@aromaorganic.in" || email == "naveen@chsurya.in" || email == "velu@aromaorganic.in" || email == "whirlpoolveen@gmail.com";
+    }
+
+    // ==========================================
+    // 3. STANDALONE ENTITY SCHEMA VALIDATORS
+    // ==========================================
+
+    function isValidUser(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.role is string && data.role.size() <= 64
+        && data.accessLevel is string && data.accessLevel.size() <= 64
+        && data.email is string && data.email.size() <= 128
+        && data.teamName is string && data.teamName.size() <= 128
+        && data.targetQuota is number;
+    }
+
+    function isValidSalesLead(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.clientName is string && data.clientName.size() <= 128
+        && data.companyName is string && data.companyName.size() <= 128
+        && data.email is string && data.email.size() <= 128
+        && data.phone is string && data.phone.size() <= 32
+        && data.status is string && data.status.size() <= 64
+        && data.value is number;
+    }
+
+    function isValidWorkflow(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.description is string && data.description.size() <= 1000
+        && data.status is string && data.status.size() <= 64;
+    }
+
+    function isValidProduct(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 256
+        && data.category is string && data.category.size() <= 128
+        && data.group is string && data.group.size() <= 128;
+    }
+
+    function isValidSalesTask(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() <= 256
+        && data.status is string && data.status.size() <= 64;
+    }
+
+    function isValidActionLog(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128
+        && data.actionType is string && data.actionType.size() <= 64;
+    }
+
+    function isValidEmailSentLog(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.to is string && data.to.size() <= 512
+        && data.subject is string && data.subject.size() <= 512;
+    }
+
+    function isValidTeamTabSettings(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.teamName is string && data.teamName.size() <= 128;
+    }
+
+    function isValidClient(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.fullName is string && data.fullName.size() <= 128
+        && data.companyName is string && data.companyName.size() <= 128
+        && data.email is string && data.email.size() <= 128;
+    }
+
+    function isValidTeam(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128;
+    }
+
+    function isValidOrderOffer(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.clientName is string && data.clientName.size() <= 128
+        && data.companyName is string && data.companyName.size() <= 128
+        && data.email is string && data.email.size() <= 128;
+    }
+
+    function isValidPaymentBank(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.bankName is string && data.bankName.size() <= 256
+        && data.accountNumber is string && data.accountNumber.size() <= 64;
+    }
+
+    function isValidPaymentDetails(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.orderId is string && data.orderId.size() <= 128
+        && data.amountReceived is number;
+    }
+
+    function isValidPaymentReceiptRecord(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.orderId is string && data.orderId.size() <= 128
+        && data.amount is number;
+    }
+
+    function isValidBadDebtor(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.companyName is string && data.companyName.size() <= 256
+        && data.invoiceNumber is string && data.invoiceNumber.size() <= 128;
+    }
+
+    function isValidFAQItem(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.question is string && data.question.size() <= 1000
+        && data.answer is string && data.answer.size() <= 10000;
+    }
+
+    function isValidBugRequest(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() <= 256
+        && data.description is string && data.description.size() <= 10000;
+    }
+
+    function isValidMasterItem(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 256;
+    }
+
+    function isValidEmailTemplate(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.subject is string && data.subject.size() <= 256
+        && data.body is string && data.body.size() <= 10000;
+    }
+
+    // ==========================================
+    // 4. COLLECTION ACCESS CONTROL RULES
+    // ==========================================
+
+    // Users & Profiles: Lowercase email ID format
+    match /users/{userId} {
+      allow read: if isVerified();
+      allow create: if isVerified() && isValidUser(incoming()) && (
+        isAdmin() || (
+          userId == request.auth.token.email.lower() && (
+            isPreapprovedAdmin(userId) || (
+              incoming().role == "User" && incoming().accessLevel == "Editor"
+            )
+          )
+        )
+      );
+      allow update: if isVerified() && isValidUser(incoming()) && (
+        isAdmin() || (
+          userId == request.auth.token.email.lower() && 
+          (!incoming().diff(existing()).affectedKeys().hasAny(['role', 'accessLevel']))
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Sales Leads and Opportunities
+    match /leads/{leadId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidSalesLead(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Workflows Pipelines
+    match /workflows/{workflowId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidWorkflow(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Product Catalogs
+    match /products/{productId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidProduct(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Sales Tasks
+    match /tasks/{taskId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidSalesTask(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Audit Trail Log: Write-Once system logs
+    match /logs/{logId} {
+      allow read: if isVerified();
+      allow create: if isVerified() && isValidActionLog(incoming());
+      allow update, delete: if isAdmin();
+    }
+
+    // Sent Email Tracking Records: Write-Once logging records
+    match /email_sent_logs/{logId} {
+      allow read: if isVerified();
+      allow create: if isVerified() && isValidEmailSentLog(incoming());
+      allow update, delete: if isAdmin();
+    }
+
+    // Team Tab Settings
+    match /tabSettings/{settingId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidTeamTabSettings(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Clients Directory
+    match /clients/{clientId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidClient(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Teams & Departments
+    match /teams/{teamId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidTeam(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Orders and Quotations
+    match /orders/{orderId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidOrderOffer(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Corporate Bank Accounts
+    match /payment_banks/{bankId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidPaymentBank(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Payment Reconciliations
+    match /payment_details/{detailId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidPaymentDetails(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Individual Payment Receipt History
+    match /payment_records/{recordId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidPaymentReceiptRecord(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Bad Debtors Deferves
+    match /bad_debtors/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidBadDebtor(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Frequently Asked Questions
+    match /faqs/{faqId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidFAQItem(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Bug & Feature Tickets
+    match /bug_requests/{bugId} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidBugRequest(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Global Settings
+    match /settings/{docId} {
+      allow read: if isVerified();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Daily Email Sent Counts
+    match /email_daily_counts/{dateId} {
+      allow read, write: if isVerified();
+    }
+
+    // Master Items Dropdowns
+    match /product_categories/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /product_groups/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /manufacturers/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /freight_terms/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /transporters/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /warehouses/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /dispatch_locations/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /payment_terms/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /payment_credit_periods/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+    match /taxes/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidMasterItem(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Email Templates Configs
+    match /email_templates/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidEmailTemplate(incoming());
+      allow delete: if isAdmin();
     }
   }
 }
