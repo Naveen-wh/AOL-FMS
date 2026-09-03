@@ -85,7 +85,7 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
             AOL FMS
           </h2>
           <p className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest mt-1">
-            Sales Indent Portal
+            Sales Management Portal
           </p>
         </div>
 

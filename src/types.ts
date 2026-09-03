@@ -152,6 +152,9 @@ export interface OrderOffer {
   billingGstin?: string;
   status: "New" | "Contacted" | "Proposal" | "Negotiation" | "Closed Won" | "Closed Lost";
   totalValue: number;
+  totalProductCost?: number;
+  totalGstAmount?: number;
+  grandTotalOrderAmount?: number;
   items: OrderItem[];
   payment: string;
   paymentCreditPeriod?: string;
@@ -182,10 +185,16 @@ export interface BadDebtor {
   invoiceNumber: string;
   invoiceDate: string;
   invoiceAmount: number;
+  orderAmount?: number;
   dueDate: string;
   overdueDays: number;
   comments?: string;
-  status?: "Bad Debt" | "Written Off" | "In Recovery" | "Paid";
+  status?: "Bad Debt" | "Written Off" | "In Recovery" | "Paid" | "Partial Paid" | string;
+  assignedToUserId?: string;
+  assignedToUserName?: string;
+  amountReceived?: number;
+  pendingAmount?: number;
+  receipts?: PaymentReceiptRecord[];
   createdAt?: string;
   createdByUserId?: string;
   createdByUserName?: string;
@@ -381,6 +390,7 @@ export interface PaymentDetails {
   utrId?: string;
   comments?: string;
   receipts?: PaymentReceiptRecord[];
+  createdAt?: string;
   updatedAt?: string;
   updatedByUserId?: string;
   updatedByUserName?: string;

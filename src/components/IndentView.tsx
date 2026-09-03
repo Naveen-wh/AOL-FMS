@@ -38,7 +38,7 @@ import {
 import { auth } from "../firebase";
 import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
 import { dispatchSystemEmail } from "../lib/emailService";
-import { formatDate } from "../utils";
+import { formatDate, getOrderTotalInvoiceAmount, calculateOrderTotalInvoiceBreakdown } from "../utils";
 import { EmailSentStatusCell } from "./EmailSentStatusCell";
 import { 
   Search, 
@@ -741,6 +741,12 @@ export default function IndentView({
 
     setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
     setUploadProgress((prev) => ({ ...prev, [orderId]: true }));
+    setUploadProgressText((prev) => ({ 
+      ...prev, 
+      [orderId]: newFiles.length > 0 
+        ? (newFiles.length > 1 ? `Uploading 1 of ${newFiles.length} (${newFiles[0].name}) to Google Drive...` : `Uploading ${newFiles[0].name} to Google Drive...`)
+        : (sendEmail ? "Sending email notification & mapping invoice..." : "Saving mapped invoice to database...")
+    }));
     setOrderSuccess((prev) => ({ ...prev, [orderId]: false }));
 
     try {
@@ -792,6 +798,11 @@ export default function IndentView({
         ...order,
         billingDetails: updatedBilling,
       };
+
+      setUploadProgressText((prev) => ({
+        ...prev,
+        [orderId]: sendEmail ? "Sending email notification & saving..." : "Saving mapped invoice to database..."
+      }));
 
       await onEditOrder(updatedOrder);
 
@@ -851,6 +862,11 @@ export default function IndentView({
           const dynamicTo = cleanEmailList(template.to ? applyTemplate(template.to) : (order.email || ""));
           const dynamicCc = template.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
           const dynamicBcc = template.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
+
+          setUploadProgressText((prev) => ({
+            ...prev,
+            [orderId]: `Sending email notification to ${dynamicTo}...`
+          }));
 
           let deliveryStatus: "Sent" | "Failed" = "Sent";
           let emailErrorMsg: string | undefined = undefined;
@@ -1958,8 +1974,8 @@ export default function IndentView({
                           </div>
                         </div>
                         <div className="text-left sm:text-right shrink-0 flex flex-col sm:items-end gap-1.5 bg-slate-50 sm:bg-transparent p-2.5 sm:p-0 rounded-xl border sm:border-0 border-slate-100">
-                          <span className="text-base sm:text-lg lg:text-xl font-black text-slate-950 block font-mono">
-                            ₹{order.totalValue?.toLocaleString()}
+                          <span className="text-base sm:text-lg lg:text-xl font-black text-slate-950 block font-mono" title="Total Invoice Amount (Products + GST + Freight with Max GST)">
+                            ₹{getOrderTotalInvoiceAmount(order).toLocaleString()}
                           </span>
                           <span className="text-[11px] font-mono text-slate-400 block flex items-center sm:justify-end gap-1 font-semibold">
                             <Calendar size={12} />
@@ -2346,42 +2362,77 @@ export default function IndentView({
                                   </div>
                                 </div>
                               ) : (
-                                /* Read-Only Products Table */
-                                <div>
-                                  <div className="border border-slate-200 rounded-lg overflow-x-auto scrollbar-thin bg-white">
-                                    <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full font-mono">
-                                      <thead>
-                                        <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 font-mono font-bold uppercase tracking-tight">
-                                          <th className="p-2">Product</th>
-                                          <th className="p-2 text-right">Qty</th>
-                                          <th className="p-2 text-right">Rate</th>
-                                          <th className="p-2 text-right">Amount</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody className="divide-y divide-slate-100 text-slate-600">
-                                        {order.items?.map((item, idx) => (
-                                          <tr key={idx} className="hover:bg-slate-50/50">
-                                            <td className="p-2 font-semibold text-slate-800">{item.productName}</td>
-                                            <td className="p-2 text-right font-bold">{item.quantity}</td>
-                                            <td className="p-2 text-right text-slate-500">₹{item.rate?.toLocaleString()}</td>
-                                            <td className="p-2 text-right font-black text-slate-700">₹{item.amount?.toLocaleString()}</td>
-                                          </tr>
+                                /* Read-Only Products Table & Invoice Breakdown */
+                                (() => {
+                                  const bd = calculateOrderTotalInvoiceBreakdown(order);
+                                  return (
+                                    <div className="space-y-3">
+                                      <div className="border border-slate-200 rounded-lg overflow-x-auto scrollbar-thin bg-white">
+                                        <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full font-mono">
+                                          <thead>
+                                            <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 font-mono font-bold uppercase tracking-tight">
+                                              <th className="p-2">Product</th>
+                                              <th className="p-2 text-right">Qty</th>
+                                              <th className="p-2 text-right">Rate</th>
+                                              <th className="p-2 text-right">Base Amount</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-slate-100 text-slate-600">
+                                            {bd.itemBreakdowns.map((ib, idx) => (
+                                              <tr key={idx} className="hover:bg-slate-50/50">
+                                                <td className="p-2 font-semibold text-slate-800">{ib.item.productName}</td>
+                                                <td className="p-2 text-right font-bold">{ib.quantity}</td>
+                                                <td className="p-2 text-right text-slate-500">₹{ib.rate?.toLocaleString()}</td>
+                                                <td className="p-2 text-right font-black text-slate-700">₹{ib.baseAmount?.toLocaleString()}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+
+                                      {/* Total Invoice Amount Calculation Breakdown */}
+                                      <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 font-mono text-[10px] space-y-1.5">
+                                        <div className="flex justify-between items-center text-slate-600">
+                                          <span>Products Base Total:</span>
+                                          <span className="font-bold">₹{bd.productsBaseTotal.toLocaleString()}</span>
+                                        </div>
+
+                                        {/* Separate GST Rate Amounts */}
+                                        {bd.gstBuckets.length > 0 && bd.gstBuckets.map((bucket) => (
+                                          <div key={bucket.rate} className="flex justify-between items-center text-slate-600 pl-2 border-l-2 border-slate-300">
+                                            <span>GST @ {bucket.rate}% (Base: ₹{bucket.productBase.toLocaleString()}):</span>
+                                            <span className="font-bold text-slate-800">₹{bucket.productGst.toLocaleString()}</span>
+                                          </div>
                                         ))}
-                                        <tr className="bg-slate-50/50 font-black border-t border-slate-200">
-                                          <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
-                                          <td className="p-2 text-right text-slate-900 text-xs font-mono" colSpan={2}>
-                                            ₹{order.totalValue?.toLocaleString()}
-                                          </td>
-                                        </tr>
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                  {productSuccessId === order.id && (
-                                    <div className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2 font-bold font-mono flex items-center gap-1.5 mt-2 animate-fadeIn">
-                                      <Check size={12} /> Product details updated and order total recalculation saved!
+
+                                        {bd.freightBase > 0 && (
+                                          <>
+                                            <div className="flex justify-between items-center text-slate-600 pt-1 border-t border-slate-200/60">
+                                              <span>Freight Charged in Bill:</span>
+                                              <span className="font-bold">₹{bd.freightBase.toLocaleString()}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center text-slate-600">
+                                              <span>GST on Freight @ {bd.maxGstPercent}% (Max Product Rate):</span>
+                                              <span className="font-bold">₹{bd.freightGst.toLocaleString()}</span>
+                                            </div>
+                                          </>
+                                        )}
+                                        <div className="flex justify-between items-center border-t border-slate-200 pt-2 text-[11px] font-black text-slate-900">
+                                          <span className="uppercase tracking-wider">Total Invoice Amount:</span>
+                                          <span className="text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200 font-bold">
+                                            ₹{bd.totalInvoiceAmount.toLocaleString()}
+                                          </span>
+                                        </div>
+                                      </div>
+
+                                      {productSuccessId === order.id && (
+                                        <div className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2 font-bold font-mono flex items-center gap-1.5 animate-fadeIn">
+                                          <Check size={12} /> Product details updated and order total recalculation saved!
+                                        </div>
+                                      )}
                                     </div>
-                                  )}
-                                </div>
+                                  );
+                                })()
                               )}
                             </div>
 
@@ -2709,6 +2760,7 @@ export default function IndentView({
                                     <input 
                                         type="checkbox" 
                                         checked={sendEmails[order.id] || false}
+                                        disabled={uploadProgress[order.id]}
                                         onChange={(e) => {
                                             const checked = e.target.checked;
                                             setSendEmails(prev => ({ ...prev, [order.id]: checked }));
@@ -2719,15 +2771,16 @@ export default function IndentView({
                                                 }
                                             }
                                         }}
-                                        className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                        className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-50"
                                     />
                                     <label className="text-[10px] font-bold text-slate-700 uppercase font-mono">Send Email Invoice?</label>
                                 </div>
                                 {sendEmails[order.id] && (
                                     <select
                                         value={selectedTemplates[order.id] || ""}
+                                        disabled={uploadProgress[order.id]}
                                         onChange={(e) => setSelectedTemplates(prev => ({ ...prev, [order.id]: e.target.value }))}
-                                        className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono"
+                                        className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono disabled:opacity-50"
                                     >
                                         <option value="">
                                             {emailTemplates.some(tmpl => tmpl.isDefault && (tmpl.assignedForm === "invoice_issuance" || tmpl.assignedForm === "any" || !tmpl.assignedForm)) ? "Default Template" : "Select Template"}
@@ -2743,6 +2796,7 @@ export default function IndentView({
                               {isEditing && (
                                 <button
                                   type="button"
+                                  disabled={uploadProgress[order.id]}
                                   onClick={() => {
                                     setEditingOrderId(null);
                                     setInvoiceNumbers(prev => {
@@ -2762,7 +2816,7 @@ export default function IndentView({
                                       return copy;
                                     });
                                   }}
-                                  className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-1.5 px-3 rounded-lg text-[10px] transition-all cursor-pointer font-mono"
+                                  className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-1.5 px-3 rounded-lg text-[10px] transition-all cursor-pointer font-mono disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   Cancel
                                 </button>
@@ -2837,7 +2891,7 @@ export default function IndentView({
                       <th className="p-4 text-center w-12"></th>
                       <th className="p-4">Company / Client</th>
                       <th className="p-4">Customer PO</th>
-                      <th className="p-4 text-right">PO Amount</th>
+                      <th className="p-4 text-right">Invoice Amount</th>
                       <th className="p-4">Invoice Number</th>
                       <th className="p-4">Invoice Document</th>
                       <th className="p-4">Email Sent Status</th>
@@ -3233,40 +3287,96 @@ export default function IndentView({
 
                                   {/* Column 3: Invoice Itemization (BOM) */}
                                   <div className="space-y-4">
-                                    <div className="bg-white p-4 border border-slate-200/75 rounded-xl space-y-2 shadow-xs">
-                                      <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center gap-1">
-                                        <ListOrdered size={10} className="text-slate-400" />
-                                        Invoice Itemization (BOM)
-                                      </p>
-                                      <div className="border border-slate-200/70 rounded-lg bg-white max-h-[250px] overflow-y-auto overflow-x-auto scrollbar-thin">
-                                        <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full">
-                                          <thead>
-                                            <tr className="bg-slate-50 text-slate-500 border-b border-slate-200/70 font-mono font-bold uppercase tracking-tight">
-                                              <th className="p-2">Product</th>
-                                              <th className="p-2 text-right">Qty</th>
-                                              <th className="p-2 text-right">Rate</th>
-                                              <th className="p-2 text-right">Amount</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody className="divide-y divide-slate-100 text-slate-600">
-                                            {order.items?.map((item, idx) => (
-                                              <tr key={idx} className="hover:bg-slate-50/55">
-                                                <td className="p-2 font-medium text-slate-800">{item.productName}</td>
-                                                <td className="p-2 text-right font-mono font-semibold">{item.quantity}</td>
-                                                <td className="p-2 text-right font-mono text-slate-500">₹{item.rate?.toLocaleString()}</td>
-                                                <td className="p-2 text-right font-mono font-bold text-slate-700">₹{item.amount?.toLocaleString()}</td>
-                                              </tr>
+                                    {(() => {
+                                      const bd = calculateOrderTotalInvoiceBreakdown(order);
+                                      const totalGst = bd.productsGstTotal + bd.freightGst;
+                                      return (
+                                        <div className="bg-white p-4 border border-slate-200/75 rounded-xl space-y-3 shadow-xs">
+                                          <p className="text-[9px] font-mono text-slate-400 uppercase font-bold border-b border-slate-100 pb-1 flex items-center justify-between">
+                                            <span className="flex items-center gap-1">
+                                              <ListOrdered size={10} className="text-slate-400" />
+                                              Invoice Itemization (BOM)
+                                            </span>
+                                            <span className="text-[10px] text-indigo-600 font-bold font-sans">
+                                              GST & Tax Breakdown
+                                            </span>
+                                          </p>
+
+                                          {/* Items List Table */}
+                                          <div className="border border-slate-200/70 rounded-lg bg-white max-h-[220px] overflow-y-auto overflow-x-auto scrollbar-thin">
+                                            <table className="w-full text-left text-[10px] min-w-[480px]">
+                                              <thead>
+                                                <tr className="bg-slate-50 text-slate-500 border-b border-slate-200/70 font-mono font-bold uppercase tracking-tight">
+                                                  <th className="p-2">Product</th>
+                                                  <th className="p-2 text-right">Qty</th>
+                                                  <th className="p-2 text-right">Rate (₹)</th>
+                                                  <th className="p-2 text-right">Base Cost (Excl. GST)</th>
+                                                  <th className="p-2 text-right">GST Rate</th>
+                                                  <th className="p-2 text-right">GST Amount</th>
+                                                  <th className="p-2 text-right">Total (Incl. GST)</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody className="divide-y divide-slate-100 text-slate-600">
+                                                {bd.itemBreakdowns.map((ib, idx) => (
+                                                  <tr key={idx} className="hover:bg-slate-50/55">
+                                                    <td className="p-2 font-medium text-slate-800">{ib.item.productName || "Unnamed Product"}</td>
+                                                    <td className="p-2 text-right font-mono font-semibold">{ib.quantity}</td>
+                                                    <td className="p-2 text-right font-mono text-slate-500">₹{ib.rate?.toLocaleString()}</td>
+                                                    <td className="p-2 text-right font-mono text-slate-600 font-semibold">₹{ib.baseAmount.toLocaleString()}</td>
+                                                    <td className="p-2 text-right font-mono text-slate-500">{ib.taxPercent}%</td>
+                                                    <td className="p-2 text-right font-mono text-indigo-600 font-medium">₹{ib.gstAmount.toLocaleString()}</td>
+                                                    <td className="p-2 text-right font-mono font-bold text-slate-800">₹{ib.totalWithGst.toLocaleString()}</td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
+                                          </div>
+
+                                          {/* Detailed GST & Invoice Summary */}
+                                          <div className="bg-slate-50 border border-slate-200/80 rounded-lg p-3 font-mono text-[10.5px] space-y-2">
+                                            {/* Total product cost without GST */}
+                                            <div className="flex justify-between items-center text-slate-800 py-0.5">
+                                              <span className="font-medium">Total Product Cost (Without GST):</span>
+                                              <span className="font-black text-slate-900 text-xs">₹{bd.productsBaseTotal.toLocaleString()}</span>
+                                            </div>
+
+                                            {/* GST Rate and Respective GST Amount for Products */}
+                                            {bd.gstBuckets.length > 0 && bd.gstBuckets.map((bucket) => (
+                                              <div key={bucket.rate} className="flex justify-between items-center text-slate-700 pl-2 border-l-2 border-indigo-400 py-0.5 bg-indigo-50/30 rounded-r px-1.5">
+                                                <span>Product GST @ <b>{bucket.rate}%</b> (Taxable: ₹{bucket.productBase.toLocaleString()}):</span>
+                                                <span className="font-bold text-indigo-700">₹{bucket.productGst.toLocaleString()}</span>
+                                              </div>
                                             ))}
-                                            <tr className="bg-slate-50/40 font-bold border-t border-slate-200/70">
-                                              <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
-                                              <td className="p-2 text-right text-slate-900 font-mono text-xs" colSpan={2}>
-                                                ₹{order.totalValue?.toLocaleString()}
-                                              </td>
-                                            </tr>
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    </div>
+
+                                            {/* Freight Charged in Bill and its GST Amount */}
+                                            <div className="bg-emerald-50/90 p-2 rounded-lg border border-emerald-200/90 space-y-1 font-sans text-emerald-950 my-1">
+                                              <div className="flex justify-between items-center font-mono">
+                                                <span className="font-semibold text-[10px]">Freight Charged in Bill:</span>
+                                                <span className="font-black text-[11px]">₹{bd.freightBase.toLocaleString()}</span>
+                                              </div>
+                                              <div className="flex justify-between items-center text-[9.5px] text-emerald-850 font-mono">
+                                                <span>Freight GST Amount (@ {bd.maxGstPercent}% GST):</span>
+                                                <span className="font-bold">₹{bd.freightGst.toLocaleString()}</span>
+                                              </div>
+                                            </div>
+
+                                            {/* Total GST */}
+                                            <div className="flex justify-between items-center text-slate-800 pt-1.5 border-t border-slate-200 font-bold text-[11px]">
+                                              <span>Total GST Amount (Products + Freight GST):</span>
+                                              <span className="text-indigo-700 font-black text-xs">₹{totalGst.toLocaleString()}</span>
+                                            </div>
+
+                                            {/* Grand Total Order Amount */}
+                                            <div className="flex justify-between items-center border-t-2 border-slate-300 pt-2 text-xs font-black text-slate-900">
+                                              <span className="uppercase tracking-tight">Grand Total Order Amount:</span>
+                                              <span className="text-emerald-800 bg-white px-3 py-1 rounded-lg border border-emerald-300 shadow-2xs text-sm font-black font-mono">
+                                                ₹{bd.totalInvoiceAmount.toLocaleString()}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
                                   </div>
                                 </div>
                               </td>

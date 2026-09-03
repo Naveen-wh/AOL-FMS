@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from "react";
 import { User, Role, AccessLevel, TeamTabSettings, Team } from "../types";
-import { Shield, ChevronDown, CornerDownRight, Users, Mail, Target, Award, Save, Eye, Settings, Plus, Trash2, UserPlus, CheckCircle2 } from "lucide-react";
+import { Shield, ChevronDown, CornerDownRight, Users, Mail, Target, Award, Save, Eye, Settings, Plus, Trash2, UserPlus, CheckCircle2, Lock, Unlock, Sliders, Layers, Phone } from "lucide-react";
 import { getReportingTreeUsers } from "../data";
 import TeamDatabaseRegistryView from "./TeamDatabaseRegistryView";
 
@@ -41,12 +41,20 @@ export default function TeamDirectoryView({
   onDeleteTeam,
   visibleSubTabs
 }: TeamDirectoryViewProps) {
+  const uniqueTeams = Array.from(
+    new Set(
+      (teams.length > 0 ? teams.map((t) => t.name) : users.map((u) => u.teamName))
+        .filter((t): t is string => Boolean(t && t.trim()))
+    )
+  );
+
   const [selectedUserId, setSelectedUserId] = useState<string>(activeUserId);
 
   // New User creation form local states
   const [showAddUserForm, setShowAddUserForm] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
   const [newRole, setNewRole] = useState<Role>(Role.User);
   const [newAccess, setNewAccess] = useState<AccessLevel>(AccessLevel.Editor);
   const [newTeam, setNewTeam] = useState("");
@@ -82,6 +90,7 @@ export default function TeamDirectoryView({
         id: normalizedEmail,
         email: normalizedEmail,
         name: newName.trim(),
+        phone: newPhone.trim() || undefined,
         role: newRole,
         accessLevel: newAccess,
         teamName: newTeam.trim() || "General Executive",
@@ -100,6 +109,7 @@ export default function TeamDirectoryView({
       // Reset form
       setNewEmail("");
       setNewName("");
+      setNewPhone("");
       setNewRole(Role.User);
       setNewAccess(AccessLevel.Editor);
       setNewTeam("");
@@ -180,6 +190,7 @@ export default function TeamDirectoryView({
 
   // Local state for Admin edit forms
   const [editName, setEditName] = useState(selectedUser.name);
+  const [editPhone, setEditPhone] = useState(selectedUser.phone || "");
   const [editRole, setEditRole] = useState(selectedUser.role);
   const [editAccess, setEditAccess] = useState(selectedUser.accessLevel);
   const [editTeam, setEditTeam] = useState(selectedUser.teamName || "");
@@ -187,9 +198,19 @@ export default function TeamDirectoryView({
   const [editReportsTo, setEditReportsTo] = useState(selectedUser.reportsTo || "");
   const [isSaving, setIsSaving] = useState(false);
 
+  // Active Team selection state for the Team Workspace Tab Visibility Console
+  const [activeConsoleTeam, setActiveConsoleTeam] = useState<string>("");
+
+  useEffect(() => {
+    if (uniqueTeams.length > 0 && (!activeConsoleTeam || !uniqueTeams.includes(activeConsoleTeam))) {
+      setActiveConsoleTeam(uniqueTeams[0]);
+    }
+  }, [uniqueTeams, activeConsoleTeam]);
+
   // Sync edits state when selected user changes
   useEffect(() => {
     setEditName(selectedUser.name);
+    setEditPhone(selectedUser.phone || "");
     setEditRole(selectedUser.role);
     setEditAccess(selectedUser.accessLevel);
     setEditTeam(selectedUser.teamName || "");
@@ -198,6 +219,7 @@ export default function TeamDirectoryView({
   }, [
     selectedUser.id,
     selectedUser.name,
+    selectedUser.phone,
     selectedUser.role,
     selectedUser.accessLevel,
     selectedUser.teamName,
@@ -211,6 +233,7 @@ export default function TeamDirectoryView({
     try {
       await onUpdateUser(selectedUser.id, {
         name: editName,
+        phone: editPhone || undefined,
         role: editRole,
         accessLevel: editAccess,
         teamName: editTeam,
@@ -243,12 +266,6 @@ export default function TeamDirectoryView({
   };
 
   // Tab Visibility helpers
-  const uniqueTeams = Array.from(
-    new Set(
-      (teams.length > 0 ? teams.map((t) => t.name) : users.map((u) => u.teamName))
-        .filter((t): t is string => Boolean(t && t.trim()))
-    )
-  );
     
   const TABS_CONFIG = [
     {
@@ -274,6 +291,7 @@ export default function TeamDirectoryView({
       label: "Payment List",
       subTabs: [
         { id: "debtors", label: "Debtors" },
+        { id: "bad_debtors", label: "Bad Debtors" },
         { id: "payment_reminder", label: "Payment Reminder" },
         { id: "payment_reminder_consolidated", label: "Payment Reminder Consolidated" },
         { id: "fully_paid", label: "Fully Paid" }
@@ -665,6 +683,20 @@ export default function TeamDirectoryView({
                 />
               </div>
 
+              {/* Phone Number */}
+              <div className="space-y-1">
+                <label className="text-[9.5px] font-bold text-slate-700 uppercase block">
+                  Phone Number
+                </label>
+                <input
+                  type="text"
+                  value={newPhone}
+                  onChange={(e) => setNewPhone(e.target.value)}
+                  placeholder="e.g. +91 9876543210"
+                  className="w-full bg-white border border-slate-300 rounded px-2.5 py-1 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium font-mono"
+                />
+              </div>
+
               {/* Role */}
               <div className="space-y-1">
                 <label className="text-[9.5px] font-bold text-slate-700 uppercase block">
@@ -907,6 +939,24 @@ export default function TeamDirectoryView({
                 </div>
               </div>
 
+              <div className="flex items-center gap-2">
+                <Phone className="text-slate-500 shrink-0" size={13} />
+                <div className="min-w-0 flex-1">
+                  <span className="text-[8px] uppercase font-mono text-slate-400 block leading-none">Phone Number</span>
+                  {canManageUsers ? (
+                    <input
+                      type="text"
+                      value={editPhone}
+                      onChange={(e) => setEditPhone(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] font-bold text-white focus:outline-none focus:ring-1 focus:ring-emerald-500 mt-1 font-mono"
+                      placeholder="e.g. +91 9876543210"
+                    />
+                  ) : (
+                    <span className="text-[10px] font-bold text-slate-300 truncate block font-mono leading-none mt-1">{selectedUser.phone || "Not Provided"}</span>
+                  )}
+                </div>
+              </div>
+
               {/* Editable or Static Role Selector */}
               {canManageUsers && (
                 <div className="grid grid-cols-2 gap-2 bg-slate-900/60 p-1.5 rounded border border-slate-900">
@@ -1080,185 +1130,339 @@ export default function TeamDirectoryView({
 
       {/* Admin Team Tab Visibility Management Panel */}
       {isAdmin && (
-        <div id="team-tab-permissions-panel" className="bg-white rounded-lg border border-slate-200 p-4 mt-3 shadow-2xs">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="bg-emerald-50 text-emerald-700 p-1.5 rounded-md">
-              <Settings size={15} />
+        <div id="team-tab-permissions-panel" className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 mt-4 shadow-sm">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4 mb-5">
+            <div className="flex items-start gap-3">
+              <div className="bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 p-2.5 rounded-xl border border-emerald-200/50 dark:border-emerald-800/40 shrink-0">
+                <Settings size={18} />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-slate-900 dark:text-slate-100">Team Workspace Tab Visibility Console</h3>
+                <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono leading-none mt-1 uppercase tracking-wider font-extrabold">
+                  Platform Clearance Level: Administrator
+                </p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-xs font-extrabold text-slate-900">Team Workspace Tab Visibility Console</h3>
-              <p className="text-[9px] text-emerald-600 font-mono leading-none mt-0.5 uppercase tracking-wider font-bold">
-                Clearance Level: Platform Administrator
-              </p>
+            
+            <div className="text-[10px] text-slate-500 dark:text-slate-400 max-w-sm leading-relaxed bg-slate-50 dark:bg-slate-850 p-2.5 rounded-xl border border-slate-150 dark:border-slate-800 shrink-0 sm:self-center">
+              Configure which modules and individual sub-views are accessible per team. Administrators always bypass these constraints.
             </div>
           </div>
 
-          <p className="text-[10px] text-slate-500 mb-4 max-w-3xl leading-normal">
-            Configure which specific navigation tabs are visible to each team. 
-            When visibility is toggled off, members of that team are restricted from accessing that workspace and automatically redirected to their first available tab. 
-            <strong className="text-emerald-700 ml-1">Note: Users with the Admin role always retain access to all tabs to prevent lockouts.</strong>
-          </p>
+          {/* Core Sidebar / Grid Layout */}
+          {uniqueTeams.length === 0 ? (
+            <div className="text-center py-10 bg-slate-50 dark:bg-slate-950 border border-dashed border-slate-250 dark:border-slate-800 rounded-2xl p-6">
+              <Lock size={24} className="mx-auto text-slate-400 mb-2" />
+              <p className="text-xs font-bold text-slate-700 dark:text-slate-300">No Teams Configured</p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">Register teams in the Team Database Registry below to manage tab visibilities.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+              {/* Left Column: Team Selectors */}
+              <div className="lg:col-span-1 space-y-2">
+                <span className="block text-[9px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider font-mono px-1">
+                  Teams Registry ({uniqueTeams.length})
+                </span>
+                <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
+                  {uniqueTeams.map((team) => {
+                    const isSelected = activeConsoleTeam.toLowerCase() === team.toLowerCase();
+                    const visibleTabsCount = getVisibleTabsForTeam(team).length;
+                    const membersCount = users.filter((u) => u.teamName?.toLowerCase() === team.toLowerCase()).length;
+                    
+                    return (
+                      <button
+                        key={team}
+                        type="button"
+                        onClick={() => setActiveConsoleTeam(team)}
+                        className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer select-none flex flex-col gap-1.5 ${
+                          isSelected
+                            ? "bg-emerald-50/55 dark:bg-emerald-950/30 border-emerald-500/40 dark:border-emerald-500/40 shadow-xs"
+                            : "bg-slate-50/50 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+                        }`}
+                        title={`Manage visibility credentials for ${team}`}
+                      >
+                        <div className="flex items-center justify-between w-full min-w-0 gap-2">
+                          <span className={`text-xs font-extrabold truncate ${isSelected ? "text-emerald-900 dark:text-emerald-300" : "text-slate-900 dark:text-slate-100"}`}>
+                            {team}
+                          </span>
+                          <span className={`text-[8.5px] px-1.5 py-0.5 rounded-md font-mono font-bold border shrink-0 ${
+                            isSelected ? "bg-emerald-100 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-400" : "bg-slate-200/60 dark:bg-slate-800 border-slate-250 dark:border-slate-700 text-slate-600 dark:text-slate-400"
+                          }`}>
+                            {membersCount} {membersCount === 1 ? "User" : "Users"}
+                          </span>
+                        </div>
+                        
+                        <div className="flex items-center gap-1.5 text-[9px] text-slate-500 dark:text-slate-400 font-mono font-semibold">
+                          <Sliders size={11} className={isSelected ? "text-emerald-600 dark:text-emerald-400" : "text-slate-400"} />
+                          <span>{visibleTabsCount} of {TABS_CONFIG.length} Tabs enabled</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
-          <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-slate-50/20">
-            {uniqueTeams.map((team) => {
-              const visibleTabs = getVisibleTabsForTeam(team);
-              return (
-                <div key={team} className="grid grid-cols-1 md:grid-cols-12 gap-3 p-3 items-center hover:bg-slate-50/50 transition-colors">
-                  <div className="md:col-span-3 space-y-2">
-                    <div>
-                      <span className="font-extrabold text-[11px] text-slate-900 block leading-tight">{team}</span>
-                      <span className="text-[9px] font-mono font-medium text-slate-400 block mt-0.5">
-                        {visibleTabs.length} of {TABS_CONFIG.length} tabs enabled
+              {/* Right Column: Settings Workspace for Selected Team */}
+              <div className="lg:col-span-3 space-y-4">
+                {/* Workspace Header */}
+                <div className="bg-slate-50/80 dark:bg-slate-950/40 rounded-xl p-4 border border-slate-150 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-3xs">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400 font-mono tracking-wider bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-200/50 dark:border-emerald-800/30">
+                        Editing Settings
+                      </span>
+                      <span className="text-[10px] text-slate-400 dark:text-slate-500">•</span>
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                        Changes apply instantly
                       </span>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleAllowAllForTeam(team)}
-                        className="px-2 py-0.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 hover:border-emerald-300 rounded text-[8px] font-mono font-bold uppercase transition-all cursor-pointer"
-                        title={`Enable all tabs and sub-tabs for ${team} instantly`}
-                        id={`allow-all-btn-${team}`}
-                      >
-                        Allow All
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleBlockAllForTeam(team)}
-                        className="px-2 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 hover:border-rose-300 rounded text-[8px] font-mono font-bold uppercase transition-all cursor-pointer"
-                        title={`Disable all tabs and sub-tabs for ${team} instantly`}
-                        id={`block-all-btn-${team}`}
-                      >
-                        Block All
-                      </button>
-                    </div>
+                    <h4 className="text-sm font-black text-slate-900 dark:text-slate-100 mt-1 truncate">
+                      {activeConsoleTeam} Portal Access settings
+                    </h4>
                   </div>
-                  <div className="md:col-span-9 flex flex-col gap-2">
-                    <div className="flex flex-wrap gap-1.5">
-                      {TABS_CONFIG.map((tab) => {
-                        const isTabEnabled = visibleTabs.includes(tab.id);
-                        return (
-                          <div key={tab.id} className="flex flex-col gap-1 border border-slate-150 p-1.5 rounded-md bg-white shadow-2xs">
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleAllowAllForTeam(activeConsoleTeam)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white dark:text-emerald-100 border border-emerald-700 rounded-lg text-xs font-extrabold transition-all cursor-pointer shadow-3xs"
+                      title={`Grant total clearance (Allow all tabs/sub-tabs) for ${activeConsoleTeam}`}
+                    >
+                      <Unlock size={13} />
+                      <span>Allow All</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleBlockAllForTeam(activeConsoleTeam)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/60 rounded-lg text-xs font-extrabold transition-all cursor-pointer shadow-3xs"
+                      title={`Revoke all workspace credentials for ${activeConsoleTeam}`}
+                    >
+                      <Lock size={13} />
+                      <span>Block All</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Hierarchical Tree of Workspaces */}
+                <div className="space-y-3 max-h-[550px] overflow-y-auto pr-1">
+                  {TABS_CONFIG.map((tab) => {
+                    const isTabEnabled = getVisibleTabsForTeam(activeConsoleTeam).includes(tab.id);
+                    
+                    return (
+                      <div
+                        key={tab.id}
+                        className={`bg-white dark:bg-slate-900 border rounded-xl shadow-3xs relative overflow-hidden transition-all ${
+                          isTabEnabled
+                            ? "border-slate-200 dark:border-slate-800 ring-1 ring-emerald-500/5 dark:ring-emerald-500/10"
+                            : "border-slate-150 dark:border-slate-800 bg-slate-50/20 dark:bg-slate-900/40"
+                        }`}
+                      >
+                        {/* Tab Main Toggle Row */}
+                        <div className="p-3.5 flex items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800/80">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className={`p-1.5 rounded-lg border transition-colors shrink-0 ${
+                              isTabEnabled
+                                ? "bg-emerald-50 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400"
+                                : "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400"
+                            }`}>
+                              <Layers size={15} />
+                            </div>
+                            <div className="min-w-0">
+                              <span className="font-extrabold text-xs text-slate-900 dark:text-slate-100 block truncate">
+                                {tab.label}
+                              </span>
+                              <span className="text-[9px] text-slate-400 dark:text-slate-500 font-mono font-bold leading-none block mt-0.5 uppercase">
+                                Tab Key: {tab.id}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <span className={`text-[9px] font-mono font-bold uppercase rounded-full px-2 py-0.5 ${
+                              isTabEnabled
+                                ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-400"
+                                : "bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500"
+                            }`}>
+                              {isTabEnabled ? "Active" : "Hidden"}
+                            </span>
+                            
+                            {/* Toggle Button Switch */}
                             <button
                               type="button"
-                              onClick={() => handleToggleTabForTeam(team, tab.id)}
-                              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold font-mono transition-all border cursor-pointer ${
-                                isTabEnabled
-                                  ? "bg-emerald-50 border-emerald-300 text-emerald-800 shadow-3xs"
-                                  : "bg-slate-50 border-slate-200 text-slate-400 hover:bg-slate-100 hover:text-slate-500"
+                              onClick={() => handleToggleTabForTeam(activeConsoleTeam, tab.id)}
+                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none select-none ${
+                                isTabEnabled ? "bg-emerald-500 dark:bg-emerald-400" : "bg-slate-200 dark:bg-slate-700"
                               }`}
+                              title={`Toggle ${tab.label} Tab visibility`}
                             >
-                              <span className={`w-1.5 h-1.5 rounded-full ${isTabEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-350"}`} />
-                              {tab.label}
+                              <span
+                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs transition duration-200 ease-in-out ${
+                                  isTabEnabled ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
                             </button>
+                          </div>
+                        </div>
 
-                            {isTabEnabled && (
-                              <div className="flex flex-wrap items-center gap-1 mt-1 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 max-w-max shadow-4xs">
-                                <span className="text-[7px] uppercase font-bold text-slate-400 mr-1 font-mono">Ops:</span>
+                        {/* Expandable Configurations (If Tab is Enabled) */}
+                        {isTabEnabled && (
+                          <div className="p-3.5 bg-slate-50/30 dark:bg-slate-900/60 space-y-3">
+                            {/* Operations Permission Row */}
+                            <div className="space-y-1.5">
+                              <span className="block text-[8.5px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider font-mono">
+                                Action & Modification Permissions Matrix
+                              </span>
+                              
+                              <div className="flex flex-wrap items-center gap-1.5">
                                 <button
                                   type="button"
-                                  onClick={() => handleTogglePermissionForTeam(team, tab.id, "view")}
-                                  className={`px-1 py-0.5 rounded text-[8px] font-bold font-mono transition-colors cursor-pointer ${
-                                    getPermissionForTeam(team, tab.id, "view")
-                                      ? "bg-emerald-100 text-emerald-800 border border-emerald-200"
-                                      : "bg-slate-100 text-slate-400 border border-slate-200 line-through"
+                                  onClick={() => handleTogglePermissionForTeam(activeConsoleTeam, tab.id, "view")}
+                                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer select-none ${
+                                    getPermissionForTeam(activeConsoleTeam, tab.id, "view")
+                                      ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-400"
+                                      : "bg-slate-100/50 dark:bg-slate-850/50 border-slate-200 dark:border-slate-800/80 text-slate-400 dark:text-slate-600 line-through"
                                   }`}
-                                  title="Toggle Team View Permission"
+                                  title="Toggle View Workspace Permission"
                                 >
-                                  View
+                                  <Eye size={12} className="shrink-0" />
+                                  <span>View Access</span>
                                 </button>
+                                
                                 <button
                                   type="button"
-                                  onClick={() => handleTogglePermissionForTeam(team, tab.id, "add")}
-                                  className={`px-1 py-0.5 rounded text-[8px] font-bold font-mono transition-colors cursor-pointer ${
-                                    getPermissionForTeam(team, tab.id, "add")
-                                      ? "bg-blue-100 text-blue-800 border border-blue-200"
-                                      : "bg-slate-100 text-slate-400 border border-slate-200 line-through"
+                                  onClick={() => handleTogglePermissionForTeam(activeConsoleTeam, tab.id, "add")}
+                                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer select-none ${
+                                    getPermissionForTeam(activeConsoleTeam, tab.id, "add")
+                                      ? "bg-blue-50 dark:bg-blue-950/40 border-blue-300 dark:border-blue-800 text-blue-800 dark:text-blue-400"
+                                      : "bg-slate-100/50 dark:bg-slate-850/50 border-slate-200 dark:border-slate-800/80 text-slate-400 dark:text-slate-600 line-through"
                                   }`}
-                                  title="Toggle Team Add/Create Permission"
+                                  title="Toggle Add New Entry Permission"
                                 >
-                                  Add
+                                  <Plus size={12} className="shrink-0" />
+                                  <span>Add / Create</span>
                                 </button>
+                                
                                 <button
                                   type="button"
-                                  onClick={() => handleTogglePermissionForTeam(team, tab.id, "edit")}
-                                  className={`px-1 py-0.5 rounded text-[8px] font-bold font-mono transition-colors cursor-pointer ${
-                                    getPermissionForTeam(team, tab.id, "edit")
-                                      ? "bg-amber-100 text-amber-800 border border-amber-200"
-                                      : "bg-slate-100 text-slate-400 border border-slate-200 line-through"
+                                  onClick={() => handleTogglePermissionForTeam(activeConsoleTeam, tab.id, "edit")}
+                                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer select-none ${
+                                    getPermissionForTeam(activeConsoleTeam, tab.id, "edit")
+                                      ? "bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-400"
+                                      : "bg-slate-100/50 dark:bg-slate-850/50 border-slate-200 dark:border-slate-800/80 text-slate-400 dark:text-slate-600 line-through"
                                   }`}
-                                  title="Toggle Team Edit/Update Permission"
+                                  title="Toggle Modify Existing Entry Permission"
                                 >
-                                  Edit
+                                  <Save size={12} className="shrink-0" />
+                                  <span>Edit / Modify</span>
                                 </button>
+
                                 {["leads", "orders", "indent", "payment_list", "dashboard"].includes(tab.id) && (
                                   <button
                                     type="button"
-                                    onClick={() => handleToggleLevelFilterForTeam(team, tab.id)}
-                                    className={`px-1 py-0.5 rounded text-[8px] font-bold font-mono transition-colors cursor-pointer border ${
-                                      getLevelFilterForTeam(team, tab.id)
-                                        ? "bg-purple-100 text-purple-800 border-purple-200 font-extrabold"
-                                        : "bg-slate-100 text-slate-400 border-slate-200"
+                                    onClick={() => handleToggleLevelFilterForTeam(activeConsoleTeam, tab.id)}
+                                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer select-none ${
+                                      getLevelFilterForTeam(activeConsoleTeam, tab.id)
+                                        ? "bg-purple-50 dark:bg-purple-950/40 border-purple-300 dark:border-purple-800 text-purple-800 dark:text-purple-450 font-black"
+                                        : "bg-slate-100/50 dark:bg-slate-850/50 border-slate-200 dark:border-slate-800/80 text-slate-400 dark:text-slate-600"
                                     }`}
-                                    title="Toggle Level-wise Filtering (e.g. restrict to user's subordinate hierarchy tree)"
+                                    title="Toggle reporting hierarchy enforcement (e.g. users restricted to see only their direct subtree nodes)"
                                   >
-                                    Level Filter: {getLevelFilterForTeam(team, tab.id) ? "ON" : "OFF"}
+                                    <Shield size={12} className="shrink-0" />
+                                    <span>Hierarchy Lockout: {getLevelFilterForTeam(activeConsoleTeam, tab.id) ? "ON (Restricted Tree)" : "OFF (Full Access)"}</span>
                                   </button>
                                 )}
                               </div>
-                            )}
-                            
-                            {isTabEnabled && tab.subTabs && (
-                              <div className="flex flex-wrap gap-1 ml-4 mt-1 border-l border-slate-200 pl-2">
-                                {tab.subTabs.map((subTab) => {
-                                  const isSubTabEnabled = getVisibleSubTabsForTeam(team, tab.id).includes(subTab.id);
-                                  return (
-                                    <div key={subTab.id} className="flex flex-col gap-1 items-start bg-slate-50/40 p-1 rounded-sm border border-slate-100 shadow-4xs">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleToggleSubTabForTeam(team, tab.id, subTab.id)}
-                                        className={`flex items-center gap-1 px-2 py-0.5 rounded text-[8px] font-bold font-mono transition-all border cursor-pointer ${
+                            </div>
+
+                            {/* Sub-Workspaces Toggle Section */}
+                            {tab.subTabs && tab.subTabs.length > 0 && (
+                              <div className="pt-2 border-t border-slate-150 dark:border-slate-800/80 space-y-2">
+                                <span className="block text-[8.5px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider font-mono">
+                                  Workspaces & Navigation Tabs (Sub-Tabs)
+                                </span>
+                                
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                                  {tab.subTabs.map((subTab) => {
+                                    const isSubTabEnabled = getVisibleSubTabsForTeam(activeConsoleTeam, tab.id).includes(subTab.id);
+                                    
+                                    return (
+                                      <div
+                                        key={subTab.id}
+                                        className={`p-2.5 rounded-xl border flex flex-col gap-2 transition-all ${
                                           isSubTabEnabled
-                                            ? "bg-blue-50 border-blue-200 text-blue-700"
-                                            : "bg-slate-50 border-slate-100 text-slate-400 hover:bg-slate-100"
+                                            ? "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-4xs"
+                                            : "bg-slate-100/50 dark:bg-slate-900/20 border-slate-150 dark:border-slate-850 opacity-70"
                                         }`}
                                       >
-                                        {subTab.label}
-                                      </button>
-                                      {isSubTabEnabled && subTab.subSubTabs && (
-                                        <div className="flex flex-wrap gap-0.5 ml-4 mt-1 border-l border-slate-200 pl-1">
-                                          {subTab.subSubTabs.map((subSubTab) => {
-                                            const isSubSubTabEnabled = getVisibleSubSubTabsForTeam(team, tab.id, subTab.id).includes(subSubTab.id);
-                                            return (
-                                              <button
-                                                key={subSubTab.id}
-                                                type="button"
-                                                onClick={() => handleToggleSubSubTabForTeam(team, tab.id, subTab.id, subSubTab.id)}
-                                                className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[7px] font-bold font-mono transition-all border cursor-pointer ${
-                                                  isSubSubTabEnabled
-                                                    ? "bg-purple-50 border-purple-200 text-purple-700"
-                                                    : "bg-slate-50 border-slate-50 text-slate-400 hover:bg-slate-100"
-                                                }`}
-                                              >
-                                                {subSubTab.label}
-                                              </button>
-                                            );
-                                          })}
+                                        <div className="flex items-center justify-between gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleToggleSubTabForTeam(activeConsoleTeam, tab.id, subTab.id)}
+                                            className={`text-left text-[10px] font-extrabold cursor-pointer select-none transition-colors truncate flex items-center gap-1.5 ${
+                                              isSubTabEnabled
+                                                ? "text-blue-700 dark:text-blue-400"
+                                                : "text-slate-400 dark:text-slate-600 hover:text-slate-600"
+                                            }`}
+                                            title={`Toggle ${subTab.label} Sub-Tab`}
+                                          >
+                                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isSubTabEnabled ? "bg-blue-500" : "bg-slate-300 dark:bg-slate-700"}`} />
+                                            <span className="truncate">{subTab.label}</span>
+                                          </button>
+                                          
+                                          {/* Mini Checkbox Switch */}
+                                          <input
+                                            type="checkbox"
+                                            checked={isSubTabEnabled}
+                                            onChange={() => handleToggleSubTabForTeam(activeConsoleTeam, tab.id, subTab.id)}
+                                            className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 border-slate-300 dark:border-slate-700 rounded focus:ring-blue-500 cursor-pointer"
+                                          />
                                         </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
+
+                                        {/* Sub-Sub Workspaces (e.g. Product Sub-groups list) */}
+                                        {isSubTabEnabled && subTab.subSubTabs && subTab.subSubTabs.length > 0 && (
+                                          <div className="border-l border-slate-200 dark:border-slate-800 ml-1 pl-2.5 py-1 flex flex-col gap-1">
+                                            <span className="text-[7.5px] uppercase font-bold text-slate-400 dark:text-slate-500 font-mono tracking-wider">
+                                              Sub-Sections:
+                                            </span>
+                                            <div className="flex flex-wrap gap-1">
+                                              {subTab.subSubTabs.map((subSubTab) => {
+                                                const isSubSubTabEnabled = getVisibleSubSubTabsForTeam(activeConsoleTeam, tab.id, subTab.id).includes(subSubTab.id);
+                                                
+                                                return (
+                                                  <button
+                                                    key={subSubTab.id}
+                                                    type="button"
+                                                    onClick={() => handleToggleSubSubTabForTeam(activeConsoleTeam, tab.id, subTab.id, subSubTab.id)}
+                                                    className={`px-1.5 py-0.5 rounded text-[8px] font-bold font-mono border transition-all cursor-pointer select-none ${
+                                                      isSubSubTabEnabled
+                                                        ? "bg-purple-50 dark:bg-purple-950/40 border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-450"
+                                                        : "bg-slate-50 dark:bg-slate-900 border-slate-100 dark:border-slate-800/80 text-slate-450 dark:text-slate-650"
+                                                    }`}
+                                                    title={`Toggle ${subSubTab.label} Sub-Sub-Tab`}
+                                                  >
+                                                    {subSubTab.label}
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
                             )}
                           </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

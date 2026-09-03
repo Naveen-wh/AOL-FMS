@@ -43,6 +43,7 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
     variables: [
       { key: "{{assignedToName}}", label: "Assigned User Name", description: "Name of the assigned Sales Representative", sampleValue: "Mohit Jain" },
       { key: "{{assignedToEmail}}", label: "Assigned User Email", description: "Email of the assigned Sales Representative", sampleValue: "mohit@aromaorganic.in" },
+      { key: "{{assignedToPhone}}", label: "Assigned User Phone", description: "Phone number of the assigned Sales Representative", sampleValue: "+91 9123456789" },
       { key: "{{teamLeadEmail}}", label: "Team Lead Email", description: "Email of the Assigned User's Team Lead", sampleValue: "teamlead@aromaorganic.in" },
       { key: "{{managerEmail}}", label: "Manager Email", description: "Email of the Assigned User's Reporting Manager", sampleValue: "manager@aromaorganic.in" },
     ],
@@ -186,6 +187,7 @@ export interface ReplaceVariablesContext {
   // Assigned info
   assignedToName?: string;
   assignedToEmail?: string;
+  assignedToPhone?: string;
   teamLeadEmail?: string;
   managerEmail?: string;
   currentUserEmail?: string;
@@ -206,6 +208,7 @@ export function getSampleTemplateContext(assignedForm?: string): ReplaceVariable
     creatorEmail: "naveen@chsurya.in",
     assignedToName: "Mohit Jain",
     assignedToEmail: "mohit@aromaorganic.in",
+    assignedToPhone: "+91 9123456789",
     teamLeadEmail: "lead@aromaorganic.in",
     managerEmail: "manager@aromaorganic.in",
     currentUserEmail: "naveen@chsurya.in",
@@ -321,9 +324,9 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
   if (!text) return "";
 
   const recordIdVal = ctx.recordId || "";
-  const totalValFormatted = typeof ctx.totalValue === "number" ? `$${ctx.totalValue.toLocaleString()}` : (ctx.totalValue || "");
-  const amountRecFormatted = typeof ctx.amountReceived === "number" ? `$${ctx.amountReceived.toLocaleString()}` : (ctx.amountReceived || "");
-  const pendingAmtFormatted = typeof ctx.pendingAmount === "number" ? `$${ctx.pendingAmount.toLocaleString()}` : (ctx.pendingAmount || "");
+  const totalValFormatted = typeof ctx.totalValue === "number" ? `₹${ctx.totalValue.toLocaleString('en-IN')}` : (ctx.totalValue || "");
+  const amountRecFormatted = typeof ctx.amountReceived === "number" ? `₹${ctx.amountReceived.toLocaleString('en-IN')}` : (ctx.amountReceived || "");
+  const pendingAmtFormatted = typeof ctx.pendingAmount === "number" ? `₹${ctx.pendingAmount.toLocaleString('en-IN')}` : (ctx.pendingAmount || "");
 
   return text
     // Record Database ID
@@ -338,6 +341,7 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     // Assigned details & Hierarchy
     .replace(/\{\{assignedToName\}\}|\{assignedToName\}/gi, ctx.assignedToName || "")
     .replace(/\{\{assignedToEmail\}\}|\{assignedToEmail\}/gi, ctx.assignedToEmail || "")
+    .replace(/\{\{assignedToPhone\}\}|\{assignedToPhone\}/gi, ctx.assignedToPhone || "")
     .replace(/\{\{teamLeadEmail\}\}|\{teamLeadEmail\}/gi, ctx.teamLeadEmail || "")
     .replace(/\{\{managerEmail\}\}|\{managerEmail\}/gi, ctx.managerEmail || "")
     .replace(/\{\{currentUserEmail\}\}|\{currentUserEmail\}/gi, ctx.currentUserEmail || ctx.creatorEmail || "")
@@ -388,7 +392,7 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{dueDate\}\}|\{dueDate\}/gi, ctx.dueDate || "")
 
     // Consolidated payment reminder
-    .replace(/\{\{totalPendingAmount\}\}|\{totalPendingAmount\}/gi, typeof ctx.totalPendingAmount === "number" ? `₹${ctx.totalPendingAmount.toLocaleString()}` : (ctx.totalPendingAmount || ""))
+    .replace(/\{\{totalPendingAmount\}\}|\{totalPendingAmount\}/gi, typeof ctx.totalPendingAmount === "number" ? `₹${ctx.totalPendingAmount.toLocaleString('en-IN')}` : (ctx.totalPendingAmount || ""))
     .replace(/\{\{invoiceCount\}\}|\{invoiceCount\}/gi, String(ctx.invoiceCount || ""))
     .replace(/\{\{invoiceTable\}\}|\{invoiceTable\}/gi, ctx.invoiceTable || "")
     .replace(/\{\{todayDate\}\}|\{todayDate\}/gi, ctx.todayDate || new Date().toISOString().split("T")[0]);
@@ -406,6 +410,7 @@ export function resolveUserHierarchyInfo(creatorUserId: string, assignedToUserId
   const assignedUser = users.find(u => u.id === assignedToUserId);
   const assignedToName = assignedUser?.name || "";
   const assignedToEmail = assignedUser?.email || "";
+  const assignedToPhone = assignedUser?.phone || "";
 
   let teamLeadEmail = "";
   let managerEmail = "";
@@ -438,6 +443,7 @@ export function resolveUserHierarchyInfo(creatorUserId: string, assignedToUserId
     creatorEmail,
     assignedToName,
     assignedToEmail,
+    assignedToPhone,
     teamLeadEmail,
     managerEmail,
   };

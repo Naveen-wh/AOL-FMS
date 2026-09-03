@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { User, Role, AccessLevel, Team } from "../types";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
-import { UserPlus, Search, Shield, CheckCircle2, Edit2, Save, X, Users, Mail, Target, Award, UserCheck, AlertTriangle, FileSpreadsheet } from "lucide-react";
+import { UserPlus, Search, Shield, CheckCircle2, Edit2, Save, X, Users, Mail, Target, Award, UserCheck, AlertTriangle, FileSpreadsheet, Phone } from "lucide-react";
 
 interface AddUserManagementViewProps {
   activeUserId: string;
@@ -34,6 +34,7 @@ export default function AddUserManagementView({
   const userImportFields: ImportFieldDefinition[] = [
     { key: "name", label: "Full Name", required: true, sampleValue: "Ananya Verma" },
     { key: "email", label: "Work Email Address", required: true, sampleValue: "ananya@aromaorganic.in" },
+    { key: "phone", label: "Phone Number", sampleValue: "+91 9876543210" },
     { key: "role", label: "Role (Admin/SeniorManager/Manager/User)", sampleValue: "User" },
     { key: "accessLevel", label: "Access Level (Editor/Manager/Viewer)", sampleValue: "Editor" },
     { key: "teamName", label: "Department / Team", sampleValue: "Sales Executive" },
@@ -67,6 +68,7 @@ export default function AddUserManagementView({
           id: emailNormalized,
           email: emailNormalized,
           name: row.name.trim(),
+          phone: row.phone ? String(row.phone).trim() : undefined,
           role: roleVal,
           accessLevel: accessVal,
           teamName: row.teamName?.trim() || "General Executive",
@@ -83,6 +85,7 @@ export default function AddUserManagementView({
   const [showAddForm, setShowAddForm] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
   const [newRole, setNewRole] = useState<Role>(Role.User);
   const [newAccess, setNewAccess] = useState<AccessLevel>(AccessLevel.Editor);
   const [newTeam, setNewTeam] = useState("");
@@ -95,6 +98,7 @@ export default function AddUserManagementView({
   // Edit User Modal/State
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
   const [editRole, setEditRole] = useState<Role>(Role.User);
   const [editAccess, setEditAccess] = useState<AccessLevel>(AccessLevel.Editor);
   const [editTeam, setEditTeam] = useState("");
@@ -146,6 +150,7 @@ export default function AddUserManagementView({
         id: normalizedEmail,
         email: normalizedEmail,
         name: newName.trim(),
+        phone: newPhone.trim() || undefined,
         role: newRole,
         accessLevel: newAccess,
         teamName: newTeam.trim() || "General Executive",
@@ -163,6 +168,7 @@ export default function AddUserManagementView({
       // Reset Form
       setNewEmail("");
       setNewName("");
+      setNewPhone("");
       setNewRole(Role.User);
       setNewAccess(AccessLevel.Editor);
       setNewTeam("");
@@ -180,6 +186,7 @@ export default function AddUserManagementView({
   const handleStartEdit = (targetUser: User) => {
     setEditingUserId(targetUser.id);
     setEditName(targetUser.name);
+    setEditPhone(targetUser.phone || "");
     setEditRole(targetUser.role);
     setEditAccess(targetUser.accessLevel);
     setEditTeam(targetUser.teamName || "");
@@ -200,6 +207,7 @@ export default function AddUserManagementView({
     try {
       await onUpdateUser(editingUserId, {
         name: editName.trim(),
+        phone: editPhone.trim() || undefined,
         role: editRole,
         accessLevel: editAccess,
         teamName: editTeam.trim() || undefined,
@@ -346,6 +354,20 @@ export default function AddUserManagementView({
                   onChange={(e) => setNewName(e.target.value)}
                   placeholder="e.g. Robert Vance"
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
+                />
+              </div>
+
+              {/* Phone Number */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-700 uppercase block">
+                  Phone Number
+                </label>
+                <input
+                  type="text"
+                  value={newPhone}
+                  onChange={(e) => setNewPhone(e.target.value)}
+                  placeholder="e.g. +91 9876543210"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium font-mono"
                 />
               </div>
 
@@ -563,6 +585,12 @@ export default function AddUserManagementView({
                         <Mail size={10} className="text-slate-400 shrink-0" />
                         {u.email}
                       </p>
+                      {u.phone && (
+                        <p className="text-[10px] text-slate-500 font-mono flex items-center gap-1 mt-0.5 truncate max-w-[180px]">
+                          <Phone size={10} className="text-slate-400 shrink-0" />
+                          {u.phone}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -698,6 +726,20 @@ export default function AddUserManagementView({
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-300 rounded px-2.5 py-1.5 text-xs text-slate-900 font-bold focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                {/* Phone Number */}
+                <div className="col-span-2 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-700 uppercase block">
+                    Phone Number
+                  </label>
+                  <input
+                    type="text"
+                    value={editPhone}
+                    onChange={(e) => setEditPhone(e.target.value)}
+                    placeholder="e.g. +91 9876543210"
+                    className="w-full bg-slate-50 border border-slate-300 rounded px-2.5 py-1.5 text-xs text-slate-900 font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono"
                   />
                 </div>
 

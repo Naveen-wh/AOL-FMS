@@ -10,7 +10,9 @@ import { auth } from "../firebase";
 import { openOrDownloadDocument } from "../lib/googleDriveService";
 import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
 import { dispatchSystemEmail } from "../lib/emailService";
-import { formatDate } from "../utils";
+import { formatDate, getOrderTotalInvoiceAmount, formatIndianNumber, formatIndianCurrency } from "../utils";
+
+const formatINR = formatIndianNumber;
 import { canViewOrderOffer } from "../data";
 import EmailSentStatusCell from "./EmailSentStatusCell";
 import Papa from "papaparse";
@@ -83,12 +85,49 @@ export function formatEmailPreviewHtml(bodyStr: string): string {
 }
 
 /**
+ * Helper to get payment details for any order, automatically synthesizing payment details for Bad Debtors
+ */
+export function getPaymentDetailsForOrder(
+  order: OrderOffer,
+  paymentDetailsList: PaymentDetails[] = []
+): PaymentDetails | undefined {
+  if ((order.isBadDebtor || order.id?.startsWith("bd-")) && order.badDebtorRecord) {
+    const bd = order.badDebtorRecord;
+    const totalReceived =
+      (bd.receipts || []).reduce((sum, r) => sum + (r.amount || 0), 0) ||
+      (bd.amountReceived || 0);
+    const invoiceAmt = bd.invoiceAmount || (bd as any).orderAmount || order.totalValue || 0;
+    const pendingAmt = Math.max(0, invoiceAmt - totalReceived);
+    const status =
+      pendingAmt <= 0 && invoiceAmt > 0
+        ? "Paid"
+        : totalReceived > 0
+        ? "Partial Paid"
+        : "Bad Debt";
+
+    return {
+      id: `pd-${order.id}`,
+      orderId: order.id,
+      amountReceived: totalReceived,
+      pendingAmount: pendingAmt,
+      paymentStatus: status as any,
+      receipts: bd.receipts || [],
+      paymentReceivedDate: bd.dueDate,
+      createdAt: bd.createdAt || new Date().toISOString(),
+      updatedAt: bd.updatedAt || new Date().toISOString(),
+    };
+  }
+
+  return paymentDetailsList.find((p) => p.orderId === order.id);
+}
+
+/**
  * Generates formatted HTML table for consolidated invoice details
  */
 export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], paymentDetailsList: PaymentDetails[]) {
   const rows = orders.map((o) => {
-    const pDet = paymentDetailsList.find((p) => p.orderId === o.id);
-    const totalAmt = o.totalValue || 0;
+    const pDet = getPaymentDetailsForOrder(o, paymentDetailsList);
+    const totalAmt = getOrderTotalInvoiceAmount(o);
     const receivedAmt = pDet ? pDet.amountReceived : 0;
     const pendingAmt = pDet ? pDet.pendingAmount : Math.max(0, totalAmt - receivedAmt);
     const actualDispatchDate = getOrderActualDispatchDate(o);
@@ -103,20 +142,20 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
       `<td style="padding:10px 12px; border:1px solid #cbd5e1; font-family:monospace; color:#334155; text-align:left;">${poNum}</td>` +
       `<td style="padding:10px 12px; border:1px solid #cbd5e1; font-size:11px; color:#475569; text-align:left;">${dispDate}</td>` +
       `<td style="padding:10px 12px; border:1px solid #cbd5e1; font-family:monospace; font-weight:bold; color:${dueDateColor}; text-align:left;">${dueInfo.dueDateFormatted}</td>` +
-      `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; color:#0f172a;">₹${totalAmt.toLocaleString()}</td>` +
-      `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; color:#166534; font-weight:bold;">₹${receivedAmt.toLocaleString()}</td>` +
-      `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; font-weight:800; color:#dc2626;">₹${pendingAmt.toLocaleString()}</td>` +
+      `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; color:#0f172a;">₹${formatIndianNumber(totalAmt)}</td>` +
+      `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; color:#166534; font-weight:bold;">₹${formatIndianNumber(receivedAmt)}</td>` +
+      `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; font-weight:800; color:#dc2626;">₹${formatIndianNumber(pendingAmt)}</td>` +
     `</tr>`;
   }).join("");
 
-  const grandTotalValue = orders.reduce((sum, o) => sum + (o.totalValue || 0), 0);
+  const grandTotalValue = orders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0);
   const grandTotalReceived = orders.reduce((sum, o) => {
-    const p = paymentDetailsList.find((pd) => pd.orderId === o.id);
+    const p = getPaymentDetailsForOrder(o, paymentDetailsList);
     return sum + (p ? p.amountReceived : 0);
   }, 0);
   const grandTotalPending = orders.reduce((sum, o) => {
-    const p = paymentDetailsList.find((pd) => pd.orderId === o.id);
-    const tot = o.totalValue || 0;
+    const p = getPaymentDetailsForOrder(o, paymentDetailsList);
+    const tot = getOrderTotalInvoiceAmount(o);
     const rec = p ? p.amountReceived : 0;
     return sum + (p ? p.pendingAmount : Math.max(0, tot - rec));
   }, 0);
@@ -138,9 +177,9 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
         `${rows}` +
         `<tr style="background-color:#ecfdf5; font-weight:bold; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif; font-size:12px;">` +
           `<td colspan="4" style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#065f46; font-weight:bold;">CONSOLIDATED OUTSTANDING TOTAL:</td>` +
-          `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#0f172a; font-family:monospace; font-weight:bold;">₹${grandTotalValue.toLocaleString()}</td>` +
-          `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#166534; font-family:monospace; font-weight:bold;">₹${grandTotalReceived.toLocaleString()}</td>` +
-          `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#dc2626; font-family:monospace; font-size:13px; font-weight:800;">₹${grandTotalPending.toLocaleString()}</td>` +
+          `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#0f172a; font-family:monospace; font-weight:bold;">₹${formatIndianNumber(grandTotalValue)}</td>` +
+          `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#166534; font-family:monospace; font-weight:bold;">₹${formatIndianNumber(grandTotalReceived)}</td>` +
+          `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#dc2626; font-family:monospace; font-size:13px; font-weight:800;">₹${formatIndianNumber(grandTotalPending)}</td>` +
         `</tr>` +
       `</tbody>` +
     `</table>` +
@@ -377,9 +416,23 @@ export default function PaymentListView({
 
   // Bad Debtors tab states & modals
   const [badDebtorsSearchTerm, setBadDebtorsSearchTerm] = useState("");
+  const [badDebtorsFilter, setBadDebtorsFilter] = useState<"all" | "pending" | "fully_received">("all");
   const [showBadDebtorModal, setShowBadDebtorModal] = useState(false);
   const [editingBadDebtor, setEditingBadDebtor] = useState<BadDebtor | null>(null);
   const [isSavingBadDebtor, setIsSavingBadDebtor] = useState(false);
+
+  // Bad Debtors Payment Receipts management states
+  const [managingBadDebtorPayment, setManagingBadDebtorPayment] = useState<BadDebtor | null>(null);
+  const [showBadDebtorPaymentModal, setShowBadDebtorPaymentModal] = useState(false);
+  const [confirmDeleteReceiptId, setConfirmDeleteReceiptId] = useState<string | null>(null);
+  const [badDebtorPaymentForm, setBadDebtorPaymentForm] = useState({
+    amount: "",
+    paymentReceivedDate: new Date().toISOString().split("T")[0],
+    utrId: "",
+    comments: "",
+  });
+  const [isSavingBadDebtorPayment, setIsSavingBadDebtorPayment] = useState(false);
+
   const [badDebtorForm, setBadDebtorForm] = useState<{
     companyName: string;
     clientName: string;
@@ -392,7 +445,8 @@ export default function PaymentListView({
     dueDate: string;
     overdueDays: string;
     comments: string;
-    status: "Bad Debt" | "Written Off" | "In Recovery" | "Paid";
+    status: "Bad Debt" | "Written Off" | "In Recovery" | "Paid" | "Partial Paid";
+    assignedToUserId: string;
   }>({
     companyName: "",
     clientName: "",
@@ -406,6 +460,7 @@ export default function PaymentListView({
     overdueDays: "0",
     comments: "",
     status: "Bad Debt",
+    assignedToUserId: "",
   });
 
   // Bulk Import Bad Debtors state
@@ -552,8 +607,8 @@ export default function PaymentListView({
         };
       }
 
-      const orderTotal = matchedOrder.totalValue || 0;
-      const existingP = paymentDetailsList.find((p) => p.orderId === matchedOrder.id);
+      const orderTotal = getOrderTotalInvoiceAmount(matchedOrder);
+      const existingP = getPaymentDetailsForOrder(matchedOrder, paymentDetailsList);
       const existingReceiptsSum = (existingP?.receipts || []).reduce((sum, r) => sum + (r.amount || 0), 0);
       const currentReceived = (existingP?.receipts && existingP.receipts.length > 0)
         ? existingReceiptsSum
@@ -642,7 +697,7 @@ export default function PaymentListView({
 
       let importedCount = 0;
       for (const [orderId, { order, rows }] of orderGroupMap.entries()) {
-        const existingP = paymentDetailsList.find((p) => p.orderId === orderId);
+        const existingP = getPaymentDetailsForOrder(order, paymentDetailsList);
         const existingReceipts = existingP?.receipts || [];
         const invoiceNo = order.billingDetails?.invoiceNumber || orderId;
 
@@ -695,7 +750,7 @@ export default function PaymentListView({
           targetType: "Order",
           targetId: orderId,
           targetName: order.companyName || order.clientName || "Order",
-          details: `Bulk imported ${rows.length} receipt(s) for Invoice #${invoiceNo}. Total Received updated to ₹${totalReceived.toLocaleString()}, Pending=₹${pendAmt.toLocaleString()}`,
+          details: `Bulk imported ${rows.length} receipt(s) for Invoice #${invoiceNo}. Total Received updated to ₹${formatIndianNumber(totalReceived)}, Pending=₹${formatIndianNumber(pendAmt)}`,
         });
 
         importedCount += rows.length;
@@ -763,7 +818,7 @@ export default function PaymentListView({
 
   // Base list calculations (checking fully paid status)
   const checkFullyPaid = (order: OrderOffer) => {
-    const pDetails = paymentDetailsList.find((p) => p.orderId === order.id);
+    const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
     return isOrderFullyPaid(order, pDetails);
   };
 
@@ -805,8 +860,8 @@ export default function PaymentListView({
       const client = (order.clientName || "").trim();
       const key = (company || client || "Unspecified Party").toLowerCase();
 
-      const pDetails = paymentDetailsList.find((p) => p.orderId === order.id);
-      const totalAmt = order.totalValue || 0;
+      const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
+      const totalAmt = getOrderTotalInvoiceAmount(order);
       const receivedAmt = pDetails ? pDetails.amountReceived : 0;
       const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt - receivedAmt);
       const actualDispatchDate = getOrderActualDispatchDate(order);
@@ -868,9 +923,15 @@ export default function PaymentListView({
   // Helper: Convert Bad Debtors to OrderOffer compatible format for Reminder subtabs
   const badDebtorsReminderOrders: OrderOffer[] = useMemo(() => {
     return (badDebtors || [])
-      .filter((bd) => bd.status !== "Paid" && bd.invoiceAmount > 0)
+      .filter((bd) => {
+        const totalReceived = (bd.receipts || []).reduce((sum, r) => sum + (r.amount || 0), 0) || (bd.amountReceived || 0);
+        const pending = Math.max(0, bd.invoiceAmount - totalReceived);
+        return bd.status !== "Paid" && pending > 0 && bd.invoiceAmount > 0;
+      })
       .map((bd) => {
         const id = bd.id.startsWith("bd-") ? bd.id : `bd-${bd.id}`;
+        const totalReceived = (bd.receipts || []).reduce((sum, r) => sum + (r.amount || 0), 0) || (bd.amountReceived || 0);
+        const invAmt = bd.invoiceAmount || (bd as any).orderAmount || 0;
         return {
           id,
           clientName: bd.clientName || bd.companyName,
@@ -879,18 +940,19 @@ export default function PaymentListView({
           phone: bd.phone || "",
           billingAddress: "",
           status: "Closed Won" as const,
-          totalValue: bd.invoiceAmount,
+          totalValue: invAmt,
           items: [{
             id: `item-${bd.id}`,
             productName: `Bad Debt Invoice #${bd.invoiceNumber}`,
             quantity: 1,
-            rate: bd.invoiceAmount,
-            amount: bd.invoiceAmount,
+            rate: invAmt,
+            amount: invAmt,
+            gstPercent: 0,
           }],
           payment: `Due Date: ${bd.dueDate}`,
           delivery: "",
           otherTerms: bd.comments || "Bad Debt Account",
-          assignedToUserId: bd.createdByUserId || activeUserId,
+          assignedToUserId: bd.assignedToUserId || bd.createdByUserId || activeUserId,
           createdByUserId: bd.createdByUserId || activeUserId,
           notes: `[BAD DEBT] ${bd.comments || ""}`,
           createdAt: bd.createdAt || new Date().toISOString(),
@@ -909,7 +971,13 @@ export default function PaymentListView({
             freightChargedInBill: "No",
           },
           isBadDebtor: true,
-          badDebtorRecord: bd,
+          badDebtorRecord: {
+            ...bd,
+            invoiceAmount: invAmt,
+            orderAmount: invAmt,
+            amountReceived: totalReceived,
+            pendingAmount: Math.max(0, invAmt - totalReceived),
+          },
         };
       });
   }, [badDebtors, activeUserId]);
@@ -920,9 +988,19 @@ export default function PaymentListView({
   );
 
   const filteredBadDebtors = useMemo(() => {
-    if (!badDebtorsSearchTerm.trim()) return badDebtors;
-    const term = badDebtorsSearchTerm.toLowerCase().trim();
-    return badDebtors.filter((bd) => {
+    return (badDebtors || []).filter((bd) => {
+      // 1. Status Filter (pending vs fully_received)
+      const totalRec = (bd.receipts || []).reduce((sum, r) => sum + (r.amount || 0), 0) || (bd.amountReceived || 0);
+      const pendingAmt = Math.max(0, (bd.invoiceAmount || 0) - totalRec);
+
+      if (badDebtorsFilter === "pending" && pendingAmt <= 0) return false;
+      if (badDebtorsFilter === "fully_received" && pendingAmt > 0) return false;
+
+      // 2. Search Term Filter
+      if (!badDebtorsSearchTerm.trim()) return true;
+      const term = badDebtorsSearchTerm.toLowerCase().trim();
+      const salesPerson = getAssignedUserName(bd.assignedToUserId).toLowerCase();
+
       return (
         (bd.companyName || "").toLowerCase().includes(term) ||
         (bd.clientName || "").toLowerCase().includes(term) ||
@@ -930,10 +1008,11 @@ export default function PaymentListView({
         (bd.customerPo || "").toLowerCase().includes(term) ||
         (bd.invoiceNumber || "").toLowerCase().includes(term) ||
         (bd.status || "").toLowerCase().includes(term) ||
-        (bd.comments || "").toLowerCase().includes(term)
+        (bd.comments || "").toLowerCase().includes(term) ||
+        salesPerson.includes(term)
       );
     });
-  }, [badDebtors, badDebtorsSearchTerm]);
+  }, [badDebtors, badDebtorsSearchTerm, badDebtorsFilter, users]);
 
   // Payment Reminder party-wise consolidation (only due today or overdue invoices, including bad debtors)
   const consolidatedReminderParties = useMemo(
@@ -1006,8 +1085,8 @@ export default function PaymentListView({
       });
     };
 
-    let defaultSub = `Consolidated Payment Reminder Notice - ${party.companyName} (Outstanding: ₹${party.totalPendingAmount.toLocaleString()})`;
-    let defaultBody = `Dear ${party.clientName || party.companyName},\n\nWe hope this email finds you well.\n\nThis is a consolidated payment reminder regarding pending invoices for ${party.companyName}.\n\nBelow is the invoice-wise details of your pending balance:\n\n${invTableHtml}\n\nConsolidated Total Pending Amount: ₹${party.totalPendingAmount.toLocaleString()}\n\nKindly review and process the pending payment at your earliest convenience. If payment has already been remitted, please share the UTR / transaction receipt details.\n\nThank you for your cooperation!`;
+    let defaultSub = `Consolidated Payment Reminder Notice - ${party.companyName} (Outstanding: ₹${formatIndianNumber(party.totalPendingAmount)})`;
+    let defaultBody = `Dear ${party.clientName || party.companyName},\n\nWe hope this email finds you well.\n\nThis is a consolidated payment reminder regarding pending invoices for ${party.companyName}.\n\nBelow is the invoice-wise details of your pending balance:\n\n${invTableHtml}\n\nConsolidated Total Pending Amount: ₹${formatIndianNumber(party.totalPendingAmount)}\n\nKindly review and process the pending payment at your earliest convenience. If payment has already been remitted, please share the UTR / transaction receipt details.\n\nThank you for your cooperation!`;
 
     if (matchedTmpl) {
       defaultSub = matchedTmpl.subject ? replaceVars(matchedTmpl.subject) : defaultSub;
@@ -1122,7 +1201,7 @@ export default function PaymentListView({
           targetType: "Order",
           targetId: order.id,
           targetName: order.companyName || order.clientName || "Order",
-          details: `Sent Consolidated Payment Reminder email to ${consolidatedEmailParty.companyName} (${toClean}) covering ${consolidatedEmailParty.invoiceCount} invoices for total pending ₹${consolidatedEmailParty.totalPendingAmount.toLocaleString()}`,
+          details: `Sent Consolidated Payment Reminder email to ${consolidatedEmailParty.companyName} (${toClean}) covering ${consolidatedEmailParty.invoiceCount} invoices for total pending ₹${formatIndianNumber(consolidatedEmailParty.totalPendingAmount)}`,
         });
       }
 
@@ -1142,7 +1221,7 @@ export default function PaymentListView({
   const debtorsOrders = debtorsBase.filter((order) => {
     if (!searchTerm.trim()) return true;
     const term = searchTerm.toLowerCase();
-    const pDetails = paymentDetailsList.find((p) => p.orderId === order.id);
+    const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
     const assignedName = getAssignedUserName(order.assignedToUserId).toLowerCase();
     return (
       order.clientName?.toLowerCase().includes(term) ||
@@ -1169,7 +1248,7 @@ export default function PaymentListView({
 
       const matchInvoice = p.orders.some(
         (o) => {
-          const pDetails = paymentDetailsList.find((pay) => pay.orderId === o.id);
+          const pDetails = getPaymentDetailsForOrder(o, paymentDetailsList);
           const assignedName = getAssignedUserName(o.assignedToUserId).toLowerCase();
           return (
             assignedName.includes(term) ||
@@ -1203,7 +1282,7 @@ export default function PaymentListView({
   const fullyPaidOrders = fullyPaidBase.filter((order) => {
     if (!fullyPaidSearchTerm.trim()) return true;
     const term = fullyPaidSearchTerm.toLowerCase();
-    const pDetails = paymentDetailsList.find((p) => p.orderId === order.id);
+    const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
     const assignedName = getAssignedUserName(order.assignedToUserId).toLowerCase();
     return (
       order.clientName?.toLowerCase().includes(term) ||
@@ -1320,11 +1399,11 @@ export default function PaymentListView({
 
         let subject = template?.subject
           ? replaceVars(template.subject)
-          : `Consolidated Payment Reminder Notice - ${party.companyName} (Outstanding: ₹${party.totalPendingAmount.toLocaleString()})`;
+          : `Consolidated Payment Reminder Notice - ${party.companyName} (Outstanding: ₹${formatIndianNumber(party.totalPendingAmount)})`;
 
         let body = template?.body
           ? replaceVars(template.body)
-          : `Dear ${party.clientName || party.companyName},\n\nWe hope this email finds you well.\n\nThis is a consolidated payment reminder regarding pending invoices for ${party.companyName}.\n\nBelow is the invoice-wise details of your pending balance:\n\n${invTableHtml}\n\nConsolidated Total Pending Amount: ₹${party.totalPendingAmount.toLocaleString()}\n\nKindly review and process the pending payment at your earliest convenience. If payment has already been remitted, please share the UTR / transaction receipt details.\n\nThank you for your cooperation!`;
+          : `Dear ${party.clientName || party.companyName},\n\nWe hope this email finds you well.\n\nThis is a consolidated payment reminder regarding pending invoices for ${party.companyName}.\n\nBelow is the invoice-wise details of your pending balance:\n\n${invTableHtml}\n\nConsolidated Total Pending Amount: ₹${formatIndianNumber(party.totalPendingAmount)}\n\nKindly review and process the pending payment at your earliest convenience. If payment has already been remitted, please share the UTR / transaction receipt details.\n\nThank you for your cooperation!`;
 
         const cleanEmailList = (str: string) => str.split(/[,;]/).map((s) => s.trim()).filter(Boolean).join(", ");
         const toClean = template?.to ? cleanEmailList(replaceVars(template.to)) : party.email;
@@ -1388,7 +1467,7 @@ export default function PaymentListView({
             targetType: "Order",
             targetId: order.id,
             targetName: order.companyName || order.clientName || "Order",
-            details: `Sent Bulk Consolidated Payment Reminder email using template "${tmplName}" to ${party.companyName} (${toClean}) covering ${party.invoiceCount} invoices for total pending ₹${party.totalPendingAmount.toLocaleString()}`,
+            details: `Sent Bulk Consolidated Payment Reminder email using template "${tmplName}" to ${party.companyName} (${toClean}) covering ${party.invoiceCount} invoices for total pending ₹${formatIndianNumber(party.totalPendingAmount)}`,
           });
         }
 
@@ -1399,7 +1478,7 @@ export default function PaymentListView({
       setSendSuccessMsg(
         `Successfully sent ${sentCount} consolidated payment reminder email${
           sentCount === 1 ? "" : "s"
-        } (Total Pending: ₹${totalPendingSent.toLocaleString()}) using template "${tmplName}"!`
+        } (Total Pending: ₹${formatIndianNumber(totalPendingSent)}) using template "${tmplName}"!`
       );
       setSelectedConsolidatedPartyKeys({});
     } catch (err: any) {
@@ -1412,7 +1491,7 @@ export default function PaymentListView({
 
   const currentPaymentDetails = useMemo(() => {
     if (!editingPaymentOrder) return null;
-    return paymentDetailsList.find((p) => p.orderId === editingPaymentOrder.id) || null;
+    return getPaymentDetailsForOrder(editingPaymentOrder, paymentDetailsList) || null;
   }, [paymentDetailsList, editingPaymentOrder]);
 
   const orderReceipts = useMemo(() => {
@@ -1424,8 +1503,8 @@ export default function PaymentListView({
 
   // Open Payment Details Update Modal
   const openPaymentModal = (order: OrderOffer) => {
-    const existingP = paymentDetailsList.find((p) => p.orderId === order.id);
-    const orderTotal = order.totalValue || 0;
+    const existingP = getPaymentDetailsForOrder(order, paymentDetailsList);
+    const orderTotal = getOrderTotalInvoiceAmount(order);
     const receipts = existingP?.receipts || [];
     const receiptsSum = receipts.reduce((sum, r) => sum + (r.amount || 0), 0);
 
@@ -1471,7 +1550,7 @@ export default function PaymentListView({
 
     setIsSavingPayment(true);
     try {
-      const existingP = paymentDetailsList.find((p) => p.orderId === editingPaymentOrder.id);
+      const existingP = getPaymentDetailsForOrder(editingPaymentOrder, paymentDetailsList);
       const existingReceipts = existingP?.receipts || [];
 
       const currentInvoiceNum = editingPaymentOrder.billingDetails?.invoiceNumber || editingPaymentOrder.id;
@@ -1491,7 +1570,7 @@ export default function PaymentListView({
       const updatedReceipts = [...existingReceipts, newReceipt];
       const totalReceived = updatedReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
 
-      const orderTotal = editingPaymentOrder.totalValue || 0;
+      const orderTotal = getOrderTotalInvoiceAmount(editingPaymentOrder);
       const pendAmt = Math.max(0, orderTotal - totalReceived);
 
       let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
@@ -1526,10 +1605,10 @@ export default function PaymentListView({
         targetType: "Order",
         targetId: editingPaymentOrder.id,
         targetName: editingPaymentOrder.companyName || editingPaymentOrder.clientName || "Order",
-        details: `Saved Payment Receipt for Invoice #${editingPaymentOrder.billingDetails?.invoiceNumber}: Amount=₹${entryAmt.toLocaleString()}, Date=${paymentForm.paymentReceivedDate}, UTR=${paymentForm.utrId || "N/A"}. Total Received=₹${totalReceived.toLocaleString()}`,
+        details: `Saved Payment Receipt for Invoice #${editingPaymentOrder.billingDetails?.invoiceNumber}: Amount=₹${formatIndianNumber(entryAmt)}, Date=${paymentForm.paymentReceivedDate}, UTR=${paymentForm.utrId || "N/A"}. Total Received=₹${formatIndianNumber(totalReceived)}`,
       });
 
-      setPaymentSaveSuccess(`Payment record of ₹${entryAmt.toLocaleString()} added successfully!`);
+      setPaymentSaveSuccess(`Payment record of ₹${formatIndianNumber(entryAmt)} added successfully!`);
       setTimeout(() => setPaymentSaveSuccess(null), 4000);
 
       setPaymentForm((prev) => ({
@@ -1557,13 +1636,13 @@ export default function PaymentListView({
 
     setIsSavingPayment(true);
     try {
-      const existingP = paymentDetailsList.find((p) => p.orderId === editingPaymentOrder.id);
+      const existingP = getPaymentDetailsForOrder(editingPaymentOrder, paymentDetailsList);
       const existingReceipts = existingP?.receipts || [];
       const recToDelete = existingReceipts.find((r) => r.id === receiptId);
 
       const remainingReceipts = existingReceipts.filter((r) => r.id !== receiptId);
       const newTotalReceived = remainingReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
-      const orderTotal = editingPaymentOrder.totalValue || 0;
+      const orderTotal = getOrderTotalInvoiceAmount(editingPaymentOrder);
       const pendAmt = Math.max(0, orderTotal - newTotalReceived);
 
       let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
@@ -1597,7 +1676,7 @@ export default function PaymentListView({
         targetType: "Order",
         targetId: editingPaymentOrder.id,
         targetName: editingPaymentOrder.companyName || editingPaymentOrder.clientName || "Order",
-        details: `Deleted Payment Receipt ID ${receiptId} (Amount: ₹${recToDelete?.amount || 0}). New Total Received=₹${newTotalReceived.toLocaleString()}`,
+        details: `Deleted Payment Receipt ID ${receiptId} (Amount: ₹${formatIndianNumber(recToDelete?.amount || 0)}). New Total Received=₹${formatIndianNumber(newTotalReceived)}`,
       });
 
       setPaymentSaveSuccess(`Payment record deleted successfully.`);
@@ -1636,7 +1715,7 @@ export default function PaymentListView({
     try {
       const amtRec = parseFloat(paymentForm.amountReceived) || 0;
       const pendAmt = parseFloat(paymentForm.pendingAmount) || 0;
-      const existingP = paymentDetailsList.find((p) => p.orderId === editingPaymentOrder.id);
+      const existingP = getPaymentDetailsForOrder(editingPaymentOrder, paymentDetailsList);
 
       const record: PaymentDetails = {
         id: editingPaymentOrder.id,
@@ -1666,7 +1745,7 @@ export default function PaymentListView({
         targetType: "Order",
         targetId: editingPaymentOrder.id,
         targetName: editingPaymentOrder.companyName || editingPaymentOrder.clientName || "Order",
-        details: `Updated Payment Summary for Invoice #${editingPaymentOrder.billingDetails?.invoiceNumber}: Status=${paymentForm.paymentStatus}, Total Received=₹${amtRec.toLocaleString()}, Pending=₹${pendAmt.toLocaleString()}`,
+        details: `Updated Payment Summary for Invoice #${editingPaymentOrder.billingDetails?.invoiceNumber}: Status=${paymentForm.paymentStatus}, Total Received=₹${formatIndianNumber(amtRec)}, Pending=₹${formatIndianNumber(pendAmt)}`,
       });
 
       setPaymentSaveSuccess(`Payment details for ${editingPaymentOrder.clientName} updated successfully!`);
@@ -1731,8 +1810,8 @@ export default function PaymentListView({
           order.payment
         );
 
-        const pDetails = paymentDetailsList.find((p) => p.orderId === order.id);
-        const totalAmt = order.totalValue || 0;
+        const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
+        const totalAmt = getOrderTotalInvoiceAmount(order);
         const amtReceived = pDetails ? pDetails.amountReceived : 0;
         const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt - amtReceived);
         let pStatus = pDetails?.paymentStatus || "Unpaid";
@@ -1743,7 +1822,7 @@ export default function PaymentListView({
         }
 
         let subject = template?.subject || `Payment Reminder: Invoice #${order.billingDetails?.invoiceNumber}`;
-        let body = template?.body || `Dear ${order.clientName},\n\nThis is a friendly reminder that invoice #${order.billingDetails?.invoiceNumber} for total amount ₹${totalAmt.toLocaleString()} (Received: ₹${amtReceived.toLocaleString()}, Pending: ₹${pendingAmt.toLocaleString()}) is due on ${dueInfo.dueDateFormatted}.\n\nThank you for your business!`;
+        let body = template?.body || `Dear ${order.clientName},\n\nThis is a friendly reminder that invoice #${order.billingDetails?.invoiceNumber} for total amount ₹${formatIndianNumber(totalAmt)} (Received: ₹${formatIndianNumber(amtReceived)}, Pending: ₹${formatIndianNumber(pendingAmt)}) is due on ${dueInfo.dueDateFormatted}.\n\nThank you for your business!`;
 
         const hierarchy = resolveUserHierarchyInfo(activeUser.id, order.assignedToUserId, users);
 
@@ -1902,7 +1981,7 @@ export default function PaymentListView({
       const customerPo = getVal(["customerpo", "ponumber", "po", "custpo"]);
       const invoiceNumber = getVal(["invoicenumber", "invoiceno", "billnumber", "billno"]);
       const invoiceDate = getVal(["invoicedate", "billdate", "date"]) || new Date().toISOString().split("T")[0];
-      const rawAmt = getVal(["invoiceamount", "amount", "totalamount", "billamount"]);
+      const rawAmt = getVal(["invoiceamount", "invoiceamt", "amount", "orderamount", "totalamount", "billamount", "value", "ordervalue"]);
       const dueDate = getVal(["duedate", "paymentduedate"]) || new Date().toISOString().split("T")[0];
       const rawOverdue = getVal(["overduedays", "overdue", "days"]);
       const comments = getVal(["comments", "remarks", "notes"]);
@@ -1926,6 +2005,7 @@ export default function PaymentListView({
         invoiceNumber,
         invoiceDate,
         invoiceAmount,
+        orderAmount: invoiceAmount,
         dueDate,
         overdueDays,
         comments,
@@ -1958,10 +2038,13 @@ export default function PaymentListView({
           invoiceNumber: row.invoiceNumber,
           invoiceDate: row.invoiceDate,
           invoiceAmount: row.invoiceAmount,
+          orderAmount: row.invoiceAmount,
           dueDate: row.dueDate,
           overdueDays: row.overdueDays,
           comments: row.comments || "Bulk Imported Bad Debt Details",
           status: row.status,
+          amountReceived: 0,
+          pendingAmount: row.invoiceAmount,
           createdAt: new Date().toISOString(),
           createdByUserId: activeUser.id,
           createdByUserName: activeUser.name,
@@ -2014,6 +2097,158 @@ export default function PaymentListView({
     document.body.removeChild(link);
   };
 
+  // Helper: Calculate total payments received for Bad Debtor
+  const getBadDebtorTotalReceived = (bd: BadDebtor): number => {
+    if (bd.receipts && bd.receipts.length > 0) {
+      return bd.receipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+    }
+    return bd.amountReceived || 0;
+  };
+
+  // Helper: Calculate pending amount for Bad Debtor
+  const getBadDebtorPendingAmount = (bd: BadDebtor): number => {
+    const totalRec = getBadDebtorTotalReceived(bd);
+    return Math.max(0, (bd.invoiceAmount || 0) - totalRec);
+  };
+
+  // Add Bad Debtor Payment Receipt Record
+  const handleAddBadDebtorPaymentReceipt = async () => {
+    if (!managingBadDebtorPayment) return;
+
+    const entryAmt = parseFloat(badDebtorPaymentForm.amount) || 0;
+    if (entryAmt <= 0) {
+      alert("Please enter a valid payment receipt amount.");
+      return;
+    }
+
+    setIsSavingBadDebtorPayment(true);
+    try {
+      const existingReceipts = managingBadDebtorPayment.receipts || [];
+      const newReceipt: PaymentReceiptRecord = {
+        id: `rec-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+        orderId: managingBadDebtorPayment.id,
+        invoiceNumber: managingBadDebtorPayment.invoiceNumber,
+        amount: entryAmt,
+        paymentReceivedDate: badDebtorPaymentForm.paymentReceivedDate,
+        utrId: badDebtorPaymentForm.utrId.trim() || undefined,
+        comments: badDebtorPaymentForm.comments.trim() || undefined,
+        createdAt: new Date().toISOString(),
+        createdBy: activeUser.name,
+      };
+
+      const updatedReceipts = [...existingReceipts, newReceipt];
+      const totalReceived = updatedReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+      const pendingAmount = Math.max(0, (managingBadDebtorPayment.invoiceAmount || 0) - totalReceived);
+
+      let newStatus = managingBadDebtorPayment.status || "Bad Debt";
+      if (pendingAmount <= 0 && managingBadDebtorPayment.invoiceAmount > 0) {
+        newStatus = "Paid";
+      } else if (totalReceived > 0 && newStatus !== "Written Off" && newStatus !== "In Recovery") {
+        newStatus = "Partial Paid";
+      }
+
+      const updatedBd: BadDebtor = {
+        ...managingBadDebtorPayment,
+        receipts: updatedReceipts,
+        amountReceived: totalReceived,
+        pendingAmount: pendingAmount,
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await saveBadDebtor(updatedBd);
+
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Update Bad Debtor",
+        targetType: "BadDebtor",
+        targetId: updatedBd.id,
+        targetName: updatedBd.companyName,
+        details: `Logged payment receipt for Bad Debtor Invoice #${updatedBd.invoiceNumber}: Amount=₹${formatIndianNumber(entryAmt)}, Date=${badDebtorPaymentForm.paymentReceivedDate}, Total Received=₹${formatIndianNumber(totalReceived)}, Pending=₹${formatIndianNumber(pendingAmount)}`,
+      });
+
+      setManagingBadDebtorPayment(updatedBd);
+      setBadDebtorPaymentForm({
+        amount: "",
+        paymentReceivedDate: new Date().toISOString().split("T")[0],
+        utrId: "",
+        comments: "",
+      });
+      setPaymentSaveSuccess(`Payment receipt of ₹${formatIndianNumber(entryAmt)} saved for ${updatedBd.companyName}.`);
+      setTimeout(() => setPaymentSaveSuccess(null), 4000);
+    } catch (err: any) {
+      console.error("Error saving bad debtor payment receipt:", err);
+      alert(`Failed to save payment receipt: ${err.message || "Please check connection."}`);
+    } finally {
+      setIsSavingBadDebtorPayment(false);
+    }
+  };
+
+  // Delete Bad Debtor Payment Receipt Record
+  const handleDeleteBadDebtorPaymentReceipt = async (receiptId: string, receiptIndex?: number) => {
+    if (!managingBadDebtorPayment) return;
+
+    setIsSavingBadDebtorPayment(true);
+    try {
+      const existingReceipts = managingBadDebtorPayment.receipts || [];
+      const recToDelete = existingReceipts.find(
+        (r, idx) => (receiptId && r.id === receiptId) || (receiptIndex !== undefined && idx === receiptIndex)
+      );
+      const updatedReceipts = existingReceipts.filter((r, idx) => {
+        if (receiptId && r.id) return r.id !== receiptId;
+        if (receiptIndex !== undefined) return idx !== receiptIndex;
+        return true;
+      });
+      const totalReceived = updatedReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+      const pendingAmount = Math.max(0, (managingBadDebtorPayment.invoiceAmount || 0) - totalReceived);
+
+      let newStatus = managingBadDebtorPayment.status || "Bad Debt";
+      if (pendingAmount <= 0 && managingBadDebtorPayment.invoiceAmount > 0) {
+        newStatus = "Paid";
+      } else if (totalReceived > 0 && newStatus !== "Written Off" && newStatus !== "In Recovery") {
+        newStatus = "Partial Paid";
+      } else if (totalReceived === 0 && (newStatus === "Paid" || newStatus === "Partial Paid")) {
+        newStatus = "Bad Debt";
+      }
+
+      const updatedBd: BadDebtor = {
+        ...managingBadDebtorPayment,
+        receipts: updatedReceipts,
+        amountReceived: totalReceived,
+        pendingAmount: pendingAmount,
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await saveBadDebtor(updatedBd);
+
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Update Bad Debtor",
+        targetType: "BadDebtor",
+        targetId: updatedBd.id,
+        targetName: updatedBd.companyName,
+        details: `Deleted payment receipt (Amount: ₹${formatIndianNumber(recToDelete?.amount || 0)}) for Invoice #${updatedBd.invoiceNumber}. New Total Received=₹${formatIndianNumber(totalReceived)}`,
+      });
+
+      setManagingBadDebtorPayment(updatedBd);
+      setPaymentSaveSuccess(`Payment receipt deleted for ${updatedBd.companyName}.`);
+      setTimeout(() => setPaymentSaveSuccess(null), 4000);
+    } catch (err: any) {
+      console.error("Error deleting bad debtor payment receipt:", err);
+      alert(`Failed to delete payment receipt: ${err.message || "Please check connection."}`);
+    } finally {
+      setIsSavingBadDebtorPayment(false);
+      setConfirmDeleteReceiptId(null);
+    }
+  };
+
   // Save / Update Single Bad Debtor
   const handleSaveBadDebtor = async () => {
     if (!badDebtorForm.companyName.trim()) {
@@ -2033,6 +2268,10 @@ export default function PaymentListView({
     setIsSavingBadDebtor(true);
     try {
       const recordId = editingBadDebtor ? editingBadDebtor.id : `bd-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+      const existingReceipts = editingBadDebtor?.receipts || [];
+      const totalRec = existingReceipts.reduce((sum, r) => sum + (r.amount || 0), 0) || (editingBadDebtor?.amountReceived || 0);
+      const pendingAmt = Math.max(0, invAmt - totalRec);
+
       const bdRecord: BadDebtor = {
         id: recordId,
         companyName: badDebtorForm.companyName.trim(),
@@ -2043,13 +2282,20 @@ export default function PaymentListView({
         invoiceNumber: badDebtorForm.invoiceNumber.trim(),
         invoiceDate: badDebtorForm.invoiceDate,
         invoiceAmount: invAmt,
+        orderAmount: invAmt,
         dueDate: badDebtorForm.dueDate,
         overdueDays: parseInt(badDebtorForm.overdueDays, 10) || computeOverdueDays(badDebtorForm.dueDate),
         comments: badDebtorForm.comments.trim(),
         status: badDebtorForm.status,
+        assignedToUserId: badDebtorForm.assignedToUserId || undefined,
+        assignedToUserName: badDebtorForm.assignedToUserId ? getAssignedUserName(badDebtorForm.assignedToUserId) : undefined,
+        amountReceived: totalRec,
+        pendingAmount: pendingAmt,
+        receipts: existingReceipts,
         createdAt: editingBadDebtor?.createdAt || new Date().toISOString(),
         createdByUserId: editingBadDebtor?.createdByUserId || activeUser.id,
         createdByUserName: editingBadDebtor?.createdByUserName || activeUser.name,
+        updatedAt: new Date().toISOString(),
       };
 
       await saveBadDebtor(bdRecord);
@@ -2063,7 +2309,7 @@ export default function PaymentListView({
         targetType: "BadDebtor",
         targetId: recordId,
         targetName: badDebtorForm.companyName.trim(),
-        details: `${editingBadDebtor ? "Updated" : "Added"} Bad Debtor record for Invoice #${badDebtorForm.invoiceNumber}: Amount=₹${invAmt.toLocaleString()}, Overdue=${bdRecord.overdueDays}d`,
+        details: `${editingBadDebtor ? "Updated" : "Added"} Bad Debtor record for Invoice #${badDebtorForm.invoiceNumber}: Amount=₹${formatIndianNumber(invAmt)}, Overdue=${bdRecord.overdueDays}d`,
       });
 
       setPaymentSaveSuccess(`Bad debtor record for ${badDebtorForm.companyName} saved successfully.`);
@@ -2213,7 +2459,7 @@ export default function PaymentListView({
               <div>
                 <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Consolidated Outstanding</p>
                 <p className="text-xl font-black font-mono text-rose-600 mt-1">
-                  ₹{filteredConsolidatedDebtors.reduce((sum, p) => sum + p.totalPendingAmount, 0).toLocaleString()}
+                  ₹{formatIndianNumber(filteredConsolidatedDebtors.reduce((sum, p) => sum + p.totalPendingAmount, 0))}
                 </p>
                 <p className="text-[10px] text-slate-500 mt-0.5">Grand total balance due</p>
               </div>
@@ -2349,13 +2595,13 @@ export default function PaymentListView({
                               </span>
                             </td>
                             <td className="py-3 px-4 text-right font-mono font-semibold text-slate-800">
-                              ₹{party.totalOrderValue.toLocaleString()}
+                              ₹{formatIndianNumber(party.totalOrderValue)}
                             </td>
                             <td className="py-3 px-4 text-right font-mono font-bold text-emerald-700">
-                              ₹{party.totalReceivedAmount.toLocaleString()}
+                              ₹{formatIndianNumber(party.totalReceivedAmount)}
                             </td>
                             <td className="py-3 px-4 text-right font-mono font-extrabold text-rose-600 text-sm">
-                              ₹{party.totalPendingAmount.toLocaleString()}
+                              ₹{formatIndianNumber(party.totalPendingAmount)}
                             </td>
                             <td className="py-3 px-3 text-center font-mono">
                               {party.isAnyOverdue ? (
@@ -2401,7 +2647,7 @@ export default function PaymentListView({
                                     <span className="text-xs text-slate-500 font-mono">
                                       {party.invoiceCount} Pending Invoices • Consolidated Pending:{" "}
                                       <strong className="text-rose-600 font-extrabold">
-                                        ₹{party.totalPendingAmount.toLocaleString()}
+                                        ₹{formatIndianNumber(party.totalPendingAmount)}
                                       </strong>
                                     </span>
                                   </div>
@@ -2425,8 +2671,8 @@ export default function PaymentListView({
                                       </thead>
                                       <tbody className="divide-y divide-slate-100 text-slate-700">
                                         {party.orders.map((o) => {
-                                          const pDet = paymentDetailsList.find((p) => p.orderId === o.id);
-                                          const tot = o.totalValue || 0;
+                                          const pDet = getPaymentDetailsForOrder(o, paymentDetailsList);
+                                          const tot = getOrderTotalInvoiceAmount(o);
                                           const rec = pDet ? pDet.amountReceived : 0;
                                           const pend = pDet ? pDet.pendingAmount : Math.max(0, tot - rec);
                                           const actualDispatchDate = getOrderActualDispatchDate(o);
@@ -2459,9 +2705,9 @@ export default function PaymentListView({
                                                   {due.statusLabel}
                                                 </span>
                                               </td>
-                                              <td className="p-2.5 text-right font-mono">₹{tot.toLocaleString()}</td>
-                                              <td className="p-2.5 text-right font-mono font-bold text-emerald-700">₹{rec.toLocaleString()}</td>
-                                              <td className="p-2.5 text-right font-mono font-extrabold text-rose-600">₹{pend.toLocaleString()}</td>
+                                              <td className="p-2.5 text-right font-mono">₹{formatIndianNumber(tot)}</td>
+                                              <td className="p-2.5 text-right font-mono font-bold text-emerald-700">₹{formatIndianNumber(rec)}</td>
+                                              <td className="p-2.5 text-right font-mono font-extrabold text-rose-600">₹{formatIndianNumber(pend)}</td>
                                               <td className="p-2.5 text-center">
                                                 {o.billingDetails?.invoiceAttachments && o.billingDetails.invoiceAttachments.length > 0 ? (
                                                   <div className="flex flex-wrap justify-center gap-1">
@@ -2547,9 +2793,11 @@ export default function PaymentListView({
 
             <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
               <div>
-                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Bad Debt Invoices</p>
-                <p className="text-xl font-black font-mono text-slate-900 mt-1">{filteredBadDebtors.length}</p>
-                <p className="text-[10px] text-slate-500 mt-0.5">Defaulted invoices</p>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Bad Debt Value</p>
+                <p className="text-xl font-black font-mono text-slate-900 mt-1">
+                  ₹{formatIndianNumber(filteredBadDebtors.reduce((sum, b) => sum + (b.invoiceAmount || 0), 0))}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Grand total invoice amount</p>
               </div>
               <div className="p-3 bg-blue-50 text-blue-700 rounded-xl">
                 <FileSpreadsheet size={20} />
@@ -2558,26 +2806,26 @@ export default function PaymentListView({
 
             <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
               <div>
-                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Bad Debt Amount</p>
-                <p className="text-xl font-black font-mono text-rose-600 mt-1">
-                  ₹{filteredBadDebtors.reduce((sum, b) => sum + (b.invoiceAmount || 0), 0).toLocaleString()}
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Payments Rec'd</p>
+                <p className="text-xl font-black font-mono text-emerald-700 mt-1">
+                  ₹{formatIndianNumber(filteredBadDebtors.reduce((sum, b) => sum + getBadDebtorTotalReceived(b), 0))}
                 </p>
-                <p className="text-[10px] text-slate-500 mt-0.5">Grand total bad debt value</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Recovered payments</p>
               </div>
-              <div className="p-3 bg-rose-50 text-rose-600 rounded-xl">
+              <div className="p-3 bg-emerald-50 text-emerald-700 rounded-xl">
                 <IndianRupee size={20} />
               </div>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
               <div>
-                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Max Overdue</p>
-                <p className="text-xl font-black font-mono text-amber-600 mt-1">
-                  {filteredBadDebtors.length > 0 ? Math.max(0, ...filteredBadDebtors.map((b) => b.overdueDays || 0)) : 0} Days
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Pending Balance</p>
+                <p className="text-xl font-black font-mono text-rose-600 mt-1">
+                  ₹{formatIndianNumber(filteredBadDebtors.reduce((sum, b) => sum + getBadDebtorPendingAmount(b), 0))}
                 </p>
-                <p className="text-[10px] text-slate-500 mt-0.5">Highest overdue period</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Outstanding balance to recover</p>
               </div>
-              <div className="p-3 bg-amber-50 text-amber-700 rounded-xl">
+              <div className="p-3 bg-rose-50 text-rose-600 rounded-xl">
                 <Clock size={20} />
               </div>
             </div>
@@ -2589,11 +2837,48 @@ export default function PaymentListView({
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
               <input
                 type="text"
-                placeholder="Search company name, PO #, invoice #, client contact, email, status..."
+                placeholder="Search company, sales person, PO #, invoice #, client contact, email, status..."
                 value={badDebtorsSearchTerm}
                 onChange={(e) => setBadDebtorsSearchTerm(e.target.value)}
                 className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
               />
+            </div>
+
+            {/* Filter Toggle: Pending vs Fully Received */}
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/80">
+              <button
+                type="button"
+                onClick={() => setBadDebtorsFilter("all")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  badDebtorsFilter === "all"
+                    ? "bg-white text-slate-900 shadow-2xs border border-slate-200"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                All ({badDebtors.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setBadDebtorsFilter("pending")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  badDebtorsFilter === "pending"
+                    ? "bg-amber-500 text-white shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Pending ({badDebtors.filter((b) => getBadDebtorPendingAmount(b) > 0).length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setBadDebtorsFilter("fully_received")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  badDebtorsFilter === "fully_received"
+                    ? "bg-emerald-600 text-white shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Fully Received ({badDebtors.filter((b) => getBadDebtorPendingAmount(b) <= 0 && b.invoiceAmount > 0).length})
+              </button>
             </div>
 
             <div className="flex items-center gap-2">
@@ -2627,6 +2912,7 @@ export default function PaymentListView({
                     overdueDays: "0",
                     comments: "",
                     status: "Bad Debt",
+                    assignedToUserId: activeUserId,
                   });
                   setShowBadDebtorModal(true);
                 }}
@@ -2651,21 +2937,23 @@ export default function PaymentListView({
               </div>
               <h3 className="text-sm font-bold text-slate-800">No Bad Debtors Records</h3>
               <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                {badDebtorsSearchTerm
-                  ? "No bad debtor records matched your search query."
+                {badDebtorsSearchTerm || badDebtorsFilter !== "all"
+                  ? "No bad debtor records matched your filter or search query."
                   : "No bad debtors have been logged yet. Click 'Add Bad Debtor' or 'Bulk Import Bad Debtors' to record defaulted accounts."}
               </p>
             </div>
           ) : (
             <div className="bg-white border border-slate-200/85 rounded-2xl shadow-xs overflow-hidden">
               <div className="overflow-x-auto scrollbar-thin">
-                <table className="w-full text-left text-xs min-w-[1000px]">
+                <table className="w-full text-left text-xs min-w-[1100px]">
                   <thead>
                     <tr className="bg-slate-50 text-slate-600 font-mono font-bold text-[10px] uppercase border-b border-slate-200/85">
                       <th className="p-3.5">Company & Client Contact</th>
+                      <th className="p-3.5">Sales Person</th>
                       <th className="p-3.5">Customer PO #</th>
                       <th className="p-3.5">Invoice # & Date</th>
-                      <th className="p-3.5 text-right">Invoice Amount</th>
+                      <th className="p-3.5 text-right">Invoice / Order Amount</th>
+                      <th className="p-3.5 text-right">Received / Pending</th>
                       <th className="p-3.5">Due Date</th>
                       <th className="p-3.5 text-center">Overdue Days</th>
                       <th className="p-3.5">Status & Remarks</th>
@@ -2673,99 +2961,142 @@ export default function PaymentListView({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700 font-sans">
-                    {filteredBadDebtors.map((bd) => (
-                      <tr key={bd.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="p-3.5">
-                          <div className="font-extrabold text-slate-900 text-xs">{bd.companyName}</div>
-                          {bd.clientName && (
-                            <div className="text-[11px] text-slate-600 flex items-center gap-1 mt-0.5">
-                              <User2 size={11} className="text-slate-400 shrink-0" />
-                              <span>{bd.clientName}</span>
+                    {filteredBadDebtors.map((bd) => {
+                      const totalReceived = getBadDebtorTotalReceived(bd);
+                      const pendingAmt = getBadDebtorPendingAmount(bd);
+                      const displayStatus = bd.status || (pendingAmt <= 0 && bd.invoiceAmount > 0 ? "Paid" : totalReceived > 0 ? "Partial Paid" : "Bad Debt");
+
+                      return (
+                        <tr key={bd.id} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="p-3.5">
+                            <div className="font-extrabold text-slate-900 text-xs">{bd.companyName}</div>
+                            {bd.clientName && (
+                              <div className="text-[11px] text-slate-600 flex items-center gap-1 mt-0.5">
+                                <User2 size={11} className="text-slate-400 shrink-0" />
+                                <span>{bd.clientName}</span>
+                              </div>
+                            )}
+                            {bd.email && (
+                              <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
+                                <Mail size={10} className="shrink-0" />
+                                <span>{bd.email}</span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3.5 font-medium text-slate-800">
+                            <div className="flex items-center gap-1.5 text-xs font-semibold">
+                              <User2 size={12} className="text-slate-400 shrink-0" />
+                              <span>{getAssignedUserName(bd.assignedToUserId)}</span>
                             </div>
-                          )}
-                          {bd.email && (
-                            <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
-                              <Mail size={10} className="shrink-0" />
-                              <span>{bd.email}</span>
+                          </td>
+                          <td className="p-3.5 font-mono text-slate-700 font-medium">
+                            {bd.customerPo || <span className="text-slate-400 italic">N/A</span>}
+                          </td>
+                          <td className="p-3.5 font-mono">
+                            <div className="font-bold text-slate-900">{bd.invoiceNumber}</div>
+                            <div className="text-[10px] text-slate-500">{formatDate(bd.invoiceDate)}</div>
+                          </td>
+                          <td className="p-3.5 text-right font-mono font-black text-slate-900 text-sm">
+                            ₹{formatIndianNumber(bd.invoiceAmount || bd.orderAmount || 0)}
+                          </td>
+                          <td className="p-3.5 text-right font-mono">
+                            <div className="text-xs font-bold text-emerald-700">
+                              ₹{formatIndianNumber(totalReceived)} Rec'd
                             </div>
-                          )}
-                        </td>
-                        <td className="p-3.5 font-mono text-slate-700 font-medium">
-                          {bd.customerPo || <span className="text-slate-400 italic">N/A</span>}
-                        </td>
-                        <td className="p-3.5 font-mono">
-                          <div className="font-bold text-slate-900">{bd.invoiceNumber}</div>
-                          <div className="text-[10px] text-slate-500">{formatDate(bd.invoiceDate)}</div>
-                        </td>
-                        <td className="p-3.5 text-right font-mono font-black text-rose-600 text-sm">
-                          ₹{bd.invoiceAmount.toLocaleString()}
-                        </td>
-                        <td className="p-3.5 font-mono text-slate-700 font-medium">
-                          {formatDate(bd.dueDate)}
-                        </td>
-                        <td className="p-3.5 text-center font-mono">
-                          <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-rose-200">
-                            <Clock size={10} />
-                            {bd.overdueDays} Days
-                          </span>
-                        </td>
-                        <td className="p-3.5">
-                          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-extrabold font-mono uppercase mb-1 ${
-                            bd.status === "Written Off"
-                              ? "bg-slate-100 text-slate-700 border border-slate-200"
-                              : bd.status === "In Recovery"
-                              ? "bg-amber-100 text-amber-800 border border-amber-200"
-                              : bd.status === "Paid"
-                              ? "bg-emerald-100 text-emerald-800 border border-emerald-200"
-                              : "bg-rose-100 text-rose-800 border border-rose-200"
-                          }`}>
-                            {bd.status || "Bad Debt"}
-                          </span>
-                          {bd.comments && (
-                            <p className="text-[11px] text-slate-500 line-clamp-1 italic">{bd.comments}</p>
-                          )}
-                        </td>
-                        <td className="p-3.5 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingBadDebtor(bd);
-                                setBadDebtorForm({
-                                  companyName: bd.companyName || "",
-                                  clientName: bd.clientName || "",
-                                  email: bd.email || "",
-                                  phone: bd.phone || "",
-                                  customerPo: bd.customerPo || "",
-                                  invoiceNumber: bd.invoiceNumber || "",
-                                  invoiceDate: bd.invoiceDate || new Date().toISOString().split("T")[0],
-                                  invoiceAmount: String(bd.invoiceAmount || ""),
-                                  dueDate: bd.dueDate || new Date().toISOString().split("T")[0],
-                                  overdueDays: String(bd.overdueDays || "0"),
-                                  comments: bd.comments || "",
-                                  status: bd.status || "Bad Debt",
-                                });
-                                setShowBadDebtorModal(true);
-                              }}
-                              disabled={!teamCanEdit}
-                              className="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all cursor-pointer"
-                              title="Edit Record"
-                            >
-                              <Edit3 size={14} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteBadDebtor(bd.id, bd.companyName)}
-                              disabled={!teamCanEdit}
-                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
-                              title="Delete Record"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                            <div className={`text-[10px] font-bold ${pendingAmt > 0 ? "text-rose-600" : "text-slate-400"}`}>
+                              ₹{formatIndianNumber(pendingAmt)} Pending
+                            </div>
+                          </td>
+                          <td className="p-3.5 font-mono text-slate-700 font-medium">
+                            {formatDate(bd.dueDate)}
+                          </td>
+                          <td className="p-3.5 text-center font-mono">
+                            <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-rose-200">
+                              <Clock size={10} />
+                              {bd.overdueDays} Days
+                            </span>
+                          </td>
+                          <td className="p-3.5">
+                            <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-extrabold font-mono uppercase mb-1 ${
+                              displayStatus === "Written Off"
+                                ? "bg-slate-100 text-slate-700 border border-slate-200"
+                                : displayStatus === "In Recovery"
+                                ? "bg-amber-100 text-amber-800 border border-amber-200"
+                                : displayStatus === "Paid"
+                                ? "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                                : displayStatus === "Partial Paid"
+                                ? "bg-blue-100 text-blue-800 border border-blue-200"
+                                : "bg-rose-100 text-rose-800 border border-rose-200"
+                            }`}>
+                              {displayStatus}
+                            </span>
+                            {bd.comments && (
+                              <p className="text-[11px] text-slate-500 line-clamp-1 italic">{bd.comments}</p>
+                            )}
+                          </td>
+                          <td className="p-3.5 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              {/* Manage Payment Receipts Button */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setManagingBadDebtorPayment(bd);
+                                  setBadDebtorPaymentForm({
+                                    amount: "",
+                                    paymentReceivedDate: new Date().toISOString().split("T")[0],
+                                    utrId: "",
+                                    comments: "",
+                                  });
+                                  setShowBadDebtorPaymentModal(true);
+                                }}
+                                title="Manage Payments Received"
+                                className="px-2.5 py-1 rounded-lg text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-all cursor-pointer flex items-center gap-1 text-[11px] font-bold font-mono"
+                              >
+                                <Receipt size={13} className="text-emerald-600" />
+                                <span>Payments ({(bd.receipts || []).length})</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingBadDebtor(bd);
+                                  setBadDebtorForm({
+                                    companyName: bd.companyName || "",
+                                    clientName: bd.clientName || "",
+                                    email: bd.email || "",
+                                    phone: bd.phone || "",
+                                    customerPo: bd.customerPo || "",
+                                    invoiceNumber: bd.invoiceNumber || "",
+                                    invoiceDate: bd.invoiceDate || new Date().toISOString().split("T")[0],
+                                    invoiceAmount: String(bd.invoiceAmount || ""),
+                                    dueDate: bd.dueDate || new Date().toISOString().split("T")[0],
+                                    overdueDays: String(bd.overdueDays || "0"),
+                                    comments: bd.comments || "",
+                                    status: (bd.status as any) || "Bad Debt",
+                                    assignedToUserId: bd.assignedToUserId || activeUserId,
+                                  });
+                                  setShowBadDebtorModal(true);
+                                }}
+                                disabled={!teamCanEdit}
+                                className="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all cursor-pointer"
+                                title="Edit Record"
+                              >
+                                <Edit3 size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteBadDebtor(bd.id, bd.companyName)}
+                                disabled={!teamCanEdit}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
+                                title="Delete Record"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2805,7 +3136,7 @@ export default function PaymentListView({
               <div>
                 <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Consolidated Outstanding</p>
                 <p className="text-xl font-black font-mono text-rose-600 mt-1">
-                  ₹{filteredConsolidatedParties.reduce((sum, p) => sum + p.totalPendingAmount, 0).toLocaleString()}
+                  ₹{formatIndianNumber(filteredConsolidatedParties.reduce((sum, p) => sum + p.totalPendingAmount, 0))}
                 </p>
                 <p className="text-[10px] text-slate-500 mt-0.5">Grand total balance due</p>
               </div>
@@ -2904,7 +3235,7 @@ export default function PaymentListView({
                 </span>
               </div>
               <div>
-                Selected Outstanding Total: <strong className="text-rose-600 font-extrabold">₹{selectedConsolidatedParties.reduce((sum, p) => sum + p.totalPendingAmount, 0).toLocaleString()}</strong>
+                Selected Outstanding Total: <strong className="text-rose-600 font-extrabold">₹{formatIndianNumber(selectedConsolidatedParties.reduce((sum, p) => sum + p.totalPendingAmount, 0))}</strong>
               </div>
             </div>
           </div>
@@ -3019,13 +3350,13 @@ export default function PaymentListView({
                               </span>
                             </td>
                             <td className="py-3 px-4 text-right font-mono font-semibold text-slate-800">
-                              ₹{party.totalOrderValue.toLocaleString()}
+                              ₹{formatIndianNumber(party.totalOrderValue)}
                             </td>
                             <td className="py-3 px-4 text-right font-mono font-bold text-emerald-700">
-                              ₹{party.totalReceivedAmount.toLocaleString()}
+                              ₹{formatIndianNumber(party.totalReceivedAmount)}
                             </td>
                             <td className="py-3 px-4 text-right font-mono font-extrabold text-rose-600 text-sm">
-                              ₹{party.totalPendingAmount.toLocaleString()}
+                              ₹{formatIndianNumber(party.totalPendingAmount)}
                             </td>
                             <td className="py-3 px-3 text-center">
                               {party.isAnyOverdue ? (
@@ -3082,7 +3413,7 @@ export default function PaymentListView({
                                     <span className="text-xs text-slate-500 font-mono">
                                       {party.invoiceCount} Pending Invoices • Consolidated Pending:{" "}
                                       <strong className="text-rose-600 font-extrabold">
-                                        ₹{party.totalPendingAmount.toLocaleString()}
+                                        ₹{formatIndianNumber(party.totalPendingAmount)}
                                       </strong>
                                     </span>
                                   </div>
@@ -3105,8 +3436,8 @@ export default function PaymentListView({
                                       </thead>
                                       <tbody className="divide-y divide-slate-100 text-slate-700">
                                         {party.orders.map((o) => {
-                                          const pDet = paymentDetailsList.find((p) => p.orderId === o.id);
-                                          const tot = o.totalValue || 0;
+                                          const pDet = getPaymentDetailsForOrder(o, paymentDetailsList);
+                                          const tot = getOrderTotalInvoiceAmount(o);
                                           const rec = pDet ? pDet.amountReceived : 0;
                                           const pend = pDet ? pDet.pendingAmount : Math.max(0, tot - rec);
                                           const actualDispatchDate = getOrderActualDispatchDate(o);
@@ -3136,9 +3467,9 @@ export default function PaymentListView({
                                                   {due.dueDateFormatted}
                                                 </span>
                                               </td>
-                                              <td className="p-2.5 text-right font-mono">₹{tot.toLocaleString()}</td>
-                                              <td className="p-2.5 text-right font-mono font-bold text-emerald-700">₹{rec.toLocaleString()}</td>
-                                              <td className="p-2.5 text-right font-mono font-extrabold text-rose-600">₹{pend.toLocaleString()}</td>
+                                              <td className="p-2.5 text-right font-mono">₹{formatIndianNumber(tot)}</td>
+                                              <td className="p-2.5 text-right font-mono font-bold text-emerald-700">₹{formatIndianNumber(rec)}</td>
+                                              <td className="p-2.5 text-right font-mono font-extrabold text-rose-600">₹{formatIndianNumber(pend)}</td>
                                               <td className="p-2.5 text-center">
                                                 {o.billingDetails?.invoiceFileUrl ? (
                                                   <button
@@ -3216,7 +3547,7 @@ export default function PaymentListView({
                     Send Consolidated Payment Reminder
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Party: <strong className="text-slate-800">{consolidatedEmailParty.companyName}</strong> ({consolidatedEmailParty.clientName}) • Total Pending: <span className="text-rose-600 font-extrabold">₹{consolidatedEmailParty.totalPendingAmount.toLocaleString()}</span>
+                    Party: <strong className="text-slate-800">{consolidatedEmailParty.companyName}</strong> ({consolidatedEmailParty.clientName}) • Total Pending: <span className="text-rose-600 font-extrabold">₹{formatIndianNumber(consolidatedEmailParty.totalPendingAmount)}</span>
                   </p>
                 </div>
               </div>
@@ -3566,8 +3897,8 @@ export default function PaymentListView({
                       const paymentTermsStr = order.payment;
                       const dueInfo = calculateDueDate(dispatchDateStr, paymentTermsStr);
 
-                      const pDetails = paymentDetailsList.find((p) => p.orderId === order.id);
-                      const totalAmt = order.totalValue || 0;
+                      const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
+                      const totalAmt = getOrderTotalInvoiceAmount(order);
                       const receivedAmt = pDetails ? pDetails.amountReceived : 0;
                       const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt - receivedAmt);
 
@@ -3595,16 +3926,18 @@ export default function PaymentListView({
 
                           {/* Client / Company */}
                           <td className="p-4">
-                            <div className="font-bold text-slate-900">{order.clientName}</div>
-                            <div className="flex items-center gap-1 text-[10px] text-slate-500 font-mono mt-0.5">
-                              <Building2 size={10} className="text-slate-400" />
-                              <span>{order.companyName}</span>
-                            </div>
-                            {order.email && (
-                              <div className="text-[10px] text-slate-400 font-mono truncate max-w-[180px]">
-                                {order.email}
+                          <div className="flex items-center gap-2">
+                                <div className="p-1.5 bg-emerald-50 text-emerald-700 rounded-lg shrink-0">
+                                  <Building2 size={15} />
+                                </div>
+                                <div>
+                                  <p className="font-bold text-slate-900">{order.companyName}</p>
+                                  <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+                                    <User2 size={11} className="text-slate-400" />
+                                    <span>{order.clientName}</span>
+                                  </p>
                               </div>
-                            )}
+                              </div>
                           </td>
 
                           {/* Sales Person */}
@@ -3630,17 +3963,17 @@ export default function PaymentListView({
 
                           {/* Order Amount */}
                           <td className="p-4 text-right font-mono font-extrabold text-slate-900">
-                            ₹{totalAmt.toLocaleString()}
+                            ₹{formatIndianNumber(totalAmt)}
                           </td>
 
                           {/* Amount Received */}
                           <td className="p-4 text-right font-mono font-bold text-emerald-700">
-                            ₹{receivedAmt.toLocaleString()}
+                            ₹{formatIndianNumber(receivedAmt)}
                           </td>
 
                           {/* Pending Amount */}
                           <td className="p-4 text-right font-mono font-bold text-rose-600">
-                            ₹{pendingAmt.toLocaleString()}
+                            ₹{formatIndianNumber(pendingAmt)}
                           </td>
 
                           {/* Dispatch Date */}
@@ -3795,9 +4128,9 @@ export default function PaymentListView({
                     {fullyPaidOrders.map((order) => {
                       const isExpanded = !!expandedOrderIds[order.id];
                       const bank = paymentBanks.find((b) => b.id === order.paymentBankId);
-                      const paymentRec = paymentDetailsList.find((p) => p.orderId === order.id);
+                      const paymentRec = getPaymentDetailsForOrder(order, paymentDetailsList);
 
-                      const totalAmt = order.totalValue || 0;
+                      const totalAmt = getOrderTotalInvoiceAmount(order);
                       const receivedAmt = paymentRec ? paymentRec.amountReceived : totalAmt;
                       const utr = paymentRec?.utrId || "N/A";
                       const pDate = paymentRec?.paymentReceivedDate ? formatDate(new Date(paymentRec.paymentReceivedDate)) : "N/A";
@@ -3860,12 +4193,12 @@ export default function PaymentListView({
 
                             {/* Order Amount */}
                             <td className="p-4 text-right font-mono font-extrabold text-slate-900">
-                              ₹{totalAmt.toLocaleString()}
+                              ₹{formatIndianNumber(totalAmt)}
                             </td>
 
                             {/* Payment Received */}
                             <td className="p-4 text-right font-mono font-extrabold text-emerald-700">
-                              ₹{receivedAmt.toLocaleString()}
+                              ₹{formatIndianNumber(receivedAmt)}
                             </td>
 
                             {/* Payment Status Badge */}
@@ -3994,7 +4327,7 @@ export default function PaymentListView({
                                       <div className="bg-white p-2.5 rounded-xl border border-emerald-100 shadow-2xs">
                                         <span className="text-[9px] text-slate-400 block font-bold uppercase">Total Received</span>
                                         <span className="font-extrabold text-emerald-700 block mt-0.5">
-                                          ₹{receivedAmt.toLocaleString()}
+                                          ₹{formatIndianNumber(receivedAmt)}
                                         </span>
                                       </div>
                                       <div className="bg-white p-2.5 rounded-xl border border-emerald-100 shadow-2xs">
@@ -4092,8 +4425,8 @@ export default function PaymentListView({
                                               <tr key={idx} className="hover:bg-emerald-50/30">
                                                 <td className="p-2 font-medium text-slate-800">{item.productName}</td>
                                                 <td className="p-2 text-right font-mono font-semibold">{item.quantity}</td>
-                                                <td className="p-2 text-right font-mono text-slate-500">₹{item.rate?.toLocaleString()}</td>
-                                                <td className="p-2 text-right font-mono font-bold text-slate-700">₹{item.amount?.toLocaleString()}</td>
+                                                <td className="p-2 text-right font-mono text-slate-500">₹{formatIndianNumber(item.rate || 0)}</td>
+                                                <td className="p-2 text-right font-mono font-bold text-slate-700">₹{formatIndianNumber(item.amount || 0)}</td>
                                               </tr>
                                             ))}
                                             {(!order.items || order.items.length === 0) && (
@@ -4104,7 +4437,7 @@ export default function PaymentListView({
                                             <tr className="bg-emerald-50/40 font-bold border-t border-emerald-100">
                                               <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
                                               <td className="p-2 text-right text-emerald-950 font-mono text-xs" colSpan={2}>
-                                                ₹{order.totalValue?.toLocaleString()}
+                                                ₹{formatIndianNumber(order.totalValue || 0)}
                                               </td>
                                             </tr>
                                           </tbody>
@@ -4129,96 +4462,120 @@ export default function PaymentListView({
 
       {/* UPDATE PAYMENT DETAILS MODAL */}
       {editingPaymentOrder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 space-y-5 animate-scaleUp">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-100">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-1.5 sm:p-4 overflow-y-auto animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditingPaymentOrder(null);
+          }}
+        >
+          <div
+            className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full max-h-[calc(100vh-1rem)] sm:max-h-[88vh] flex flex-col overflow-hidden animate-scaleUp my-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header (Sticky / Fixed at top) */}
+            <div className="shrink-0 px-4 sm:px-6 py-3.5 sm:py-4 border-b border-slate-100 flex items-center justify-between bg-white z-10">
+              <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                <div className="p-2 bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-100 shrink-0">
                   <CreditCard size={18} />
                 </div>
-                <div>
-                  <h3 className="text-sm font-extrabold text-slate-900">
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">
                     Update Payment Details
                   </h3>
-                  <p className="text-[11px] text-slate-500">
-                    Invoice #{editingPaymentOrder.billingDetails?.invoiceNumber} • {editingPaymentOrder.clientName} ({editingPaymentOrder.companyName})
+                  <p className="text-[11px] text-slate-500 truncate">
+                    Invoice #{editingPaymentOrder.billingDetails?.invoiceNumber || "N/A"} • {editingPaymentOrder.clientName} {editingPaymentOrder.companyName ? `(${editingPaymentOrder.companyName})` : ""}
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setEditingPaymentOrder(null)}
-                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-all cursor-pointer"
+                className="text-slate-400 hover:text-slate-600 p-1.5 sm:p-2 rounded-lg hover:bg-slate-100 transition-all cursor-pointer shrink-0"
+                aria-label="Close dialog"
               >
                 <X size={18} />
               </button>
             </div>
 
-            {/* Order info badge */}
-            <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex items-center justify-between text-xs font-mono">
-              <div>
-                <span className="text-slate-500 font-bold uppercase block text-[10px]">Sales Person</span>
-                <span className="text-slate-800 font-bold text-xs flex items-center gap-1 mt-0.5">
-                  <User2 size={12} className="text-emerald-600 shrink-0" />
-                  {getAssignedUserName(editingPaymentOrder.assignedToUserId)}
-                </span>
+            {/* Scrollable Modal Body */}
+            <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-4 sm:space-y-4.5 overscroll-contain">
+              {/* Order financial & sales summary cards */}
+              <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 sm:p-3.5 grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 text-xs font-mono">
+                <div className="min-w-0">
+                  <span className="text-slate-500 font-bold uppercase block text-[10px] tracking-wider truncate">Sales Person</span>
+                  <span className="text-slate-800 font-bold text-xs flex items-center gap-1 mt-0.5 truncate">
+                    <User2 size={12} className="text-emerald-600 shrink-0" />
+                    <span className="truncate">{getAssignedUserName(editingPaymentOrder.assignedToUserId)}</span>
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block text-[10px] tracking-wider truncate">Order Total</span>
+                  <span className="text-slate-900 font-black text-xs sm:text-sm block mt-0.5">
+                    ₹{formatIndianNumber(getOrderTotalInvoiceAmount(editingPaymentOrder) || editingPaymentOrder.totalValue || 0)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-emerald-700 font-bold uppercase block text-[10px] tracking-wider truncate">Total Received</span>
+                  <span className="text-emerald-700 font-extrabold text-xs sm:text-sm block mt-0.5">
+                    ₹{formatIndianNumber(parseFloat(paymentForm.amountReceived) || 0)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-amber-700 font-bold uppercase block text-[10px] tracking-wider truncate">Pending Balance</span>
+                  <span className="text-amber-700 font-extrabold text-xs sm:text-sm block mt-0.5">
+                    ₹{formatIndianNumber(parseFloat(paymentForm.pendingAmount) || 0)}
+                  </span>
+                </div>
               </div>
-              <div className="text-right">
-                <span className="text-slate-500 font-bold uppercase block text-[10px]">Order Total Amount</span>
-                <span className="text-slate-900 font-black text-sm">
-                  ₹{(editingPaymentOrder.totalValue || 0).toLocaleString()}
-                </span>
-              </div>
-            </div>
 
-            {/* Form Fields */}
-            <div className="space-y-4">
               {/* SECTION 1: Payment Receipt Records History */}
-              <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 space-y-2.5">
+              <div className="bg-slate-50/90 border border-slate-200/80 rounded-xl p-3 sm:p-3.5 space-y-2.5">
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                   <span className="text-xs font-extrabold text-slate-800 uppercase font-mono tracking-wider flex items-center gap-1.5">
-                    <History size={14} className="text-blue-600" />
-                    Payment Receipts History
+                    <History size={14} className="text-blue-600 shrink-0" />
+                    <span>Payment Receipts History</span>
                   </span>
-                  <span className="text-[10px] font-mono font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
+                  <span className="text-[10px] font-mono font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full shrink-0">
                     {orderReceipts.length} Record{orderReceipts.length === 1 ? "" : "s"}
                   </span>
                 </div>
 
                 {orderReceipts.length === 0 ? (
-                  <div className="text-center py-3 bg-white border border-dashed border-slate-200 rounded-lg text-slate-500 text-xs">
+                  <div className="text-center py-3.5 px-2 bg-white border border-dashed border-slate-200 rounded-lg text-slate-500 text-xs">
                     No separate payment receipt records logged yet. Use the form below to add a new record.
                   </div>
                 ) : (
-                  <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100 bg-white">
+                  <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100 bg-white shadow-2xs">
                     {orderReceipts.map((rec) => (
-                      <div key={rec.id} className="p-2.5 flex items-center justify-between text-xs hover:bg-slate-50 transition-colors">
-                        <div className="space-y-0.5">
-                          <div className="flex items-center gap-2 font-mono font-bold text-slate-800">
-                            <Calendar size={12} className="text-slate-400" />
-                            <span>{formatDate(rec.paymentReceivedDate)}</span>
+                      <div key={rec.id} className="p-2.5 sm:p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs hover:bg-slate-50 transition-colors">
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 font-mono font-bold text-slate-800">
+                            <span className="flex items-center gap-1 text-slate-600">
+                              <Calendar size={12} className="text-slate-400 shrink-0" />
+                              {formatDate(rec.paymentReceivedDate)}
+                            </span>
                             {rec.utrId && (
-                              <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">
+                              <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px] font-mono break-all">
                                 UTR: {rec.utrId}
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-slate-500 flex items-center gap-2">
+                          <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                             <span>By: {rec.createdBy || "System"}</span>
-                            {rec.comments && <span className="italic">• {rec.comments}</span>}
+                            {rec.comments && <span className="italic text-slate-600">• {rec.comments}</span>}
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-100">
                           <span className="font-mono font-extrabold text-emerald-700 text-xs sm:text-sm">
-                            ₹{(rec.amount || 0).toLocaleString()}
+                            ₹{formatIndianNumber(rec.amount || 0)}
                           </span>
                           <button
                             type="button"
                             onClick={() => handleDeletePaymentReceipt(rec.id)}
                             title="Delete this payment record"
-                            className="text-rose-400 hover:text-rose-600 p-1 rounded hover:bg-rose-50 transition-colors cursor-pointer"
+                            className="text-rose-400 hover:text-rose-600 p-1 sm:p-1.5 rounded hover:bg-rose-50 transition-colors cursor-pointer"
                           >
-                            <Trash2 size={13} />
+                            <Trash2 size={14} />
                           </button>
                         </div>
                       </div>
@@ -4228,18 +4585,18 @@ export default function PaymentListView({
               </div>
 
               {/* SECTION 2: Add New Payment Received Details */}
-              <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-xl p-3.5 space-y-3">
+              <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-xl p-3 sm:p-3.5 space-y-3">
                 <div className="flex items-center justify-between border-b border-emerald-200/60 pb-2">
                   <span className="text-xs font-extrabold text-emerald-900 uppercase font-mono tracking-wider flex items-center gap-1.5">
-                    <Receipt size={14} className="text-emerald-600" />
-                    Add New Payment Received Record
+                    <Receipt size={14} className="text-emerald-600 shrink-0" />
+                    <span>Add New Payment Received Record</span>
                   </span>
-                  <span className="text-[10px] font-mono text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded font-semibold">
+                  <span className="text-[10px] font-mono text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded font-semibold shrink-0">
                     + New Payment Entry
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
                   {/* Received Date */}
                   <div>
                     <label className="block text-[10px] font-mono uppercase font-bold text-slate-700 mb-1">
@@ -4251,7 +4608,7 @@ export default function PaymentListView({
                       onChange={(e) =>
                         setPaymentForm((prev) => ({ ...prev, paymentReceivedDate: e.target.value }))
                       }
-                      className="w-full text-xs font-mono font-medium text-slate-800 bg-white border border-slate-200 rounded-xl px-2.5 py-2 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                      className="w-full text-xs font-mono font-medium text-slate-800 bg-white border border-slate-200 rounded-xl px-2.5 py-2 sm:py-2.5 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer shadow-2xs"
                     />
                   </div>
 
@@ -4261,14 +4618,14 @@ export default function PaymentListView({
                       UTR ID / Ref
                     </label>
                     <div className="relative">
-                      <Hash size={13} className="absolute left-2.5 top-2.5 text-slate-400" />
+                      <Hash size={13} className="absolute left-2.5 top-2.5 sm:top-3 text-slate-400" />
                       <input
                         type="text"
                         value={paymentForm.utrId}
                         onChange={(e) =>
                           setPaymentForm((prev) => ({ ...prev, utrId: e.target.value }))
                         }
-                        className="w-full text-xs font-mono text-slate-800 bg-white border border-slate-200 rounded-xl pl-7 pr-2 py-2 outline-none focus:ring-1 focus:ring-emerald-500"
+                        className="w-full text-xs font-mono text-slate-800 bg-white border border-slate-200 rounded-xl pl-7 pr-2 py-2 sm:py-2.5 outline-none focus:ring-1 focus:ring-emerald-500 shadow-2xs"
                         placeholder="UTR12345678"
                       />
                     </div>
@@ -4280,7 +4637,7 @@ export default function PaymentListView({
                       Amount (₹) *
                     </label>
                     <div className="relative">
-                      <IndianRupee size={13} className="absolute left-2.5 top-2.5 text-emerald-600" />
+                      <IndianRupee size={13} className="absolute left-2.5 top-2.5 sm:top-3 text-emerald-600" />
                       <input
                         type="number"
                         step="any"
@@ -4289,7 +4646,7 @@ export default function PaymentListView({
                         onChange={(e) => {
                           const val = e.target.value;
                           const entryAmt = parseFloat(val) || 0;
-                          const total = editingPaymentOrder.totalValue || 0;
+                          const total = getOrderTotalInvoiceAmount(editingPaymentOrder) || editingPaymentOrder.totalValue || 0;
                           const existingSum = orderReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
                           const totalReceived = existingSum + entryAmt;
                           const calcPending = Math.max(0, total - totalReceived);
@@ -4306,18 +4663,18 @@ export default function PaymentListView({
                             paymentStatus: autoStatus,
                           }));
                         }}
-                        className="w-full text-xs font-mono font-extrabold text-emerald-900 bg-white border border-emerald-300 rounded-xl pl-7 pr-2 py-2 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                        className="w-full text-xs font-mono font-extrabold text-emerald-900 bg-white border border-emerald-300 rounded-xl pl-7 pr-2 py-2 sm:py-2.5 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 shadow-2xs"
                         placeholder="0.00"
                       />
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
                   <span className="text-[11px] text-slate-500 italic">
                     {parseFloat(paymentForm.lastEnteredAmount) > 0 ? (
                       <span className="text-emerald-700 font-semibold">
-                        Adding ₹{parseFloat(paymentForm.lastEnteredAmount).toLocaleString()} to total received
+                        Adding ₹{formatIndianNumber(parseFloat(paymentForm.lastEnteredAmount) || 0)} to total received
                       </span>
                     ) : (
                       "Enter amount above to log a new payment record"
@@ -4327,28 +4684,28 @@ export default function PaymentListView({
                     type="button"
                     disabled={isSavingPayment || !(parseFloat(paymentForm.lastEnteredAmount) > 0)}
                     onClick={handleAddPaymentReceipt}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-lg transition-all shadow-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full sm:w-auto"
                   >
-                    <Plus size={13} />
+                    <Plus size={14} />
                     <span>+ Save Payment Record</span>
                   </button>
                 </div>
               </div>
 
-              {/* SECTION 2: Cumulative Payment Summary */}
-              <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-3.5 space-y-3">
+              {/* SECTION 3: Cumulative Payment Summary */}
+              <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-3 sm:p-3.5 space-y-3">
                 <span className="text-[11px] font-mono uppercase font-extrabold text-slate-600 block border-b border-slate-200/60 pb-1.5">
                   Overall Payment Summary
                 </span>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-3.5">
                   {/* How Much Payment Received (Total) */}
                   <div>
                     <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
                       How Much Payment Received (Total ₹)
                     </label>
                     <div className="relative">
-                      <IndianRupee size={14} className="absolute left-3 top-2.5 text-slate-400" />
+                      <IndianRupee size={14} className="absolute left-3 top-2.5 sm:top-3 text-slate-400" />
                       <input
                         type="number"
                         step="any"
@@ -4357,7 +4714,7 @@ export default function PaymentListView({
                         onChange={(e) => {
                           const val = e.target.value;
                           const numVal = parseFloat(val) || 0;
-                          const total = editingPaymentOrder.totalValue || 0;
+                          const total = getOrderTotalInvoiceAmount(editingPaymentOrder) || editingPaymentOrder.totalValue || 0;
                           const calcPending = Math.max(0, total - numVal);
                           const calcEntry = Math.max(0, numVal - previousAmountReceived);
 
@@ -4373,7 +4730,7 @@ export default function PaymentListView({
                             paymentStatus: autoStatus,
                           }));
                         }}
-                        className="w-full text-xs font-mono font-bold text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+                        className="w-full text-xs font-mono font-bold text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 sm:py-2.5 outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 shadow-2xs"
                         placeholder="0.00"
                       />
                     </div>
@@ -4385,7 +4742,7 @@ export default function PaymentListView({
                       Pending Amount (₹)
                     </label>
                     <div className="relative">
-                      <IndianRupee size={14} className="absolute left-3 top-2.5 text-slate-400" />
+                      <IndianRupee size={14} className="absolute left-3 top-2.5 sm:top-3 text-slate-400" />
                       <input
                         type="number"
                         step="any"
@@ -4394,7 +4751,7 @@ export default function PaymentListView({
                         onChange={(e) =>
                           setPaymentForm((prev) => ({ ...prev, pendingAmount: e.target.value }))
                         }
-                        className="w-full text-xs font-mono font-bold text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+                        className="w-full text-xs font-mono font-bold text-slate-800 bg-white border border-slate-200 rounded-xl pl-8 pr-3 py-2 sm:py-2.5 outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 shadow-2xs"
                         placeholder="0.00"
                       />
                     </div>
@@ -4402,7 +4759,7 @@ export default function PaymentListView({
                 </div>
 
                 {/* Payment Status & Comments */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-3.5 pt-1">
                   <div>
                     <label className="block text-[11px] font-mono uppercase font-bold text-slate-700 mb-1">
                       Payment Status
@@ -4415,7 +4772,7 @@ export default function PaymentListView({
                           paymentStatus: e.target.value as "Unpaid" | "Partial paid" | "Fully paid",
                         }))
                       }
-                      className="w-full text-xs font-bold text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                      className="w-full text-xs font-bold text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 sm:py-2.5 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer shadow-2xs"
                     >
                       <option value="Unpaid">Unpaid</option>
                       <option value="Partial paid">Partial paid</option>
@@ -4433,7 +4790,7 @@ export default function PaymentListView({
                       onChange={(e) =>
                         setPaymentForm((prev) => ({ ...prev, comments: e.target.value }))
                       }
-                      className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-xl p-2 outline-none focus:ring-1 focus:ring-emerald-500 placeholder:text-slate-400"
+                      className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 sm:py-2.5 outline-none focus:ring-1 focus:ring-emerald-500 placeholder:text-slate-400 shadow-2xs"
                       placeholder="Payment notes / bank ref..."
                     />
                   </div>
@@ -4441,12 +4798,12 @@ export default function PaymentListView({
               </div>
             </div>
 
-            {/* Modal Actions */}
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            {/* Modal Actions (Sticky / Fixed at bottom) */}
+            <div className="shrink-0 px-4 sm:px-6 py-3 sm:py-3.5 border-t border-slate-100 bg-slate-50/90 sm:bg-white z-10 flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setEditingPaymentOrder(null)}
-                className="px-4 py-2 border border-slate-200 hover:border-slate-300 text-slate-600 hover:text-slate-800 text-xs font-bold font-mono rounded-xl transition-all cursor-pointer"
+                className="w-full sm:w-auto px-4 py-2.5 sm:py-2 border border-slate-200 hover:border-slate-300 text-slate-600 hover:text-slate-800 text-xs font-bold font-mono rounded-xl transition-all cursor-pointer text-center"
               >
                 Cancel
               </button>
@@ -4454,7 +4811,7 @@ export default function PaymentListView({
                 type="button"
                 disabled={isSavingPayment}
                 onClick={handleSavePaymentDetails}
-                className="flex items-center gap-1.5 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-5 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50 text-center"
               >
                 {isSavingPayment ? (
                   <>
@@ -4657,10 +5014,11 @@ export default function PaymentListView({
                     </div>
                     <div className="text-xs font-mono text-emerald-400 font-bold">
                       Total Payment Sum to Import: ₹
-                      {parsedBulkRows
-                        .filter((r) => r.isValid)
-                        .reduce((sum, r) => sum + r.rawAmount, 0)
-                        .toLocaleString()}
+                      {formatIndianNumber(
+                        parsedBulkRows
+                          .filter((r) => r.isValid)
+                          .reduce((sum, r) => sum + r.rawAmount, 0)
+                      )}
                     </div>
                   </div>
 
@@ -4704,7 +5062,7 @@ export default function PaymentListView({
                               )}
                             </td>
                             <td className="py-2 px-3 text-right font-mono font-extrabold text-emerald-700">
-                              ₹{r.rawAmount.toLocaleString()}
+                              ₹{formatIndianNumber(r.rawAmount)}
                             </td>
                             <td className="py-2 px-3 font-mono text-[11px] text-slate-600">{r.rawDate}</td>
                             <td className="py-2 px-3 font-mono text-[11px] text-slate-600">
@@ -4713,7 +5071,7 @@ export default function PaymentListView({
                             <td className="py-2 px-3 text-right font-mono font-bold">
                               {r.isValid ? (
                                 <span className={r.newPendingAmount === 0 ? "text-emerald-600" : "text-amber-700"}>
-                                  ₹{r.newPendingAmount?.toLocaleString()}
+                                  ₹{formatIndianNumber(r.newPendingAmount || 0)}
                                 </span>
                               ) : (
                                 <span className="text-slate-300">-</span>
@@ -4925,6 +5283,22 @@ export default function PaymentListView({
               </div>
 
               <div className="space-y-1">
+                <label className="font-bold text-slate-700">Sales Person *</label>
+                <select
+                  value={badDebtorForm.assignedToUserId || ""}
+                  onChange={(e) => setBadDebtorForm((prev) => ({ ...prev, assignedToUserId: e.target.value }))}
+                  className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 font-medium"
+                >
+                  <option value="">Select Sales Person</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({u.role || "Sales"})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
                 <label className="font-bold text-slate-700">Status</label>
                 <select
                   value={badDebtorForm.status}
@@ -4933,6 +5307,7 @@ export default function PaymentListView({
                 >
                   <option value="Bad Debt">Bad Debt</option>
                   <option value="In Recovery">In Recovery</option>
+                  <option value="Partial Paid">Partial Paid</option>
                   <option value="Written Off">Written Off</option>
                   <option value="Paid">Paid</option>
                 </select>
@@ -4965,19 +5340,259 @@ export default function PaymentListView({
                 type="button"
                 disabled={isSavingBadDebtor}
                 onClick={handleSaveBadDebtor}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold font-mono bg-rose-600 hover:bg-rose-700 text-white shadow-xs cursor-pointer"
+                className="flex items-center gap-2 px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold font-mono rounded-xl transition-all shadow-md cursor-pointer disabled:opacity-50"
               >
                 {isSavingBadDebtor ? (
                   <>
-                    <Loader2 size={14} className="animate-spin" />
+                    <Loader2 size={15} className="animate-spin" />
                     <span>Saving...</span>
                   </>
                 ) : (
-                  <>
-                    <Save size={14} />
-                    <span>{editingBadDebtor ? "Update Record" : "Save Bad Debtor"}</span>
-                  </>
+                  <span>{editingBadDebtor ? "Update Record" : "Save Bad Debtor"}</span>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BAD DEBTOR PAYMENTS MANAGEMENT MODAL */}
+      {showBadDebtorPaymentModal && managingBadDebtorPayment && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-5 max-h-[90vh] overflow-y-auto scrollbar-thin">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-emerald-50 text-emerald-700 rounded-xl">
+                  <Receipt size={20} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900">
+                    Payment Receipts — {managingBadDebtorPayment.companyName}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Bad Debt Invoice #{managingBadDebtorPayment.invoiceNumber} | Total Value:{" "}
+                    <span className="font-bold text-slate-900 font-mono">
+                      ₹{formatIndianNumber(managingBadDebtorPayment.invoiceAmount)}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBadDebtorPaymentModal(false);
+                  setManagingBadDebtorPayment(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Payment Summary Box */}
+            <div className="grid grid-cols-3 gap-3 p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl text-center">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">
+                  Invoice Amount
+                </p>
+                <p className="text-sm font-black font-mono text-slate-900 mt-0.5">
+                  ₹{formatIndianNumber(managingBadDebtorPayment.invoiceAmount)}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">
+                  Total Received
+                </p>
+                <p className="text-sm font-black font-mono text-emerald-700 mt-0.5">
+                  ₹{formatIndianNumber(getBadDebtorTotalReceived(managingBadDebtorPayment))}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">
+                  Pending Balance
+                </p>
+                <p className="text-sm font-black font-mono text-rose-600 mt-0.5">
+                  ₹{formatIndianNumber(getBadDebtorPendingAmount(managingBadDebtorPayment))}
+                </p>
+              </div>
+            </div>
+
+            {/* Add Payment Form Section */}
+            <div className="bg-emerald-50/50 border border-emerald-200/70 rounded-xl p-4 space-y-3">
+              <h4 className="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
+                <Plus size={14} className="text-emerald-600" />
+                <span>Log New Payment Receipt</span>
+              </h4>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">Payment Received Date *</label>
+                  <input
+                    type="date"
+                    value={badDebtorPaymentForm.paymentReceivedDate}
+                    onChange={(e) =>
+                      setBadDebtorPaymentForm((prev) => ({ ...prev, paymentReceivedDate: e.target.value }))
+                    }
+                    className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">Amount Received (₹) *</label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 50000"
+                    value={badDebtorPaymentForm.amount}
+                    onChange={(e) => setBadDebtorPaymentForm((prev) => ({ ...prev, amount: e.target.value }))}
+                    className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 font-mono font-bold"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">UTR / Reference ID</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. UTR-982347102"
+                    value={badDebtorPaymentForm.utrId}
+                    onChange={(e) => setBadDebtorPaymentForm((prev) => ({ ...prev, utrId: e.target.value }))}
+                    className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700">Remarks / Mode</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. NEFT Bank Transfer / Legal recovery instalment"
+                    value={badDebtorPaymentForm.comments}
+                    onChange={(e) => setBadDebtorPaymentForm((prev) => ({ ...prev, comments: e.target.value }))}
+                    className="w-full text-xs text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-1">
+                <button
+                  type="button"
+                  disabled={isSavingBadDebtorPayment || !badDebtorPaymentForm.amount}
+                  onClick={handleAddBadDebtorPaymentReceipt}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingBadDebtorPayment ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      <span>Saving Receipt...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 size={14} />
+                      <span>Save Receipt</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* List of Previous Payment Receipts */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                <span>Payment Receipts History</span>
+                <span className="text-[11px] font-mono font-normal text-slate-500">
+                  {(managingBadDebtorPayment.receipts || []).length} receipt(s) logged
+                </span>
+              </h4>
+
+              {(managingBadDebtorPayment.receipts || []).length === 0 ? (
+                <div className="p-6 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-500">
+                  No payment receipts recorded yet for this bad debtor invoice.
+                </div>
+              ) : (
+                <div className="border border-slate-200/80 rounded-xl overflow-hidden">
+                  <table className="w-full text-left text-xs font-mono">
+                    <thead className="bg-slate-50 text-slate-600 font-bold text-[10px] uppercase border-b border-slate-200/80">
+                      <tr>
+                        <th className="p-2.5">Date</th>
+                        <th className="p-2.5">UTR / Ref #</th>
+                        <th className="p-2.5 text-right">Amount (₹)</th>
+                        <th className="p-2.5">Remarks / Created By</th>
+                        <th className="p-2.5 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-slate-700">
+                      {(managingBadDebtorPayment.receipts || []).map((rec, idx) => {
+                        const keyId = rec.id || `rec-${idx}`;
+                        const isConfirming = confirmDeleteReceiptId === keyId;
+
+                        return (
+                          <tr key={keyId} className="hover:bg-slate-50/80">
+                            <td className="p-2.5 font-bold text-slate-900">
+                              {formatDate(rec.paymentReceivedDate)}
+                            </td>
+                            <td className="p-2.5 text-slate-600">
+                              {rec.utrId || <span className="text-slate-400 italic">N/A</span>}
+                            </td>
+                            <td className="p-2.5 text-right font-black text-emerald-700">
+                              ₹{formatIndianNumber(rec.amount || 0)}
+                            </td>
+                            <td className="p-2.5 text-slate-500 font-sans text-[11px]">
+                              {rec.comments && <div className="text-slate-700 font-medium">{rec.comments}</div>}
+                              <div className="text-[10px] text-slate-400">By: {rec.createdBy || "System"}</div>
+                            </td>
+                            <td className="p-2.5 text-center">
+                              {isConfirming ? (
+                                <div className="flex items-center justify-center gap-1.5 animate-fadeIn">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteBadDebtorPaymentReceipt(rec.id, idx)}
+                                    disabled={isSavingBadDebtorPayment}
+                                    className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[10px] font-bold cursor-pointer shadow-2xs"
+                                    title="Confirm Delete"
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteReceiptId(null)}
+                                    disabled={isSavingBadDebtorPayment}
+                                    className="px-2 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[10px] font-bold cursor-pointer"
+                                    title="Cancel"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteReceiptId(keyId)}
+                                  disabled={isSavingBadDebtorPayment}
+                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-all cursor-pointer"
+                                  title="Delete Receipt"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBadDebtorPaymentModal(false);
+                  setManagingBadDebtorPayment(null);
+                }}
+                className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold font-mono rounded-xl transition-all cursor-pointer"
+              >
+                Close
               </button>
             </div>
           </div>
@@ -5110,7 +5725,7 @@ export default function PaymentListView({
                           <td className="p-2 font-bold text-slate-800">{r.companyName}</td>
                           <td className="p-2 text-slate-600">{r.customerPo || "N/A"}</td>
                           <td className="p-2 font-bold text-slate-900">{r.invoiceNumber}</td>
-                          <td className="p-2 text-right font-bold text-rose-600">₹{r.invoiceAmount?.toLocaleString() || 0}</td>
+                          <td className="p-2 text-right font-bold text-rose-600">₹{formatIndianNumber(r.invoiceAmount || 0)}</td>
                           <td className="p-2 text-center font-bold text-amber-700">{r.overdueDays || 0}d</td>
                           <td className="p-2">
                             {r.isValid ? (

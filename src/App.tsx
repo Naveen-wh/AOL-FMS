@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { User, ProjectWorkflow, SalesTask, ActionLog, Role, AccessLevel, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, TaxRate, BadDebtor, EmailSentLog } from "./types";
 import {
   canDeleteTask,
@@ -104,7 +104,8 @@ import {
   HelpCircle,
   Type,
   Sun,
-  Moon
+  Moon,
+  ChevronDown
 } from "lucide-react";
 
 export default function App() {
@@ -176,6 +177,31 @@ export default function App() {
     document.documentElement.setAttribute("data-font-size", fontSize);
     localStorage.setItem("app_font_size", fontSize);
   }, [fontSize]);
+
+  // User profile dropdown menu state (anchored to user name pill)
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState<boolean>(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setIsUserMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsUserMenuOpen(false);
+      }
+    };
+    if (isUserMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("keydown", handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isUserMenuOpen]);
 
   useEffect(() => {
     async function fetchStatus() {
@@ -1282,91 +1308,220 @@ export default function App() {
   }
 
   return (
-    <div className="bg-[#f8fafc] min-h-screen text-slate-800 antialiased font-sans flex flex-col">
+    <div className="bg-[#f8fafc] dark:bg-slate-950 min-h-screen text-slate-800 dark:text-slate-100 antialiased font-sans flex flex-col">
       {/* Dynamic Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-40">
+      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-40">
         <div className="max-w-[95%] mx-auto px-3 sm:px-4 lg:px-5 py-2 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <AolLogo size="md" className="h-7 sm:h-8" />
             <div>
-              <h1 className="text-sm font-bold tracking-tight text-slate-900 leading-none">
+              <h1 className="text-sm font-bold tracking-tight text-slate-900 dark:text-slate-100 leading-none">
                 Sales Management Portal
               </h1>
-              <p className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider mt-0.5">
-                Hierarchical Role & Permission Matrix Console
-              </p>
             </div>
           </div>
 
-          {/* Connected Authenticated Profile Pill & Signout Controls */}
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 bg-slate-50 border border-slate-250 p-1 pl-1.5 pr-2.5 rounded-md shadow-2xs">
+          {/* Connected Authenticated Profile & Dropdown Controls */}
+          <div className="relative" ref={userMenuRef}>
+            <button
+              type="button"
+              id="user-profile-menu-button"
+              onClick={() => setIsUserMenuOpen((prev) => !prev)}
+              className={`flex items-center gap-2 p-1 pl-1.5 pr-2.5 rounded-xl border transition-all cursor-pointer select-none text-left ${
+                isUserMenuOpen
+                  ? "bg-slate-100 dark:bg-slate-800 border-emerald-500/40 dark:border-emerald-500/40 ring-2 ring-emerald-500/20 shadow-xs"
+                  : "bg-slate-50 dark:bg-slate-800/80 border-slate-250 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 shadow-2xs hover:border-slate-300 dark:hover:border-slate-600"
+              }`}
+              aria-expanded={isUserMenuOpen}
+              aria-haspopup="true"
+              title="Click to open User Menu (Theme, Font Size, Logout)"
+            >
               <img
                 src={activeUser.avatarUrl || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=60"}
                 alt={activeUser.name}
-                className="w-6 h-6 rounded-md object-cover border border-slate-200"
+                className="w-6 h-6 rounded-md object-cover border border-slate-200 dark:border-slate-600 shrink-0"
                 referrerPolicy="no-referrer"
               />
               <div className="min-w-0">
-                <span className="text-[10px] font-bold text-slate-900 leading-none block">
+                <span className="text-[10px] font-bold text-slate-900 dark:text-slate-100 leading-none block truncate max-w-[110px] sm:max-w-[150px]">
                   {activeUser.name}
                 </span>
-                <span className="text-[8px] font-mono text-emerald-600 font-bold block mt-0.5">
+                <span className="text-[8px] font-mono text-emerald-600 dark:text-emerald-400 font-bold block mt-0.5 truncate">
                   {activeUser.role} • {activeUser.accessLevel}
                 </span>
               </div>
-            </div>
-
-            {/* Dark / Light Mode Toggle - Single icon just left of font button */}
-            <button
-              type="button"
-              onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-              className="flex items-center justify-center p-1.5 rounded-lg border border-slate-200/90 bg-slate-100/90 hover:bg-slate-200/80 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-amber-300 dark:hover:bg-slate-700/80 transition-all cursor-pointer shadow-2xs"
-              title={theme === "light" ? "Switch to Dark Mode" : "Switch to Light Mode"}
-              aria-label="Toggle dark/light mode"
-            >
-              {theme === "light" ? (
-                <Moon size={14} className="text-slate-600" />
-              ) : (
-                <Sun size={14} className="text-amber-400" />
-              )}
-            </button>
-
-            {/* Font Size Option - Single 'A' icon button cycling Small -> Medium -> Large */}
-            <button
-              type="button"
-              onClick={() => {
-                const nextSize: AppFontSize = fontSize === "small" ? "medium" : fontSize === "medium" ? "large" : "small";
-                setFontSize(nextSize);
-              }}
-              className="flex items-center justify-center gap-0.5 px-2 py-1 rounded-lg border border-slate-200/90 bg-slate-100/90 hover:bg-slate-200/80 text-slate-700 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-700/80 transition-all cursor-pointer shadow-2xs group"
-              title={`Font Size: ${fontSize.toUpperCase()} (Click to toggle Small → Medium → Large)`}
-              aria-label="Adjust Font Size"
-            >
-              <span
-                className={`font-black font-sans leading-none transition-all ${
-                  fontSize === "small"
-                    ? "text-[13px] text-slate-600 dark:text-slate-300"
-                    : fontSize === "medium"
-                    ? "text-[16px] text-emerald-600 dark:text-emerald-400 font-black"
-                    : "text-[19px] text-indigo-600 dark:text-indigo-400 font-black"
+              <ChevronDown
+                size={13}
+                className={`text-slate-400 dark:text-slate-400 transition-transform duration-200 shrink-0 ml-0.5 ${
+                  isUserMenuOpen ? "rotate-180 text-emerald-600 dark:text-emerald-400" : ""
                 }`}
-              >
-                A
-              </span>
-              <span className="text-[8px] font-mono font-bold uppercase opacity-70 ml-0.5 leading-none">
-                {fontSize === "small" ? "S" : fontSize === "medium" ? "M" : "L"}
-              </span>
+              />
             </button>
 
-            {/* Logout trigger */}
-            <button
-              onClick={handleSignOut}
-              className="flex items-center justify-center text-slate-400 hover:text-rose-600 p-1.5 rounded border border-transparent hover:border-rose-100 hover:bg-rose-50 transition cursor-pointer"
-              title="Sign Out of Portal"
-            >
-              <LogOut size={14} />
-            </button>
+            {/* Dropdown Menu */}
+            {isUserMenuOpen && (
+              <div
+                id="user-profile-dropdown"
+                className="absolute right-0 top-full mt-2 w-72 sm:w-80 max-w-[calc(100vw-24px)] bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl shadow-slate-900/15 p-3.5 z-50 space-y-3 animate-scaleUp text-slate-800 dark:text-slate-100"
+                style={{ transformOrigin: "top right" }}
+              >
+                {/* User Info Header */}
+                <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+                  <img
+                    src={activeUser.avatarUrl || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=80"}
+                    alt={activeUser.name}
+                    className="w-10 h-10 rounded-xl object-cover border border-slate-200 dark:border-slate-700 shadow-2xs shrink-0"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                      {activeUser.name}
+                    </h4>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                      {activeUser.email || `${activeUser.name.toLowerCase().replace(/\s+/g, ".")}@aol.com`}
+                    </p>
+                    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                        {activeUser.role}
+                      </span>
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                        {activeUser.accessLevel}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Dark / Light Mode Option */}
+                <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-2.5 border border-slate-200/80 dark:border-slate-700/80">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200 min-w-0">
+                      <div className="p-1.5 rounded-lg bg-white dark:bg-slate-700 shadow-2xs border border-slate-200/70 dark:border-slate-600 shrink-0 flex items-center justify-center w-7 h-7">
+                        {theme === "dark" ? <Moon size={14} className="text-indigo-400 shrink-0" /> : <Sun size={14} className="text-amber-500 shrink-0" />}
+                      </div>
+                      <div className="leading-tight min-w-0">
+                        <span className="block text-[11px] font-bold text-slate-900 dark:text-slate-100 truncate">Appearance</span>
+                        <span className="block text-[9px] font-mono text-slate-500 dark:text-slate-400 truncate">
+                          {theme === "dark" ? "Dark Mode" : "Light Mode"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Light / Dark Mode Toggle Pills */}
+                    <div className="flex items-center p-0.5 bg-slate-200/70 dark:bg-slate-950 rounded-lg border border-slate-250 dark:border-slate-800 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setTheme("light")}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          theme === "light"
+                            ? "bg-white text-slate-900 shadow-2xs font-extrabold"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                        }`}
+                        title="Switch to Light mode"
+                      >
+                        <Sun size={12} className={theme === "light" ? "text-amber-500 shrink-0" : "text-slate-400 shrink-0"} />
+                        <span>Light</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTheme("dark")}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          theme === "dark"
+                            ? "bg-slate-800 text-indigo-300 shadow-2xs font-extrabold"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                        }`}
+                        title="Switch to Dark mode"
+                      >
+                        <Moon size={12} className={theme === "dark" ? "text-indigo-400 shrink-0" : "text-slate-400 shrink-0"} />
+                        <span>Dark</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Font Size Option */}
+                <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-2.5 border border-slate-200/80 dark:border-slate-700/80">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200 min-w-0">
+                      <div className="p-1.5 rounded-lg bg-white dark:bg-slate-700 shadow-2xs border border-slate-200/70 dark:border-slate-600 shrink-0 flex items-center justify-center w-7 h-7">
+                        <Type size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      </div>
+                      <div className="leading-tight min-w-0">
+                        <span className="block text-[11px] font-bold text-slate-900 dark:text-slate-100 truncate">Font Scale</span>
+                        <span className="block text-[9px] font-mono text-slate-500 dark:text-slate-400 truncate">
+                          {fontSize === "small" ? "Small (100%)" : fontSize === "medium" ? "Medium (110%)" : "Large (120%)"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* S / M / L Selector */}
+                    <div className="flex items-center p-0.5 bg-slate-200/70 dark:bg-slate-950 rounded-lg border border-slate-250 dark:border-slate-800 font-mono shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setFontSize("small")}
+                        className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          fontSize === "small"
+                            ? "bg-white text-emerald-700 dark:bg-slate-800 dark:text-emerald-400 shadow-2xs font-black"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                        }`}
+                        title="Small Font (100%)"
+                      >
+                        S
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFontSize("medium")}
+                        className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          fontSize === "medium"
+                            ? "bg-white text-emerald-700 dark:bg-slate-800 dark:text-emerald-400 shadow-2xs font-black"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                        }`}
+                        title="Medium Font (110%)"
+                      >
+                        M
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFontSize("large")}
+                        className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          fontSize === "large"
+                            ? "bg-white text-emerald-700 dark:bg-slate-800 dark:text-emerald-400 shadow-2xs font-black"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                        }`}
+                        title="Large Font (120%)"
+                      >
+                        L
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Divider */}
+                <div className="border-t border-slate-100 dark:border-slate-800" />
+
+                {/* Logout Option */}
+                <div>
+                  <button
+                    type="button"
+                    id="user-dropdown-logout-btn"
+                    onClick={() => {
+                      setIsUserMenuOpen(false);
+                      handleSignOut();
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-transparent hover:border-rose-100 dark:hover:border-rose-900/60 transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="rounded-lg bg-rose-100/80 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 group-hover:bg-rose-200 dark:group-hover:bg-rose-900 transition-colors flex items-center justify-center w-7 h-7">
+                        <LogOut size={14} className="shrink-0" />
+                      </div>
+                      <span className="font-bold">Sign Out / Log Out</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-rose-400 dark:text-rose-500 font-normal">
+                      Exit session
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </header>

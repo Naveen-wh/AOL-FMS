@@ -19,7 +19,7 @@ import { dispatchSystemEmail } from "../lib/emailService";
 import { Plus, Search, Edit2, Trash2, ShieldAlert, Lock, Unlock, Filter, IndianRupee, Calendar, X, Check, HelpCircle, Building2, ShoppingCart, Percent, ShoppingBag, Upload, FileText, Loader2, Mail, FileSpreadsheet, Eye, Phone, User as UserIcon, RefreshCw, ChevronDown, Layers, TrendingUp, BarChart3, Clock, CheckCircle2, CalendarDays, ArrowUpDown } from "lucide-react";
 import InlineDeleteConfirm from "./InlineDeleteConfirm";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
-import { formatDate, formatCompactRupees, formatQuantityMT } from "../utils";
+import { formatDate, formatCompactRupees, formatQuantityMT, calculateOrderTotalInvoiceBreakdown, getOrderTotalInvoiceAmount } from "../utils";
 import { EmailSentStatusCell } from "./EmailSentStatusCell";
 
 const resolveReportingEmails = (creatorUserId: string, assignedToUserId: string, users: User[]) => {
@@ -230,81 +230,114 @@ export default function OrdersOffersView({
 
   // Import fields config for Orders & Offers + Historical Invoices & Payment Details
   const orderImportFields: ImportFieldDefinition[] = [
-    // Client & Basic Order Details
+    // Client & Basic Order Details (Firestore: OrderOffer)
+    { key: "orderId", label: "Order ID", sampleValue: "order-2025-001", description: "Firestore Order document ID (Auto-generated if omitted)" },
     { key: "clientName", label: "Client Full Name", required: true, sampleValue: "Rahul Sharma", description: "Primary contact full name" },
     { key: "companyName", label: "Company Name", required: true, sampleValue: "Hindustan Unilever", description: "Client company name" },
     { key: "email", label: "Client Email", sampleValue: "rahul@hul.com", description: "Primary client email address" },
     { key: "phone", label: "Client Phone", sampleValue: "+91 9876543210", description: "Contact phone number" },
-    { key: "billingAddress", label: "Client Billing Address", sampleValue: "42 Industrial Estate, Sector 5, Kolkata", description: "Billing address for invoices" },
+    { key: "billingAddress", label: "Client Billing Address", sampleValue: "42 Industrial Estate, Sector 5, Kolkata", description: "Billing address for invoices in Firestore" },
     { key: "billingGstin", label: "Client GSTIN", sampleValue: "19AAAAA0000A1Z5", description: "Client GSTIN Number" },
     { key: "assignedToUserName", label: "Order Assigned To (Sales Person Name)", sampleValue: "Anish Sharma", description: "Sales person or user name assigned to this order" },
+    { key: "assignedToUserId", label: "Assigned User ID", sampleValue: "user-12345", description: "Firestore user ID assigned to order" },
     { key: "status", label: "Pipeline Status", sampleValue: "Closed Won", description: "New, Contacted, Proposal, Negotiation, Closed Won, Closed Lost" },
     { key: "orderDate", label: "Order / Offer Date", sampleValue: "2025-08-20", description: "Order creation date (YYYY-MM-DD)" },
-    { key: "payment", label: "Payment Terms", sampleValue: "30 Days Credit", description: "Payment terms" },
-    { key: "paymentCreditPeriod", label: "Payment Credit Period (Days)", sampleValue: "30 Days", description: "Credit period in number of days" },
+    { key: "payment", label: "Payment Terms", sampleValue: "30 Days Credit", description: "Payment terms string" },
+    { key: "paymentCreditPeriod", label: "Payment Credit Period", sampleValue: "30 Days", description: "Credit period in days or terms" },
+    { key: "paymentTermsOffer", label: "Payment Terms Offer (Commercial)", sampleValue: "Within 30 days from date of Invoice", description: "Detailed payment terms for commercial offer" },
+    { key: "paymentBankId", label: "Payment Bank (Bank ID or Bank Name)", sampleValue: "HDFC Bank", description: "Linked bank ID or bank name in Firestore" },
+    { key: "delivery", label: "Delivery Terms", sampleValue: "Door Delivery", description: "Delivery terms (e.g. FOB, Door Delivery)" },
+    { key: "otherTerms", label: "Other Commercial Terms", sampleValue: "Subject to Kolkata Jurisdiction", description: "Other commercial notes or terms" },
     { key: "notes", label: "Notes / Details", sampleValue: "Urgent dispatch", description: "Internal notes or instructions" },
 
-    // Product 1
+    // Product 1 (Firestore: items[0] -> OrderItem)
     { key: "product1Name", label: "Product 1 Name", sampleValue: "Hydrogen Peroxide 50%", description: "First item description or product name (or use productName)" },
     { key: "product1Qty", label: "Product 1 Qty", sampleValue: "100", description: "Quantity of Product 1" },
     { key: "product1Rate", label: "Product 1 Rate (₹)", sampleValue: "250", description: "Unit rate for Product 1" },
     { key: "product1Amount", label: "Product 1 Amount (₹)", sampleValue: "25000", description: "Total amount for Product 1 (Auto-calculated if omitted)" },
     { key: "product1HsnCode", label: "Product 1 HSN Code", sampleValue: "28470000", description: "HSN / SAC Code for Product 1" },
+    { key: "product1Packing", label: "Product 1 Packing", sampleValue: "50 Kg Carboy", description: "Packing / packaging specifications for Product 1" },
+    { key: "product1Taxes", label: "Product 1 GST Rate (%)", sampleValue: "18%", description: "Applicable GST tax rate (e.g. 18%, 12%, 5%)" },
 
-    // Product 2
+    // Product 2 (Firestore: items[1] -> OrderItem)
     { key: "product2Name", label: "Product 2 Name", sampleValue: "Sodium Hydroxide 48%", description: "Second item description (optional)" },
     { key: "product2Qty", label: "Product 2 Qty", sampleValue: "50", description: "Quantity of Product 2" },
     { key: "product2Rate", label: "Product 2 Rate (₹)", sampleValue: "400", description: "Unit rate for Product 2" },
     { key: "product2Amount", label: "Product 2 Amount (₹)", sampleValue: "20000", description: "Total amount for Product 2" },
     { key: "product2HsnCode", label: "Product 2 HSN Code", sampleValue: "28151100", description: "HSN / SAC Code for Product 2" },
+    { key: "product2Packing", label: "Product 2 Packing", sampleValue: "250 Kg Drum", description: "Packing / packaging specifications for Product 2" },
+    { key: "product2Taxes", label: "Product 2 GST Rate (%)", sampleValue: "18%", description: "Applicable GST tax rate for Product 2" },
 
-    // Product 3
+    // Product 3 (Firestore: items[2] -> OrderItem)
     { key: "product3Name", label: "Product 3 Name", sampleValue: "", description: "Third item description (optional)" },
     { key: "product3Qty", label: "Product 3 Qty", sampleValue: "", description: "Quantity of Product 3" },
     { key: "product3Rate", label: "Product 3 Rate (₹)", sampleValue: "", description: "Unit rate for Product 3" },
     { key: "product3Amount", label: "Product 3 Amount (₹)", sampleValue: "", description: "Total amount for Product 3" },
     { key: "product3HsnCode", label: "Product 3 HSN Code", sampleValue: "", description: "HSN / SAC Code for Product 3" },
+    { key: "product3Packing", label: "Product 3 Packing", sampleValue: "", description: "Packing / packaging specifications for Product 3" },
+    { key: "product3Taxes", label: "Product 3 GST Rate (%)", sampleValue: "", description: "Applicable GST tax rate for Product 3" },
 
-    // Product 4
+    // Product 4 (Firestore: items[3] -> OrderItem)
     { key: "product4Name", label: "Product 4 Name", sampleValue: "", description: "Fourth item description (optional)" },
     { key: "product4Qty", label: "Product 4 Qty", sampleValue: "", description: "Quantity of Product 4" },
     { key: "product4Rate", label: "Product 4 Rate (₹)", sampleValue: "", description: "Unit rate for Product 4" },
     { key: "product4Amount", label: "Product 4 Amount (₹)", sampleValue: "", description: "Total amount for Product 4" },
     { key: "product4HsnCode", label: "Product 4 HSN Code", sampleValue: "", description: "HSN / SAC Code for Product 4" },
+    { key: "product4Packing", label: "Product 4 Packing", sampleValue: "", description: "Packing / packaging specifications for Product 4" },
+    { key: "product4Taxes", label: "Product 4 GST Rate (%)", sampleValue: "", description: "Applicable GST tax rate for Product 4" },
 
-    // Product 5
+    // Product 5 (Firestore: items[4] -> OrderItem)
     { key: "product5Name", label: "Product 5 Name", sampleValue: "", description: "Fifth item description (optional)" },
     { key: "product5Qty", label: "Product 5 Qty", sampleValue: "", description: "Quantity of Product 5" },
     { key: "product5Rate", label: "Product 5 Rate (₹)", sampleValue: "", description: "Unit rate for Product 5" },
     { key: "product5Amount", label: "Product 5 Amount (₹)", sampleValue: "", description: "Total amount for Product 5" },
     { key: "product5HsnCode", label: "Product 5 HSN Code", sampleValue: "", description: "HSN / SAC Code for Product 5" },
+    { key: "product5Packing", label: "Product 5 Packing", sampleValue: "", description: "Packing / packaging specifications for Product 5" },
+    { key: "product5Taxes", label: "Product 5 GST Rate (%)", sampleValue: "", description: "Applicable GST tax rate for Product 5" },
 
-    { key: "totalValue", label: "Total Order Value (₹)", sampleValue: "45000", description: "Total order value (Auto-calculated from products if omitted)" },
+    // Order Value & Totals (Firestore: OrderOffer)
+    { key: "totalValue", label: "Total Order Value (₹)", sampleValue: "45000", description: "Total order/invoice value (Auto-calculated from products if omitted)" },
+    { key: "totalProductCost", label: "Total Product Cost (Excl. GST ₹)", sampleValue: "38135.59", description: "Base product cost before GST in Firestore" },
+    { key: "totalGstAmount", label: "Total GST Amount (₹)", sampleValue: "6864.41", description: "Total GST amount across items and freight in Firestore" },
+    { key: "grandTotalOrderAmount", label: "Grand Total Order Amount (₹)", sampleValue: "45000", description: "Grand total order value including products, GST, and logistics charges in Firestore" },
 
-    // Invoicing & System Mapping Fields
-    { key: "invoiceNumber", label: "Invoice Number", sampleValue: "INV-2025-001", description: "Maps historical invoice into billing & dispatch" },
-    { key: "invoiceDate", label: "Invoice Date", sampleValue: "2025-08-20", description: "Date of invoice issuance (YYYY-MM-DD)" },
-    { key: "actualDispatchDate", label: "Actual Dispatch Date", sampleValue: "2025-08-22", description: "Actual date of goods dispatch in billing sub-section (YYYY-MM-DD)" },
-    { key: "invoiceFileUrl", label: "Invoice Link / URL", sampleValue: "https://drive.google.com/file/d/sample/view", description: "Direct URL link to uploaded invoice PDF/doc" },
+    // Invoicing & System Mapping Fields (Firestore: billingDetails)
+    { key: "invoiceNumber", label: "Invoice Number", sampleValue: "INV-2025-001", description: "Mapped invoice reference number in Firestore billingDetails" },
+    { key: "invoiceDate", label: "Invoice Date", sampleValue: "2025-08-20", description: "Date of invoice issuance in Firestore billingDetails (YYYY-MM-DD)" },
+    { key: "actualDispatchDate", label: "Actual Dispatch Date", sampleValue: "2025-08-22", description: "Actual date of goods dispatch in Firestore billingDetails (YYYY-MM-DD)" },
+    { key: "invoiceFileName", label: "Invoice File Name", sampleValue: "INV-2025-001.pdf", description: "Filename of attached invoice in Firestore billingDetails" },
+    { key: "invoiceFileUrl", label: "Invoice Link / URL", sampleValue: "https://drive.google.com/file/d/sample/view", description: "Direct URL link to uploaded invoice PDF/doc in Google Drive" },
+    { key: "ebillNo", label: "E-Way Bill Number (eBill No)", sampleValue: "121456789012", description: "E-Way bill number in Firestore billingDetails" },
+    { key: "lrNo", label: "LR / Bilty Number (Lorry Receipt)", sampleValue: "LR-998822", description: "Lorry Receipt or Bilty reference number in Firestore billingDetails" },
+    { key: "transportName", label: "Invoice Transport Carrier", sampleValue: "VRL Logistics", description: "Transporter carrier name in Firestore billingDetails" },
+    { key: "mappedAt", label: "Invoice Mapped At Date", sampleValue: "2025-08-22", description: "Timestamp when invoice was mapped in Firestore" },
 
-    // Closed Won Details (Full Closed Won Section Fields)
-    { key: "customerPoNumber", label: "Customer PO Number", sampleValue: "PO-99481", description: "Customer Purchase Order number" },
-    { key: "poDate", label: "Customer PO Date", sampleValue: "2025-08-15", description: "Customer PO Date (YYYY-MM-DD)" },
+    // Closed Won Details (Firestore: closedWonDetails)
+    { key: "customerPoNumber", label: "Customer PO Number", sampleValue: "PO-99481", description: "Customer Purchase Order number in Firestore closedWonDetails" },
+    { key: "piNumber", label: "Proforma Invoice (PI) Number", sampleValue: "PI-2025-045", description: "Proforma Invoice PI number in Firestore closedWonDetails" },
+    { key: "poDate", label: "Customer PO Date", sampleValue: "2025-08-15", description: "Customer PO Date in Firestore closedWonDetails (YYYY-MM-DD)" },
     { key: "poAttachmentUrl", label: "Customer PO Document Link / URL", sampleValue: "https://drive.google.com/file/d/sample-po/view", description: "Direct URL link to uploaded customer PO PDF/document" },
-    { key: "freightTerm", label: "Freight Term", sampleValue: "FOR Destination", description: "Freight term (e.g. FOR Destination, Ex-Works Factory)" },
+    { key: "freightTerm", label: "Freight Term", sampleValue: "FOR Destination", description: "Freight term (e.g. FOR Destination, Ex-Works Factory, To Pay)" },
+    { key: "freightChargedInBill", label: "Freight Charged in Bill", sampleValue: "Fixed", description: "Freight to be charged in bill (e.g. Fixed, Actuals, No)" },
+    { key: "freightCostToAol", label: "Freight Cost to AOL", sampleValue: "1500", description: "Freight cost incurred by company" },
+    { key: "cartageLabourCharges", label: "Cartage / Labour Charges", sampleValue: "500", description: "Cartage or loading/unloading labour charges" },
     { key: "transporterName", label: "Transporter Name", sampleValue: "VRL Logistics", description: "Logistics or transport carrier company name" },
     { key: "vehicleNo", label: "Vehicle Number", sampleValue: "WB 02 AB 1234", description: "Vehicle / Transport vehicle number" },
-    { key: "freightChargedInBill", label: "Freight Charged in Bill", sampleValue: "Fixed", description: "Freight to be charged in bill (e.g. Fixed / Actuals)" },
-    { key: "freightCostToAol", label: "Freight Cost to AOL", sampleValue: "1500", description: "Freight cost incurred by company" },
-    { key: "cartageLabourCharges", label: "Cartage / Labour Charges", sampleValue: "500", description: "Cartage or labour charges if any" },
     { key: "deliveryTerm", label: "Delivery / Booking Term", sampleValue: "Door Delivery", description: "Delivery or booking term (e.g. Door Delivery)" },
     { key: "warehouseManagedBy", label: "Warehouse Managed By", sampleValue: "Kolkata Central WH", description: "Warehouse or warehouse manager name" },
     { key: "destinationAddress", label: "Destination Address", sampleValue: "42 Industrial Estate, Sector 5, Kolkata", description: "Delivery destination address" },
-    { key: "gstin", label: "GSTIN", sampleValue: "19AAAAA0000A1Z5", description: "GSTIN Number for Closed Won" },
+    { key: "gstin", label: "GSTIN", sampleValue: "19AAAAA0000A1Z5", description: "GSTIN Number for Closed Won dispatch" },
     { key: "dispatchDate", label: "Expected Dispatch Date", sampleValue: "2025-08-22", description: "Expected date of dispatch (YYYY-MM-DD)" },
     { key: "dispatchLocation", label: "Dispatch Location", sampleValue: "Factory Silvassa", description: "Dispatch location / warehouse" },
 
-    // Mail Sent Status
+    // Initial Payment Reconciliation Fields (Firestore: payment_details)
+    { key: "amountReceived", label: "Payment Amount Received (₹)", sampleValue: "45000", description: "Initial payment amount received against invoice" },
+    { key: "paymentStatus", label: "Payment Status", sampleValue: "Paid", description: "Payment status: Unpaid, Partial Paid, or Paid" },
+    { key: "paymentReceivedDate", label: "Payment Received Date", sampleValue: "2025-08-25", description: "Date payment receipt was realized (YYYY-MM-DD)" },
+    { key: "utrId", label: "Payment UTR / Transaction ID", sampleValue: "UTR99887766", description: "Bank transaction UTR ID or cheque reference" },
+    { key: "paymentComments", label: "Payment Reconciliation Comments", sampleValue: "Paid in full via NEFT", description: "Notes on payment reconciliation" },
+
+    // Mail Sent Status (Firestore: emailStatus)
     { key: "mailSentStatus", label: "Mail Sent Status", sampleValue: "Sent", description: "Sent, Simulated, Failed, or Pending" },
     { key: "mailSentTimestamp", label: "Mail Sent Timestamp", sampleValue: "2025-08-20 10:30:00", description: "Date/time email was sent (YYYY-MM-DD HH:MM:SS)" },
   ];
@@ -335,6 +368,8 @@ export default function OrdersOffersView({
           const rawAmt = parseFloat(row[`product${pIdx}Amount`] || (pIdx === 1 ? row.amount : ""));
           const amtVal = !isNaN(rawAmt) ? rawAmt : (qty * rateVal);
           const hsn = (row[`product${pIdx}HsnCode`] || (pIdx === 1 ? row.hsnCode || row.product1HsnCode : ""))?.toString()?.trim() || "";
+          const packing = (row[`product${pIdx}Packing`] || (pIdx === 1 ? row.packing : ""))?.toString()?.trim() || "";
+          const taxes = (row[`product${pIdx}Taxes`] || row[`product${pIdx}Tax`] || (pIdx === 1 ? row.taxes || row.tax : ""))?.toString()?.trim() || "";
 
           itemsList.push({
             productId: products[0]?.id || `prod-import-${Date.now()}-${i}-${pIdx}`,
@@ -343,6 +378,8 @@ export default function OrdersOffersView({
             rate: rateVal,
             amount: amtVal,
             hsnCode: hsn,
+            packing: packing || undefined,
+            taxes: taxes || undefined,
           });
         }
       }
@@ -359,33 +396,40 @@ export default function OrdersOffersView({
         });
       }
 
-      // Invoicing / Billing details mapping
+      // Invoicing & System Mapping Fields (Firestore: billingDetails)
       const invoiceNumber = row.invoiceNumber?.trim() || "";
       const invoiceDate = row.invoiceDate?.trim() || "";
       const actualDispatchDate = row.actualDispatchDate?.trim() || "";
       const invoiceFileUrl = (row.invoiceFileUrl || row.invoiceLink || row.invoiceUrl)?.trim() || "";
+      const invoiceFileName = row.invoiceFileName?.trim() || (invoiceFileUrl ? `${invoiceNumber || "invoice"}.pdf` : "");
+      const ebillNo = (row.ebillNo || row.eWayBillNo || row.ebillNumber || row.eWayBillNumber)?.trim() || "";
+      const lrNo = (row.lrNo || row.lrNumber || row.biltyNo || row.biltyNumber)?.trim() || "";
       const vehicleNo = (row.vehicleNo || row.vehicleNumber)?.trim() || "";
-      const transportName = (row.transporterName || row.transportName)?.trim() || "";
+      const transportName = (row.transportName || row.transporterName)?.trim() || "";
       const dispatchDate = row.dispatchDate?.trim() || "";
+      const mappedAt = row.mappedAt?.trim() || new Date().toISOString();
 
       let billingDetails: BillingDetails | undefined = undefined;
-      if (invoiceNumber || invoiceDate || actualDispatchDate || invoiceFileUrl || vehicleNo || transportName || dispatchDate) {
+      if (invoiceNumber || invoiceDate || actualDispatchDate || invoiceFileUrl || vehicleNo || transportName || dispatchDate || ebillNo || lrNo) {
         billingDetails = {
           invoiceNumber: invoiceNumber || `INV-HIST-${Date.now().toString().slice(-4)}-${i+1}`,
           invoiceDate: invoiceDate || new Date().toISOString().split("T")[0],
           actualDispatchDate: actualDispatchDate || dispatchDate,
           invoiceFileUrl,
-          invoiceFileName: invoiceFileUrl ? "Uploaded Invoice" : "",
+          invoiceFileName: invoiceFileName || (invoiceFileUrl ? "Uploaded Invoice" : ""),
+          ebillNo: ebillNo || undefined,
+          lrNo: lrNo || undefined,
           vehicleNo,
           transportName,
           dispatchDate,
-          mappedAt: new Date().toISOString(),
+          mappedAt,
           mappedByUserId: activeUserId,
         };
       }
 
-      // Customer PO / Closed Won details mapping
+      // Customer PO / Closed Won details mapping (Firestore: closedWonDetails)
       const customerPoNumber = (row.customerPoNumber || row.poNumber)?.trim() || "";
+      const piNumber = (row.piNumber || row.proformaInvoiceNumber)?.trim() || "";
       const poDate = row.poDate?.trim() || "";
       const poAttachmentUrl = (row.poAttachmentUrl || row.poUrl || row.customerPoFileUrl || row.customerPoUrl || row.poLink || row.customerPoLink || row.poDocumentUrl || row.poFileUrl)?.trim() || "";
       const freightTerm = (row.freightTerm || row.freightTerms)?.trim() || "";
@@ -405,15 +449,10 @@ export default function OrdersOffersView({
         finalStatus = "Closed Won";
       }
 
-      const calculatedTotalItems = itemsList.reduce((sum, item) => sum + (item.amount || 0), 0);
-      let totalVal = parseFloat(row.totalValue) || (calculatedTotalItems > 0 ? calculatedTotalItems : 0);
-      if (finalStatus === "Closed Won" && freightChargedInBill) {
-        totalVal += parseFreightAmount(freightChargedInBill) * 1.18;
-      }
-
       let closedWonDetails: ClosedWonDetails | undefined = undefined;
       if (
         customerPoNumber ||
+        piNumber ||
         poDate ||
         poAttachmentUrl ||
         freightTerm ||
@@ -431,6 +470,7 @@ export default function OrdersOffersView({
       ) {
         closedWonDetails = {
           customerPoNumber: customerPoNumber || "PO-IMPORTED",
+          piNumber: piNumber || undefined,
           poDate: poDate || new Date().toISOString().split("T")[0],
           poAttachmentUrl: poAttachmentUrl || undefined,
           freightTerm: freightTerm || "",
@@ -447,6 +487,15 @@ export default function OrdersOffersView({
           warehouseManagedBy: warehouseManagedBy || "",
         };
       }
+
+      const csvBreakdown = calculateOrderTotalInvoiceBreakdown({
+        items: itemsList,
+        closedWonDetails,
+      });
+      const totalVal = parseFloat(row.totalValue) || parseFloat(row.grandTotalOrderAmount) || csvBreakdown.totalInvoiceAmount;
+      const csvProductCost = parseFloat(row.totalProductCost) || csvBreakdown.productsBaseTotal;
+      const csvGstAmount = parseFloat(row.totalGstAmount) || (csvBreakdown.productsGstTotal + csvBreakdown.freightGst);
+      const csvGrandTotal = totalVal;
 
       // Mail Sent Status mapping
       const rawMailStatus = (row.mailSentStatus || row.emailStatus)?.trim();
@@ -473,7 +522,7 @@ export default function OrdersOffersView({
 
       // Assigned Sales Person resolution
       const assignedNameInput = (row.assignedToUserName || row.assignedToUser || row.assignedTo || row.salesPersonName || row.salesPerson || row.orderAssignedTo)?.toString()?.trim();
-      let assignedUserId = activeUserId;
+      let assignedUserId = row.assignedToUserId?.trim() || activeUserId;
       if (assignedNameInput) {
         const matchedUser = users.find(u =>
           u.name.toLowerCase() === assignedNameInput.toLowerCase() ||
@@ -485,51 +534,99 @@ export default function OrdersOffersView({
         }
       }
 
-      const orderId = `order-imp-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
+      // Payment Bank resolution (allow bank ID or bank name match)
+      let resolvedPaymentBankId = row.paymentBankId?.trim() || "";
+      if (resolvedPaymentBankId && paymentBanks.length > 0) {
+        const matchedBank = paymentBanks.find(b => 
+          b.id === resolvedPaymentBankId ||
+          b.bankName.toLowerCase().includes(resolvedPaymentBankId.toLowerCase())
+        );
+        if (matchedBank) {
+          resolvedPaymentBankId = matchedBank.id;
+        }
+      }
+
+      const passedOrderId = (row.orderId || row.id)?.toString()?.trim();
+      const existingOrder = orders.find(o => 
+        (passedOrderId && o.id === passedOrderId) ||
+        (invoiceNumber && o.billingDetails?.invoiceNumber?.toLowerCase() === invoiceNumber.toLowerCase()) ||
+        (customerPoNumber && o.closedWonDetails?.customerPoNumber?.toLowerCase() === customerPoNumber.toLowerCase() && o.companyName.toLowerCase() === companyName.toLowerCase())
+      );
+
+      const orderId = existingOrder?.id || passedOrderId || `order-imp-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
 
       const newOrderData: OrderOffer = {
         id: orderId,
-        createdAt: row.orderDate?.trim() || new Date().toISOString(),
-        createdByUserId: activeUserId,
+        createdAt: row.orderDate?.trim() || row.createdAt?.trim() || existingOrder?.createdAt || new Date().toISOString(),
+        createdByUserId: existingOrder?.createdByUserId || activeUserId,
         clientName,
         companyName,
-        email: row.email?.trim() || "",
-        phone: row.phone?.trim() || "+1 (555) 000-0000",
-        billingAddress: row.billingAddress?.trim() || "",
-        billingGstin,
+        email: row.email?.trim() || existingOrder?.email || "",
+        phone: row.phone?.trim() || existingOrder?.phone || "+1 (555) 000-0000",
+        billingAddress: row.billingAddress?.trim() || existingOrder?.billingAddress || "",
+        billingGstin: billingGstin || existingOrder?.billingGstin || "",
         status: finalStatus,
         totalValue: totalVal,
-        items: itemsList,
+        totalProductCost: csvProductCost,
+        totalGstAmount: csvGstAmount,
+        grandTotalOrderAmount: csvGrandTotal,
+        items: itemsList.length > 0 ? itemsList : (existingOrder?.items || []),
         assignedToUserId: assignedUserId,
-        notes: row.notes?.trim() || (invoiceNumber ? `Historical import with Invoice #${invoiceNumber}` : "Imported via Sheets / CSV Wizard"),
-        payment: row.payment?.trim() || "",
-        paymentCreditPeriod: row.paymentCreditPeriod?.trim() || "",
-        delivery: deliveryTerm || row.delivery?.trim() || "",
-        otherTerms: row.otherTerms?.trim() || "",
-        billingDetails,
-        closedWonDetails,
-        emailStatus: emailStatusSummary,
+        notes: row.notes?.trim() || existingOrder?.notes || (invoiceNumber ? `Historical import with Invoice #${invoiceNumber}` : "Imported via Sheets / CSV Wizard"),
+        payment: row.payment?.trim() || existingOrder?.payment || "",
+        paymentCreditPeriod: row.paymentCreditPeriod?.trim() || existingOrder?.paymentCreditPeriod || "",
+        paymentTermsOffer: row.paymentTermsOffer?.trim() || existingOrder?.paymentTermsOffer || "",
+        paymentBankId: resolvedPaymentBankId || existingOrder?.paymentBankId || "",
+        delivery: deliveryTerm || row.delivery?.trim() || existingOrder?.delivery || "",
+        otherTerms: row.otherTerms?.trim() || existingOrder?.otherTerms || "",
+        billingDetails: billingDetails || existingOrder?.billingDetails,
+        closedWonDetails: closedWonDetails || existingOrder?.closedWonDetails,
+        emailStatus: emailStatusSummary || existingOrder?.emailStatus,
       };
 
       try {
-        await onAddOrder(newOrderData);
+        if (existingOrder) {
+          await onEditOrder(newOrderData);
+        } else {
+          await onAddOrder(newOrderData);
+        }
 
-        // If Invoice Number exists, initialize initial unpaid PaymentDetails record in system
-        const effectiveInvoiceNo = invoiceNumber || (billingDetails?.invoiceNumber ?? "");
+        // If Invoice Number exists, initialize/update PaymentDetails record in Firestore
+        const effectiveInvoiceNo = invoiceNumber || (billingDetails?.invoiceNumber ?? "") || (newOrderData.billingDetails?.invoiceNumber ?? "");
 
         if (effectiveInvoiceNo) {
+          const amtReceived = parseFloat(row.amountReceived || row.paymentReceivedAmount) || 0;
+          const pendAmt = (row.pendingAmount !== undefined && row.pendingAmount !== "") 
+            ? parseFloat(row.pendingAmount) 
+            : Math.max(0, totalVal - amtReceived);
+          const payStatus = (row.paymentStatus?.trim() as any) || (amtReceived >= totalVal ? "Paid" : amtReceived > 0 ? "Partial Paid" : "Unpaid");
+          const payReceivedDate = row.paymentReceivedDate?.trim() || (amtReceived > 0 ? (invoiceDate || new Date().toISOString().split("T")[0]) : "");
+          const utrId = (row.utrId || row.utrNumber)?.trim() || "";
+          const paymentComments = (row.paymentComments || row.comments)?.trim() || (amtReceived > 0 ? `Payment received on import for Invoice #${effectiveInvoiceNo}` : `Initial payment record created via bulk order import for Invoice ${effectiveInvoiceNo}`);
+
+          const receiptsList: PaymentReceiptRecord[] = amtReceived > 0 ? [{
+            id: `rcpt-imp-${Date.now()}-${i}`,
+            orderId: orderId,
+            amount: amtReceived,
+            paymentReceivedDate: payReceivedDate,
+            utrId: utrId,
+            comments: paymentComments,
+            createdAt: new Date().toISOString(),
+            createdBy: activeUser?.name || "System Bulk Import",
+          }] : [];
+
           await savePaymentDetails({
             id: orderId,
             orderId: orderId,
             invoiceNumber: effectiveInvoiceNo,
-            amountReceived: 0,
-            lastEnteredAmount: 0,
-            pendingAmount: totalVal,
-            paymentStatus: "Unpaid",
-            paymentReceivedDate: "",
-            utrId: "",
-            comments: `Initial payment record created via bulk order import for Invoice ${effectiveInvoiceNo}`,
-            receipts: [],
+            amountReceived: amtReceived,
+            lastEnteredAmount: amtReceived,
+            pendingAmount: pendAmt,
+            paymentStatus: payStatus,
+            paymentReceivedDate: payReceivedDate,
+            utrId: utrId,
+            comments: paymentComments,
+            receipts: receiptsList,
             updatedAt: new Date().toISOString(),
             updatedByUserId: activeUserId,
             updatedByUserName: activeUser?.name || "System",
@@ -563,6 +660,8 @@ export default function OrdersOffersView({
   };
 
   // Form states - Add Order
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [submittingMessage, setSubmittingMessage] = useState("");
   const [newClientName, setNewClientName] = useState("");
   const [newCompanyName, setNewCompanyName] = useState("");
   const [newEmail, setNewEmail] = useState("");
@@ -812,26 +911,28 @@ export default function OrdersOffersView({
   }, [sortedOrders, recordsLimit]);
 
   // Calculate comprehensive metrics based on all matching visible orders
-  const totalValue = visibleOrders.reduce((sum, o) => sum + o.totalValue, 0);
+  const totalValue = visibleOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0);
   const averageDealValue = visibleOrders.length > 0 ? totalValue / visibleOrders.length : 0;
   const closedWonOrders = visibleOrders.filter((o) => o.status === "Closed Won");
-  const closedWonValue = closedWonOrders.reduce((sum, o) => sum + o.totalValue, 0);
+  const closedWonValue = closedWonOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0);
   const openOffers = visibleOrders.filter((o) => ["New", "Contacted", "Proposal", "Negotiation"].includes(o.status));
-  const openOffersValue = openOffers.reduce((sum, o) => sum + o.totalValue, 0);
+  const openOffersValue = openOffers.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0);
   const lostOrders = visibleOrders.filter((o) => o.status === "Closed Lost");
-  const lostValue = lostOrders.reduce((sum, o) => sum + o.totalValue, 0);
+  const lostValue = lostOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0);
   const invoicedOrders = visibleOrders.filter((o) => !!o.billingDetails?.invoiceNumber);
-  const totalInvoicedValue = invoicedOrders.reduce((sum, o) => sum + (o.billingDetails?.invoiceAmount ? Number(o.billingDetails.invoiceAmount) || 0 : o.totalValue), 0);
+  const totalInvoicedValue = invoicedOrders.reduce((sum, o) => sum + (o.billingDetails?.invoiceAmount ? Number(o.billingDetails.invoiceAmount) || 0 : getOrderTotalInvoiceAmount(o)), 0);
   const totalProductLines = visibleOrders.reduce((sum, o) => sum + (o.items?.length || 0), 0);
   const totalQuantityUnits = visibleOrders.reduce((sum, o) => {
     const itemQty = (o.items || []).reduce((itemSum, item) => itemSum + (Number(item.quantity) || 0), 0);
     return sum + itemQty;
   }, 0);
 
-  // Tax & Amount Calculations (Inclusive of 18% GST by default)
+  // Tax & Amount Calculations (Inclusive of respective GST and max GST on Freight)
   const parseTaxPercent = (taxStr?: string): number => {
     if (!taxStr) return 18;
-    const match = taxStr.match(/(\d+(?:\.\d+)?)/);
+    const str = String(taxStr).trim();
+    if (str.toLowerCase().includes("exempt") || str.toLowerCase() === "nil" || str === "0") return 0;
+    const match = str.match(/(\d+(?:\.\d+)?)/);
     return match ? parseFloat(match[1]) : 18;
   };
 
@@ -853,28 +954,36 @@ export default function OrdersOffersView({
 
   const parseFreightAmount = (freightVal?: string): number => {
     if (!freightVal) return 0;
+    const str = String(freightVal).trim().toLowerCase();
+    if (str === "included" || str === "no" || str === "n/a" || str === "none" || str === "nil" || str === "paid by aol" || str === "to pay") {
+      return 0;
+    }
     const cleaned = freightVal.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
     if (!cleaned) return 0;
     const num = parseFloat(cleaned[0]);
     return isNaN(num) ? 0 : num;
   };
 
+  const getFormInvoiceBreakdown = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
+    return calculateOrderTotalInvoiceBreakdown({
+      items: itemsList as any,
+      closedWonDetails: status === "Closed Won" ? ({ freightChargedInBill: freightVal } as any) : undefined
+    });
+  };
+
   const calculateBaseTotal = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
-    const itemsBase = itemsList.reduce((sum, item) => sum + calculateItemBaseAmount(item), 0);
-    const freightBase = status === "Closed Won" ? parseFreightAmount(freightVal) : 0;
-    return itemsBase + freightBase;
+    const bd = getFormInvoiceBreakdown(itemsList, status, freightVal);
+    return bd.productsBaseTotal + bd.freightBase;
   };
 
   const calculateTotalGst = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
-    const itemsGst = itemsList.reduce((sum, item) => sum + calculateItemGstAmount(item), 0);
-    const freightGst = status === "Closed Won" ? parseFreightAmount(freightVal) * 0.18 : 0;
-    return itemsGst + freightGst;
+    const bd = getFormInvoiceBreakdown(itemsList, status, freightVal);
+    return bd.productsGstTotal + bd.freightGst;
   };
 
   const calculateTotalValueWithGst = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
-    const itemsTotal = itemsList.reduce((sum, item) => sum + calculateItemTotalWithGst(item), 0);
-    const freightTotalWithGst = status === "Closed Won" ? parseFreightAmount(freightVal) * 1.18 : 0;
-    return itemsTotal + freightTotalWithGst;
+    const bd = getFormInvoiceBreakdown(itemsList, status, freightVal);
+    return bd.totalInvoiceAmount;
   };
 
   const calculateTotalValue = calculateTotalValueWithGst;
@@ -1080,6 +1189,8 @@ export default function OrdersOffersView({
   // Submit handers
   const handleCreateOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingOrder) return;
+
     if (!newClientName || !newCompanyName) {
       alert("Company Name and Client Full Name are required.");
       return;
@@ -1116,34 +1227,66 @@ export default function OrdersOffersView({
       }
     }
 
-    const finalItems: OrderItem[] = newItems.map((item) => {
-      const qty = Number(item.quantity) || 0;
-      const rate = Number(item.rate) || 0;
-      const taxStr = (item as any).taxes || defaultTaxValue;
-      const totalAmountWithGst = calculateItemTotalWithGst({ quantity: qty, rate, taxes: taxStr });
-      return {
-        ...item,
-        quantity: qty,
-        rate: rate,
-        taxes: taxStr,
-        amount: totalAmountWithGst
-      };
-    });
+    setIsSubmittingOrder(true);
+    setSubmittingMessage(newSendEmail ? "Sending email notification & saving order..." : "Saving order to database...");
 
-    const computedTotal = finalItems.reduce((acc, it) => acc + it.amount, 0);
+    try {
+      const finalItems: OrderItem[] = newItems.map((item) => {
+        const qty = Number(item.quantity) || 0;
+        const rate = Number(item.rate) || 0;
+        const taxStr = (item as any).taxes || defaultTaxValue;
+        const totalAmountWithGst = calculateItemTotalWithGst({ quantity: qty, rate, taxes: taxStr });
+        return {
+          ...item,
+          quantity: qty,
+          rate: rate,
+          taxes: taxStr,
+          amount: totalAmountWithGst
+        };
+      });
 
-    let initialEmailSummary: EmailSentStatusSummary | undefined = undefined;
+      const newClosedWonDetailsObj = newStatus === "Closed Won" ? {
+        customerPoNumber: newPoNumber,
+        poDate: newPoDate,
+        freightTerm: newFreightTerm,
+        freightChargedInBill: newFreightChargedInBill,
+        freightCostToAol: newFreightCostToAol,
+        cartageLabourCharges: newCartageLabourCharges,
+        transporterName: newTransporterName,
+        vehicleNo: newVehicleNo,
+        deliveryTerm: newDeliveryTerm,
+        destinationAddress: newDestinationAddress,
+        gstin: newGstin,
+        dispatchDate: newDispatchDate,
+        dispatchLocation: newDispatchLocation,
+        warehouseManagedBy: newWarehouseManagedBy,
+        poAttachmentUrl: newPoAttachments[0]?.url || newPoAttachmentUrl || "",
+        poAttachmentUrls: newPoAttachments.map(a => a.url),
+        poAttachments: newPoAttachments,
+      } : undefined;
 
-    if (newSendEmail && newEmail) {
-      const hierarchy = resolveUserHierarchyInfo(activeUserId, newAssignedTo, users);
-      const template = emailTemplates?.find(t => t.id === newTemplateId) || 
-        (newTemplateId === "" ? emailTemplates?.find(t => t.isDefault && (t.assignedForm === "create_order" || t.assignedForm === "any" || !t.assignedForm)) : undefined);
-      const itemsListString = finalItems.map((item, index) =>
-        `Product ${index + 1}: ${item.productName}: Qty ${item.quantity} @ ${item.rate} = ${item.amount}`
-      ).join('\n');
+      const createOrderInvoiceBreakdown = calculateOrderTotalInvoiceBreakdown({
+        items: finalItems,
+        closedWonDetails: newClosedWonDetailsObj,
+      });
 
-      const selectedBank = paymentBanks?.find(b => b.id === newPaymentBankId);
-      const bankDetailsTableHtml = selectedBank ? `
+      const computedTotal = createOrderInvoiceBreakdown.totalInvoiceAmount;
+      const computedProductCost = createOrderInvoiceBreakdown.productsBaseTotal;
+      const computedGstAmount = createOrderInvoiceBreakdown.productsGstTotal + createOrderInvoiceBreakdown.freightGst;
+
+      let initialEmailSummary: EmailSentStatusSummary | undefined = undefined;
+
+      if (newSendEmail && newEmail) {
+        setSubmittingMessage(`Sending email notification to ${newEmail}...`);
+        const hierarchy = resolveUserHierarchyInfo(activeUserId, newAssignedTo, users);
+        const template = emailTemplates?.find(t => t.id === newTemplateId) || 
+          (newTemplateId === "" ? emailTemplates?.find(t => t.isDefault && (t.assignedForm === "create_order" || t.assignedForm === "any" || !t.assignedForm)) : undefined);
+        const itemsListString = finalItems.map((item, index) =>
+          `Product ${index + 1}: ${item.productName}: Qty ${item.quantity} @ ${item.rate} = ${item.amount}`
+        ).join('\n');
+
+        const selectedBank = paymentBanks?.find(b => b.id === newPaymentBankId);
+        const bankDetailsTableHtml = selectedBank ? `
 <table style="width:100%; max-width:500px; border-collapse:collapse; margin:16px 0; font-family:Arial, sans-serif; font-size:13px; color:#1e293b; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;">
   <thead>
     <tr style="background-color:#f8fafc; border-bottom:1px solid #e2e8f0;">
@@ -1174,9 +1317,9 @@ export default function OrdersOffersView({
     </tr>` : ""}
   </tbody>
 </table>
-      `.trim() : "";
+        `.trim() : "";
 
-      const itemsTableHtml = `
+        const itemsTableHtml = `
 <table style="width:100%; border-collapse:collapse; margin:16px 0; font-family:Arial, sans-serif; font-size:13px; color:#334155; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;">
   <thead>
     <tr style="background-color:#f8fafc; border-bottom:2px solid #cbd5e1; color:#0f172a; font-weight:bold;">
@@ -1209,27 +1352,121 @@ export default function OrdersOffersView({
     </tr>
   </tfoot>
 </table>
-      `.trim();
+        `.trim();
 
-      const applyTemplate = (text: string) => {
-        return replaceTemplateVars(text, {
-          recordId: "",
-          clientName: newClientName,
-          companyName: newCompanyName,
-          email: newEmail,
-          phone: newPhone,
-          billingAddress: newBillingAddress,
-          status: newStatus,
-          totalValue: computedTotal,
-          itemsList: itemsListString,
-          itemsTable: itemsTableHtml,
-          bankDetailsTable: bankDetailsTableHtml,
-          payment: newPayment,
-          paymentTermsOffer: newPaymentTermsOffer,
-          paymentCreditPeriod: newPaymentCreditPeriod,
-          delivery: newDelivery,
-          otherTerms: newOtherTerms,
-          notes: newNotes,
+        const applyTemplate = (text: string) => {
+          return replaceTemplateVars(text, {
+            recordId: "",
+            clientName: newClientName,
+            companyName: newCompanyName,
+            email: newEmail,
+            phone: newPhone,
+            billingAddress: newBillingAddress,
+            status: newStatus,
+            totalValue: computedTotal,
+            itemsList: itemsListString,
+            itemsTable: itemsTableHtml,
+            bankDetailsTable: bankDetailsTableHtml,
+            payment: newPayment,
+            paymentTermsOffer: newPaymentTermsOffer,
+            paymentCreditPeriod: newPaymentCreditPeriod,
+            delivery: newDelivery,
+            otherTerms: newOtherTerms,
+            notes: newNotes,
+            customerPoNumber: newPoNumber,
+            poDate: newPoDate,
+            freightTerm: newFreightTerm,
+            freightChargedInBill: newFreightChargedInBill,
+            freightCostToAol: newFreightCostToAol,
+            cartageLabourCharges: newCartageLabourCharges,
+            transporterName: newTransporterName,
+            deliveryTerm: newDeliveryTerm,
+            destinationAddress: newDestinationAddress,
+            dispatchDate: newDispatchDate,
+            dispatchLocation: newDispatchLocation,
+            warehouseManagedBy: newWarehouseManagedBy,
+            ...hierarchy,
+          });
+        };
+
+        const subject = applyTemplate(template?.subject || "New Sales Order");
+        let rawBody = applyTemplate(template?.body || `Order Details:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
+        const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
+
+        const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : newEmail);
+        const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
+        const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
+
+        try {
+          const emailResult = await dispatchSystemEmail({
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            subject: subject,
+            text: formattedHtml,
+            html: formattedHtml,
+            htmlBody: formattedHtml,
+            plainText: formattedText,
+            senderUserId: activeUser?.id,
+            senderUserName: activeUser?.name,
+            senderEmail: activeUser?.email,
+            fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+            replyTo: activeUser?.email,
+            category: "create_order",
+            companyName: newCompanyName,
+            clientName: newClientName,
+          });
+
+          const deliveryStatus: EmailDeliveryStatus = (emailResult.ok && emailResult.deliveryStatus !== "Failed") ? "Sent" : "Failed";
+          initialEmailSummary = {
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            status: deliveryStatus,
+            timestamp: new Date().toISOString(),
+            subject,
+            error: emailResult.ok ? undefined : (emailResult.message || "Failed to send order email"),
+            sentByUserName: activeUser?.name,
+          };
+        } catch (err: any) {
+          console.error("Email sending failed for new order:", err);
+          initialEmailSummary = {
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            status: "Failed",
+            timestamp: new Date().toISOString(),
+            subject,
+            error: err.message || "Email sending exception",
+            sentByUserName: activeUser?.name,
+          };
+        }
+      }
+
+      setSubmittingMessage("Saving order details to database...");
+      await onAddOrder({
+        clientName: newClientName,
+        companyName: newCompanyName,
+        email: newEmail,
+        phone: newPhone || "+1 (555) 000-0000",
+        billingAddress: newBillingAddress,
+        billingGstin: newBillingGstin,
+        status: newStatus,
+        totalValue: computedTotal,
+        totalProductCost: computedProductCost,
+        totalGstAmount: computedGstAmount,
+        grandTotalOrderAmount: computedTotal,
+        items: finalItems,
+        assignedToUserId: newAssignedTo,
+        notes: newNotes,
+        payment: newPayment,
+        paymentCreditPeriod: newPaymentCreditPeriod,
+        paymentBankId: newPaymentBankId,
+        paymentTermsOffer: newPaymentTermsOffer,
+        delivery: newDelivery,
+        otherTerms: newOtherTerms,
+        emailStatus: initialEmailSummary,
+        closedWonDetails: newStatus === "Closed Won" ? {
           customerPoNumber: newPoNumber,
           poDate: newPoDate,
           freightTerm: newFreightTerm,
@@ -1237,111 +1474,28 @@ export default function OrdersOffersView({
           freightCostToAol: newFreightCostToAol,
           cartageLabourCharges: newCartageLabourCharges,
           transporterName: newTransporterName,
+          vehicleNo: newVehicleNo,
           deliveryTerm: newDeliveryTerm,
           destinationAddress: newDestinationAddress,
+          gstin: newGstin,
           dispatchDate: newDispatchDate,
           dispatchLocation: newDispatchLocation,
           warehouseManagedBy: newWarehouseManagedBy,
-          ...hierarchy,
-        });
-      };
+          poAttachmentUrl: newPoAttachments[0]?.url || newPoAttachmentUrl || "",
+          poAttachmentUrls: newPoAttachments.map(a => a.url),
+          poAttachments: newPoAttachments,
+        } : undefined,
+      });
 
-      const subject = applyTemplate(template?.subject || "New Sales Order");
-      let rawBody = applyTemplate(template?.body || `Order Details:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
-      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
-
-      const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : newEmail);
-      const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
-      const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
-
-      try {
-        const emailResult = await dispatchSystemEmail({
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          subject: subject,
-          text: formattedHtml,
-          html: formattedHtml,
-          htmlBody: formattedHtml,
-          plainText: formattedText,
-          senderUserId: activeUser?.id,
-          senderUserName: activeUser?.name,
-          senderEmail: activeUser?.email,
-          fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
-          replyTo: activeUser?.email,
-          category: "create_order",
-          companyName: newCompanyName,
-          clientName: newClientName,
-        });
-
-        const deliveryStatus: EmailDeliveryStatus = (emailResult.ok && emailResult.deliveryStatus !== "Failed") ? "Sent" : "Failed";
-        initialEmailSummary = {
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          status: deliveryStatus,
-          timestamp: new Date().toISOString(),
-          subject,
-          error: emailResult.ok ? undefined : (emailResult.message || "Failed to send order email"),
-          sentByUserName: activeUser?.name,
-        };
-      } catch (err: any) {
-        console.error("Email sending failed for new order:", err);
-        initialEmailSummary = {
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          status: "Failed",
-          timestamp: new Date().toISOString(),
-          subject,
-          error: err.message || "Email sending exception",
-          sentByUserName: activeUser?.name,
-        };
-      }
+      setIsAddOpen(false);
+      resetAddForm();
+    } catch (err: any) {
+      console.error("Failed to create order:", err);
+      alert("Failed to create sales order. Please try again.");
+    } finally {
+      setIsSubmittingOrder(false);
+      setSubmittingMessage("");
     }
-
-    onAddOrder({
-      clientName: newClientName,
-      companyName: newCompanyName,
-      email: newEmail,
-      phone: newPhone || "+1 (555) 000-0000",
-      billingAddress: newBillingAddress,
-      billingGstin: newBillingGstin,
-      status: newStatus,
-      totalValue: computedTotal,
-      items: finalItems,
-      assignedToUserId: newAssignedTo,
-      notes: newNotes,
-      payment: newPayment,
-      paymentCreditPeriod: newPaymentCreditPeriod,
-      paymentBankId: newPaymentBankId,
-      paymentTermsOffer: newPaymentTermsOffer,
-      delivery: newDelivery,
-      otherTerms: newOtherTerms,
-      emailStatus: initialEmailSummary,
-      closedWonDetails: newStatus === "Closed Won" ? {
-        customerPoNumber: newPoNumber,
-        poDate: newPoDate,
-        freightTerm: newFreightTerm,
-        freightChargedInBill: newFreightChargedInBill,
-        freightCostToAol: newFreightCostToAol,
-        cartageLabourCharges: newCartageLabourCharges,
-        transporterName: newTransporterName,
-        vehicleNo: newVehicleNo,
-        deliveryTerm: newDeliveryTerm,
-        destinationAddress: newDestinationAddress,
-        gstin: newGstin,
-        dispatchDate: newDispatchDate,
-        dispatchLocation: newDispatchLocation,
-        warehouseManagedBy: newWarehouseManagedBy,
-        poAttachmentUrl: newPoAttachments[0]?.url || newPoAttachmentUrl || "",
-        poAttachmentUrls: newPoAttachments.map(a => a.url),
-        poAttachments: newPoAttachments,
-      } : undefined,
-    });
-
-    setIsAddOpen(false);
-    resetAddForm();
   };
 
   const handleEditOrderClick = (order: OrderOffer) => {
@@ -1411,7 +1565,7 @@ export default function OrdersOffersView({
 
   const handleEditOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingOrder) return;
+    if (!editingOrder || isSubmittingOrder) return;
 
     if (!editStatus) {
       alert("Pipeline Status is required.");
@@ -1444,42 +1598,25 @@ export default function OrdersOffersView({
       }
     }
 
-    const finalItems: OrderItem[] = editItems.map((item) => {
-      const qty = Number(item.quantity) || 0;
-      const rate = Number(item.rate) || 0;
-      const taxStr = (item as any).taxes || defaultTaxValue;
-      const totalAmountWithGst = calculateItemTotalWithGst({ quantity: qty, rate, taxes: taxStr });
-      return {
-        ...item,
-        quantity: qty,
-        rate: rate,
-        taxes: taxStr,
-        amount: totalAmountWithGst
-      };
-    });
+    setIsSubmittingOrder(true);
+    setSubmittingMessage(editSendEmail ? "Sending updated email & saving changes..." : "Saving order changes...");
 
-    const computedTotal = finalItems.reduce((acc, it) => acc + it.amount, 0);
+    try {
+      const finalItems: OrderItem[] = editItems.map((item) => {
+        const qty = Number(item.quantity) || 0;
+        const rate = Number(item.rate) || 0;
+        const taxStr = (item as any).taxes || defaultTaxValue;
+        const totalAmountWithGst = calculateItemTotalWithGst({ quantity: qty, rate, taxes: taxStr });
+        return {
+          ...item,
+          quantity: qty,
+          rate: rate,
+          taxes: taxStr,
+          amount: totalAmountWithGst
+        };
+      });
 
-    onEditOrder({
-      ...editingOrder,
-      clientName: editClientName,
-      companyName: editCompanyName,
-      email: editEmail,
-      phone: editPhone,
-      billingAddress: editBillingAddress,
-      billingGstin: editBillingGstin,
-      status: editStatus,
-      totalValue: computedTotal,
-      items: finalItems,
-      assignedToUserId: editAssignedTo,
-      notes: editNotes,
-      payment: editPayment,
-      paymentCreditPeriod: editPaymentCreditPeriod,
-      paymentBankId: editPaymentBankId,
-      paymentTermsOffer: editPaymentTermsOffer,
-      delivery: editDelivery,
-      otherTerms: editOtherTerms,
-      closedWonDetails: editStatus === "Closed Won" ? {
+      const editClosedWonDetailsObj = editStatus === "Closed Won" ? {
         customerPoNumber: editPoNumber,
         poDate: editPoDate,
         freightTerm: editFreightTerm,
@@ -1497,19 +1634,30 @@ export default function OrdersOffersView({
         poAttachmentUrl: editPoAttachments[0]?.url || editPoAttachmentUrl || "",
         poAttachmentUrls: editPoAttachments.map(a => a.url),
         poAttachments: editPoAttachments,
-      } : undefined,
-    });
+      } : undefined;
 
-    if (editSendEmail && editEmail) {
-      const hierarchy = resolveUserHierarchyInfo(activeUserId, editAssignedTo, users);
-      const template = emailTemplates?.find(t => t.id === editTemplateId) || 
-        (editTemplateId === "" ? emailTemplates?.find(t => t.isDefault && (t.assignedForm === "edit_order" || t.assignedForm === "any" || !t.assignedForm)) : undefined);
-      const itemsListString = finalItems.map((item, index) =>
-        `Product ${index + 1}: ${item.productName}: Qty ${item.quantity} @ ${item.rate} = ${item.amount}`
-      ).join('\n');
+      const editOrderInvoiceBreakdown = calculateOrderTotalInvoiceBreakdown({
+        items: finalItems,
+        closedWonDetails: editClosedWonDetailsObj,
+      });
 
-      const selectedBank = paymentBanks?.find(b => b.id === editPaymentBankId);
-      const bankDetailsTableHtml = selectedBank ? `
+      const computedTotal = editOrderInvoiceBreakdown.totalInvoiceAmount;
+      const computedProductCost = editOrderInvoiceBreakdown.productsBaseTotal;
+      const computedGstAmount = editOrderInvoiceBreakdown.productsGstTotal + editOrderInvoiceBreakdown.freightGst;
+
+      let newSummary: EmailSentStatusSummary | undefined = undefined;
+
+      if (editSendEmail && editEmail) {
+        setSubmittingMessage(`Sending updated email notification to ${editEmail}...`);
+        const hierarchy = resolveUserHierarchyInfo(activeUserId, editAssignedTo, users);
+        const template = emailTemplates?.find(t => t.id === editTemplateId) || 
+          (editTemplateId === "" ? emailTemplates?.find(t => t.isDefault && (t.assignedForm === "edit_order" || t.assignedForm === "any" || !t.assignedForm)) : undefined);
+        const itemsListString = finalItems.map((item, index) =>
+          `Product ${index + 1}: ${item.productName}: Qty ${item.quantity} @ ${item.rate} = ${item.amount}`
+        ).join('\n');
+
+        const selectedBank = paymentBanks?.find(b => b.id === editPaymentBankId);
+        const bankDetailsTableHtml = selectedBank ? `
 <table style="width:100%; max-width:500px; border-collapse:collapse; margin:16px 0; font-family:Arial, sans-serif; font-size:13px; color:#1e293b; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;">
   <thead>
     <tr style="background-color:#f8fafc; border-bottom:1px solid #e2e8f0;">
@@ -1540,9 +1688,9 @@ export default function OrdersOffersView({
     </tr>` : ""}
   </tbody>
 </table>
-      `.trim() : "";
+        `.trim() : "";
 
-      const itemsTableHtml = `
+        const itemsTableHtml = `
 <table style="width:100%; border-collapse:collapse; margin:16px 0; font-family:Arial, sans-serif; font-size:13px; color:#334155; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;">
   <thead>
     <tr style="background-color:#f8fafc; border-bottom:2px solid #cbd5e1; color:#0f172a; font-weight:bold;">
@@ -1575,29 +1723,115 @@ export default function OrdersOffersView({
     </tr>
   </tfoot>
 </table>
-      `.trim();
+        `.trim();
 
-      const applyTemplate = (text: string) => {
-        return replaceTemplateVars(text, {
-          recordId: editingOrder?.id || "",
-          clientName: editClientName,
-          companyName: editCompanyName,
-          email: editEmail,
-          phone: editPhone,
-          billingAddress: editBillingAddress,
-          status: editStatus,
-          totalValue: computedTotal,
-          itemsList: itemsListString,
-          itemsTable: itemsTableHtml,
-          bankDetailsTable: bankDetailsTableHtml,
-          payment: editPayment,
-          paymentTermsOffer: editPaymentTermsOffer,
-          paymentCreditPeriod: editPaymentCreditPeriod,
-          delivery: editDelivery,
-          otherTerms: editOtherTerms,
-          notes: editNotes,
-          invoiceNumber: editingOrder?.billingDetails?.invoiceNumber || "",
-          invoiceFileLink: editingOrder?.billingDetails?.invoiceFileUrl || "",
+        const applyTemplate = (text: string) => {
+          return replaceTemplateVars(text, {
+            recordId: editingOrder?.id || "",
+            clientName: editClientName,
+            companyName: editCompanyName,
+            email: editEmail,
+            phone: editPhone,
+            billingAddress: editBillingAddress,
+            status: editStatus,
+            totalValue: computedTotal,
+            itemsList: itemsListString,
+            itemsTable: itemsTableHtml,
+            bankDetailsTable: bankDetailsTableHtml,
+            payment: editPayment,
+            paymentTermsOffer: editPaymentTermsOffer,
+            paymentCreditPeriod: editPaymentCreditPeriod,
+            delivery: editDelivery,
+            otherTerms: editOtherTerms,
+            notes: editNotes,
+            invoiceNumber: editingOrder?.billingDetails?.invoiceNumber || "",
+            invoiceFileLink: editingOrder?.billingDetails?.invoiceFileUrl || "",
+            customerPoNumber: editPoNumber,
+            poDate: editPoDate,
+            freightTerm: editFreightTerm,
+            freightChargedInBill: editFreightChargedInBill,
+            freightCostToAol: editFreightCostToAol,
+            cartageLabourCharges: editCartageLabourCharges,
+            transporterName: editTransporterName,
+            deliveryTerm: editDeliveryTerm,
+            destinationAddress: editDestinationAddress,
+            dispatchDate: editDispatchDate,
+            dispatchLocation: editDispatchLocation,
+            warehouseManagedBy: editWarehouseManagedBy,
+            ...hierarchy,
+          });
+        };
+
+        const subject = applyTemplate(template?.subject || "Sales Order Updated");
+        let rawBody = applyTemplate(template?.body || `Order Details Updated:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
+        const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
+
+        const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : editEmail);
+        const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
+        const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
+
+        try {
+          const emailResult = await dispatchSystemEmail({
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            subject: subject,
+            text: formattedHtml,
+            html: formattedHtml,
+            htmlBody: formattedHtml,
+            plainText: formattedText,
+            senderUserId: activeUser?.id,
+            senderUserName: activeUser?.name,
+            senderEmail: activeUser?.email,
+            fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
+            replyTo: activeUser?.email,
+            category: "edit_order",
+            orderId: editingOrder.id,
+            companyName: editCompanyName || editingOrder.companyName,
+            clientName: editClientName || editingOrder.clientName
+          });
+
+          const deliveryStatus: EmailDeliveryStatus = (emailResult.ok && emailResult.deliveryStatus !== "Failed") ? "Sent" : "Failed";
+          newSummary = {
+            to: dynamicTo,
+            cc: dynamicCc,
+            bcc: dynamicBcc,
+            status: deliveryStatus,
+            timestamp: new Date().toISOString(),
+            subject,
+            error: emailResult.ok ? undefined : (emailResult.message || "Failed to send order email"),
+            sentByUserName: activeUser?.name,
+          };
+        } catch (err: any) {
+          console.error("Email sending failed for edit order:", err);
+        }
+      }
+
+      setSubmittingMessage("Saving order changes to database...");
+      await onEditOrder({
+        ...editingOrder,
+        clientName: editClientName,
+        companyName: editCompanyName,
+        email: editEmail,
+        phone: editPhone,
+        billingAddress: editBillingAddress,
+        billingGstin: editBillingGstin,
+        status: editStatus,
+        totalValue: computedTotal,
+        totalProductCost: computedProductCost,
+        totalGstAmount: computedGstAmount,
+        grandTotalOrderAmount: computedTotal,
+        items: finalItems,
+        assignedToUserId: editAssignedTo,
+        notes: editNotes,
+        payment: editPayment,
+        paymentCreditPeriod: editPaymentCreditPeriod,
+        paymentBankId: editPaymentBankId,
+        paymentTermsOffer: editPaymentTermsOffer,
+        delivery: editDelivery,
+        otherTerms: editOtherTerms,
+        emailStatus: newSummary || editingOrder.emailStatus,
+        closedWonDetails: editStatus === "Closed Won" ? {
           customerPoNumber: editPoNumber,
           poDate: editPoDate,
           freightTerm: editFreightTerm,
@@ -1605,76 +1839,28 @@ export default function OrdersOffersView({
           freightCostToAol: editFreightCostToAol,
           cartageLabourCharges: editCartageLabourCharges,
           transporterName: editTransporterName,
+          vehicleNo: editVehicleNo,
           deliveryTerm: editDeliveryTerm,
           destinationAddress: editDestinationAddress,
+          gstin: editGstin,
           dispatchDate: editDispatchDate,
           dispatchLocation: editDispatchLocation,
           warehouseManagedBy: editWarehouseManagedBy,
-          ...hierarchy,
-        });
-      };
+          poAttachmentUrl: editPoAttachments[0]?.url || editPoAttachmentUrl || "",
+          poAttachmentUrls: editPoAttachments.map(a => a.url),
+          poAttachments: editPoAttachments,
+        } : undefined,
+      });
 
-      const subject = applyTemplate(template?.subject || "Sales Order Updated");
-      let rawBody = applyTemplate(template?.body || `Order Details Updated:\nClient: {{clientName}}\nCompany: {{companyName}}\nStatus: {{status}}\nTotal: {{totalValue}}\nItems:\n{{itemsList}}`);
-      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
-
-      const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : editEmail);
-      const dynamicCc = template?.cc ? cleanEmailList(applyTemplate(template.cc)) : undefined;
-      const dynamicBcc = template?.bcc ? cleanEmailList(applyTemplate(template.bcc)) : undefined;
-
-      try {
-        const emailResult = await dispatchSystemEmail({
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          subject: subject,
-          text: formattedHtml,
-          html: formattedHtml,
-          htmlBody: formattedHtml,
-          plainText: formattedText,
-          senderUserId: activeUser?.id,
-          senderUserName: activeUser?.name,
-          senderEmail: activeUser?.email,
-          fromName: `${activeUser?.name || "Sales Portal"} - Aroma Organics`,
-          replyTo: activeUser?.email,
-          category: "edit_order",
-          orderId: editingOrder.id,
-          companyName: editCompanyName || editingOrder.companyName,
-          clientName: editClientName || editingOrder.clientName
-        });
-
-        const deliveryStatus: EmailDeliveryStatus = (emailResult.ok && emailResult.deliveryStatus !== "Failed") ? "Sent" : "Failed";
-        const newSummary: EmailSentStatusSummary = {
-          to: dynamicTo,
-          cc: dynamicCc,
-          bcc: dynamicBcc,
-          status: deliveryStatus,
-          timestamp: new Date().toISOString(),
-          subject,
-          error: emailResult.ok ? undefined : (emailResult.message || "Failed to send order email"),
-          sentByUserName: activeUser?.name,
-        };
-
-        await onEditOrder({
-          ...editingOrder,
-          clientName: editClientName,
-          companyName: editCompanyName,
-          email: editEmail,
-          phone: editPhone,
-          billingAddress: editBillingAddress,
-          billingGstin: editBillingGstin,
-          status: editStatus,
-          totalValue: computedTotal,
-          items: finalItems,
-          emailStatus: newSummary
-        });
-      } catch (err: any) {
-        console.error("Email sending failed for edit order:", err);
-      }
+      setIsEditOpen(false);
+      setEditingOrder(null);
+    } catch (err: any) {
+      console.error("Failed to edit order:", err);
+      alert("Failed to update sales order. Please try again.");
+    } finally {
+      setIsSubmittingOrder(false);
+      setSubmittingMessage("");
     }
-
-    setIsEditOpen(false);
-    setEditingOrder(null);
   };
 
   const handleQuickRegisterClient = (e: React.FormEvent) => {
@@ -2534,8 +2720,8 @@ export default function OrdersOffersView({
 
                       {/* Financial grand total */}
                       <td className="py-3 px-3">
-                        <span className="text-slate-950 font-mono font-bold text-xs" title={`₹${order.totalValue.toLocaleString('en-IN')}`}>
-                          {formatCompactRupees(order.totalValue)}
+                        <span className="text-slate-950 font-mono font-bold text-xs" title={`₹${getOrderTotalInvoiceAmount(order).toLocaleString('en-IN')}`}>
+                          {formatCompactRupees(getOrderTotalInvoiceAmount(order))}
                         </span>
                       </td>
 
@@ -2627,8 +2813,8 @@ export default function OrdersOffersView({
                 </td>
                 <td className="py-3 px-3">
                   <div className="flex flex-col">
-                    <span className="text-xs font-extrabold text-indigo-950 font-mono" title={`Exact Displayed Total: ₹${displayedOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0).toLocaleString('en-IN')}`}>
-                      {formatCompactRupees(displayedOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0))}
+                    <span className="text-xs font-extrabold text-indigo-950 font-mono" title={`Exact Displayed Total: ₹${displayedOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0).toLocaleString('en-IN')}`}>
+                      {formatCompactRupees(displayedOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0))}
                     </span>
                     <span className="text-[9px] font-normal text-slate-500 font-sans">
                       Displayed Gross Value
@@ -2636,7 +2822,7 @@ export default function OrdersOffersView({
                   </div>
                 </td>
                 <td colSpan={2} className="py-3 px-3 text-[10px] font-normal text-slate-500 font-sans text-right">
-                  Filtered Gross Value Total: <strong className="text-slate-900 font-mono font-bold" title={`Exact Filtered Total: ₹${visibleOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0).toLocaleString('en-IN')}`}>{formatCompactRupees(visibleOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0))}</strong>
+                  Filtered Gross Value Total: <strong className="text-slate-900 font-mono font-bold" title={`Exact Filtered Total: ₹${visibleOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0).toLocaleString('en-IN')}`}>{formatCompactRupees(visibleOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0))}</strong>
                 </td>
               </tr>
             </tfoot>
@@ -2815,8 +3001,9 @@ export default function OrdersOffersView({
               </div>
               <button
                 type="button"
+                disabled={isSubmittingOrder}
                 onClick={() => setIsAddOpen(false)}
-                className="text-indigo-200 hover:text-white transition-colors cursor-pointer p-1 rounded-lg"
+                className={`text-indigo-200 hover:text-white transition-colors p-1 rounded-lg ${isSubmittingOrder ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
               >
                 <X size={18} />
               </button>
@@ -3261,26 +3448,51 @@ export default function OrdersOffersView({
                 </div>
 
                 {/* Total amount panel with GST breakdown */}
-                <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 mt-2 font-mono space-y-1">
-                  <div className="flex justify-between items-center text-xs text-slate-600">
-                    <span>Base Subtotal (Excl. Tax):</span>
-                    <span className="font-bold">₹{calculateBaseTotal(newItems, newStatus, newFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                  </div>
-                  {newStatus === "Closed Won" && parseFreightAmount(newFreightChargedInBill) > 0 && (
-                    <div className="flex justify-between items-center text-xs text-emerald-700 bg-emerald-50/70 px-2 py-1 rounded border border-emerald-200/60 font-sans">
-                      <span>Freight Charged in Bill:</span>
-                      <span className="font-bold font-mono">₹{parseFreightAmount(newFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (+18% GST: ₹{(parseFreightAmount(newFreightChargedInBill) * 0.18).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>
+                {(() => {
+                  const bd = getFormInvoiceBreakdown(newItems, newStatus, newFreightChargedInBill);
+                  return (
+                    <div className="bg-slate-100 p-3.5 rounded-xl border border-slate-200 mt-2 font-mono text-xs space-y-1.5">
+                      <div className="flex justify-between items-center text-slate-600">
+                        <span>Base Subtotal (Excl. Tax):</span>
+                        <span className="font-bold">₹{bd.productsBaseTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
+
+                      {/* Itemized GST Buckets per Rate */}
+                      {bd.gstBuckets.length > 0 && bd.gstBuckets.map((bucket) => (
+                        <div key={bucket.rate} className="flex justify-between items-center text-slate-600 pl-2 border-l-2 border-indigo-400">
+                          <span>Product GST @ {bucket.rate}% (Taxable Amt: ₹{bucket.productBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}):</span>
+                          <span className="font-bold text-indigo-700">₹{bucket.productGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        </div>
+                      ))}
+
+                      {/* Freight Details and Max GST Rate */}
+                      {newStatus === "Closed Won" && bd.freightBase > 0 && (
+                        <div className="bg-emerald-50/90 p-2 rounded-lg border border-emerald-200/80 space-y-1 my-1.5">
+                          <div className="flex justify-between items-center text-emerald-800 font-sans">
+                            <span>Freight Charged in Bill:</span>
+                            <span className="font-bold font-mono">₹{bd.freightBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-emerald-700 text-[11px] font-sans">
+                            <span>GST on Freight @ {bd.maxGstPercent}% (Max Product GST Rate):</span>
+                            <span className="font-bold font-mono">₹{bd.freightGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between items-center text-slate-600 font-semibold border-t border-slate-200/80 pt-1">
+                        <span>Total GST Amount:</span>
+                        <span className="font-bold text-indigo-700">₹{(bd.productsGstTotal + bd.freightGst).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
+
+                      <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-300 pt-2 mt-1">
+                        <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
+                        <span className="text-indigo-900 font-black text-sm sm:text-base bg-white px-2.5 py-1 rounded border border-slate-200 shadow-2xs">
+                          ₹{bd.totalInvoiceAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
                     </div>
-                  )}
-                  <div className="flex justify-between items-center text-xs text-slate-600">
-                    <span>Total GST (18% / applicable tax):</span>
-                    <span className="font-bold text-indigo-600">₹{calculateTotalGst(newItems, newStatus, newFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-200 pt-1.5 mt-1">
-                    <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
-                    <span className="text-indigo-900 font-black">₹{calculateTotalValueWithGst(newItems, newStatus, newFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                  </div>
-                </div>
+                  );
+                })()}
               </div>
 
               <div>
@@ -3652,20 +3864,43 @@ export default function OrdersOffersView({
                 </div>
               )}
 
-              <div className="bg-slate-50 -mx-6 -mb-6 px-6 py-4 flex items-center justify-end gap-3 border-t border-slate-150">
-                <button
-                  type="button"
-                  onClick={() => setIsAddOpen(false)}
-                  className="border border-slate-200 hover:bg-slate-100 text-slate-600 font-bold py-2 px-4 rounded-xl text-xs transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-5 rounded-xl text-xs transition-all duration-150 shadow-sm cursor-pointer"
-                >
-                  Create Order Offer
-                </button>
+              <div className="bg-slate-50 -mx-6 -mb-6 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-150">
+                {isSubmittingOrder ? (
+                  <div className="flex items-center gap-2 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-3.5 py-2 rounded-xl w-full sm:w-auto animate-pulse">
+                    <Loader2 size={16} className="animate-spin text-indigo-600 shrink-0" />
+                    <span>{submittingMessage || "Processing... Please wait."}</span>
+                  </div>
+                ) : (
+                  <div />
+                )}
+                <div className="flex items-center justify-end gap-3 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    disabled={isSubmittingOrder}
+                    onClick={() => setIsAddOpen(false)}
+                    className={`border border-slate-200 text-slate-600 font-bold py-2 px-4 rounded-xl text-xs transition-colors ${
+                      isSubmittingOrder ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-100 cursor-pointer"
+                    }`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingOrder}
+                    className={`bg-indigo-600 text-white font-bold py-2 px-5 rounded-xl text-xs transition-all duration-150 shadow-sm flex items-center justify-center gap-2 ${
+                      isSubmittingOrder ? "opacity-75 cursor-not-allowed" : "hover:bg-indigo-700 cursor-pointer"
+                    }`}
+                  >
+                    {isSubmittingOrder ? (
+                      <>
+                        <Loader2 size={15} className="animate-spin text-white shrink-0" />
+                        <span>{newSendEmail ? "Sending Email & Creating..." : "Creating Order..."}</span>
+                      </>
+                    ) : (
+                      <span>Create Order Offer</span>
+                    )}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
@@ -3687,11 +3922,13 @@ export default function OrdersOffersView({
               </div>
               <button
                 type="button"
+                disabled={isSubmittingOrder}
                 onClick={() => {
+                  if (isSubmittingOrder) return;
                   setIsEditOpen(false);
                   setEditingOrder(null);
                 }}
-                className="text-amber-200 hover:text-white transition-colors cursor-pointer p-1 rounded-lg"
+                className={`text-amber-200 hover:text-white transition-colors p-1 rounded-lg ${isSubmittingOrder ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
               >
                 <X size={18} />
               </button>
@@ -4036,26 +4273,51 @@ export default function OrdersOffersView({
                 </div>
 
                 {/* Total amount panel with GST breakdown */}
-                <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 mt-2 font-mono space-y-1">
-                  <div className="flex justify-between items-center text-xs text-slate-600">
-                    <span>Base Subtotal (Excl. Tax):</span>
-                    <span className="font-bold">₹{calculateBaseTotal(editItems, editStatus, editFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                  </div>
-                  {editStatus === "Closed Won" && parseFreightAmount(editFreightChargedInBill) > 0 && (
-                    <div className="flex justify-between items-center text-xs text-emerald-700 bg-emerald-50/70 px-2 py-1 rounded border border-emerald-200/60 font-sans">
-                      <span>Freight Charged in Bill:</span>
-                      <span className="font-bold font-mono">₹{parseFreightAmount(editFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (+18% GST: ₹{(parseFreightAmount(editFreightChargedInBill) * 0.18).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>
+                {(() => {
+                  const bd = getFormInvoiceBreakdown(editItems, editStatus, editFreightChargedInBill);
+                  return (
+                    <div className="bg-slate-100 p-3.5 rounded-xl border border-slate-200 mt-2 font-mono text-xs space-y-1.5">
+                      <div className="flex justify-between items-center text-slate-600">
+                        <span>Base Subtotal (Excl. Tax):</span>
+                        <span className="font-bold">₹{bd.productsBaseTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
+
+                      {/* Itemized GST Buckets per Rate */}
+                      {bd.gstBuckets.length > 0 && bd.gstBuckets.map((bucket) => (
+                        <div key={bucket.rate} className="flex justify-between items-center text-slate-600 pl-2 border-l-2 border-amber-500">
+                          <span>Product GST @ {bucket.rate}% (Taxable Amt: ₹{bucket.productBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}):</span>
+                          <span className="font-bold text-amber-800">₹{bucket.productGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        </div>
+                      ))}
+
+                      {/* Freight Details and Max GST Rate */}
+                      {editStatus === "Closed Won" && bd.freightBase > 0 && (
+                        <div className="bg-emerald-50/90 p-2 rounded-lg border border-emerald-200/80 space-y-1 my-1.5">
+                          <div className="flex justify-between items-center text-emerald-800 font-sans">
+                            <span>Freight Charged in Bill:</span>
+                            <span className="font-bold font-mono">₹{bd.freightBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-emerald-700 text-[11px] font-sans">
+                            <span>GST on Freight @ {bd.maxGstPercent}% (Max Product GST Rate):</span>
+                            <span className="font-bold font-mono">₹{bd.freightGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between items-center text-slate-600 font-semibold border-t border-slate-200/80 pt-1">
+                        <span>Total GST Amount:</span>
+                        <span className="font-bold text-amber-800">₹{(bd.productsGstTotal + bd.freightGst).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
+
+                      <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-300 pt-2 mt-1">
+                        <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
+                        <span className="text-amber-950 font-black text-sm sm:text-base bg-white px-2.5 py-1 rounded border border-slate-200 shadow-2xs">
+                          ₹{bd.totalInvoiceAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
                     </div>
-                  )}
-                  <div className="flex justify-between items-center text-xs text-slate-600">
-                    <span>Total GST (18% / applicable tax):</span>
-                    <span className="font-bold text-amber-700">₹{calculateTotalGst(editItems, editStatus, editFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-200 pt-1.5 mt-1">
-                    <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
-                    <span className="text-amber-950 font-black">₹{calculateTotalValueWithGst(editItems, editStatus, editFreightChargedInBill).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                  </div>
-                </div>
+                  );
+                })()}
               </div>
 
               <div>
@@ -4427,23 +4689,46 @@ export default function OrdersOffersView({
                 </div>
               )}
 
-              <div className="bg-slate-50 -mx-6 -mb-6 px-6 py-4 flex items-center justify-end gap-3 border-t border-slate-150">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsEditOpen(false);
-                    setEditingOrder(null);
-                  }}
-                  className="border border-slate-200 hover:bg-slate-100 text-slate-600 font-bold py-2 px-4 rounded-xl text-xs transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-5 rounded-xl text-xs transition-all duration-150 shadow-sm cursor-pointer"
-                >
-                  Save Changes
-                </button>
+              <div className="bg-slate-50 -mx-6 -mb-6 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-150">
+                {isSubmittingOrder ? (
+                  <div className="flex items-center gap-2 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-200/80 px-3.5 py-2 rounded-xl w-full sm:w-auto animate-pulse">
+                    <Loader2 size={16} className="animate-spin text-amber-600 shrink-0" />
+                    <span>{submittingMessage || "Saving changes... Please wait."}</span>
+                  </div>
+                ) : (
+                  <div />
+                )}
+                <div className="flex items-center justify-end gap-3 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    disabled={isSubmittingOrder}
+                    onClick={() => {
+                      setIsEditOpen(false);
+                      setEditingOrder(null);
+                    }}
+                    className={`border border-slate-200 text-slate-600 font-bold py-2 px-4 rounded-xl text-xs transition-colors ${
+                      isSubmittingOrder ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-100 cursor-pointer"
+                    }`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingOrder}
+                    className={`bg-amber-600 text-white font-bold py-2 px-5 rounded-xl text-xs transition-all duration-150 shadow-sm flex items-center justify-center gap-2 ${
+                      isSubmittingOrder ? "opacity-75 cursor-not-allowed" : "hover:bg-amber-700 cursor-pointer"
+                    }`}
+                  >
+                    {isSubmittingOrder ? (
+                      <>
+                        <Loader2 size={15} className="animate-spin text-white shrink-0" />
+                        <span>{editSendEmail ? "Sending Email & Saving..." : "Saving Changes..."}</span>
+                      </>
+                    ) : (
+                      <span>Save Changes</span>
+                    )}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
@@ -4727,7 +5012,7 @@ export default function OrdersOffersView({
                   <div className="space-y-0.5">
                     <span className="text-[9px] font-mono text-slate-400 uppercase block">Total Value</span>
                     <span className="text-sm font-extrabold text-slate-900 font-mono">
-                      ₹{selectedOrderDetails.totalValue.toLocaleString()}
+                      ₹{getOrderTotalInvoiceAmount(selectedOrderDetails).toLocaleString()}
                     </span>
                   </div>
 
@@ -4983,7 +5268,7 @@ export default function OrdersOffersView({
                       <tr className="bg-slate-50/50 font-bold border-t border-slate-200">
                         <td className="py-2.5 px-3 text-slate-700" colSpan={2}>Grand Total</td>
                         <td className="py-2.5 px-3 text-right text-slate-900 font-mono text-xs" colSpan={2}>
-                          ₹{selectedOrderDetails.totalValue.toLocaleString()}
+                          ₹{getOrderTotalInvoiceAmount(selectedOrderDetails).toLocaleString()}
                         </td>
                       </tr>
                     </tbody>
