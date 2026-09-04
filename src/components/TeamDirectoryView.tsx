@@ -292,6 +292,7 @@ export default function TeamDirectoryView({
       subTabs: [
         { id: "debtors", label: "Debtors" },
         { id: "bad_debtors", label: "Bad Debtors" },
+        { id: "dr_cr_notes", label: "Dr/Cr Note" },
         { id: "payment_reminder", label: "Payment Reminder" },
         { id: "payment_reminder_consolidated", label: "Payment Reminder Consolidated" },
         { id: "fully_paid", label: "Fully Paid" }

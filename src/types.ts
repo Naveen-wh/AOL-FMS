@@ -151,10 +151,10 @@ export interface OrderOffer {
   billingAddress?: string;
   billingGstin?: string;
   status: "New" | "Contacted" | "Proposal" | "Negotiation" | "Closed Won" | "Closed Lost";
-  totalValue: number;
-  totalProductCost?: number;
-  totalGstAmount?: number;
-  grandTotalOrderAmount?: number;
+  totalProductCost?: number; // only Total product rate*qty = amount without GST
+  totalGstAmount?: number; // Total GST amount across items and freight
+  grandTotalOrderAmount?: number; // totalProductCost + totalGstAmount + freightChargedInBill
+  totalValue?: number; // Legacy deprecated field; removed during order creation
   items: OrderItem[];
   payment: string;
   paymentCreditPeriod?: string;
@@ -201,6 +201,26 @@ export interface BadDebtor {
   updatedAt?: string;
 }
 
+export interface DebitCreditNote {
+  id: string;
+  orderId?: string;
+  invoiceNumber: string;
+  companyName: string;
+  clientName?: string;
+  entryDate: string; // Auto-generated readonly date
+  tallyDate: string; // Date recorded in Tally
+  noteType: "Debit Note" | "Credit Note"; // Type of note
+  type?: "Debit Note" | "Credit Note" | "debit_note" | "credit_note";
+  noteNumber: string; // Dr/Cr reference number
+  amount: number; // Raw note amount (positive)
+  effectedAmount: number; // A credit note decreases net amount (-), a debit note increases it (+)
+  reason?: string; // Narration / remarks
+  createdAt: string;
+  createdByUserId?: string;
+  createdByUserName?: string;
+  updatedAt?: string;
+}
+
 export interface ProjectWorkflow {
   id: string;
   name: string;
@@ -229,8 +249,8 @@ export interface ActionLog {
   timestamp: string;
   userId: string;
   userName: string;
-  actionType: "Create Lead" | "Edit Lead" | "Delete Lead" | "Create Task" | "Edit Task" | "Delete Task" | "Create User" | "Edit User" | "Delete User" | "Create Product" | "Edit Product" | "Delete Product" | "Create Order" | "Edit Order" | "Delete Order" | "Create Category" | "Edit Category" | "Delete Category" | "Create Group" | "Edit Group" | "Delete Group" | "Create Manufacturer" | "Edit Manufacturer" | "Delete Manufacturer" | "Create Freight Term" | "Edit Freight Term" | "Delete Freight Term" | "Create Delivery Term" | "Edit Delivery Term" | "Delete Delivery Term" | "Create Transporter" | "Edit Transporter" | "Delete Transporter" | "Map Invoice" | "Update Invoice" | "Update Payment" | "Update Order Status" | "Map Customer PO" | "Update Google Drive Settings" | "Create Email Template" | "Update Email Template" | "Delete Email Template" | "Send Email" | "Create Payment Term" | "Edit Payment Term" | "Delete Payment Term" | "Create Payment Credit Period" | "Edit Payment Credit Period" | "Delete Payment Credit Period" | "Create Tax Rate" | "Edit Tax Rate" | "Delete Tax Rate" | "Update Email Sending Mode" | "Update Single Setted ID Config" | "Update User SMTP Credentials" | "Remove User SMTP Credentials" | "Add Payment Receipt" | "Delete Payment Record" | "Update Payment Details" | "Add Bad Debtor" | "Update Bad Debtor" | "Delete Bad Debtor" | "Bulk Import Bad Debtors" | "Update Email Config";
-  targetType: "Lead" | "Task" | "User" | "Product" | "Order" | "Category" | "Group" | "Manufacturer" | "Freight Term" | "Delivery Term" | "Transporter" | "Settings" | "EmailTemplate" | "Payment Term" | "Payment Credit Period" | "Tax Rate" | "BadDebtor" | "BadDebtors";
+  actionType: "Create Lead" | "Edit Lead" | "Delete Lead" | "Create Task" | "Edit Task" | "Delete Task" | "Create User" | "Edit User" | "Delete User" | "Create Product" | "Edit Product" | "Delete Product" | "Create Order" | "Edit Order" | "Delete Order" | "Create Category" | "Edit Category" | "Delete Category" | "Create Group" | "Edit Group" | "Delete Group" | "Create Manufacturer" | "Edit Manufacturer" | "Delete Manufacturer" | "Create Freight Term" | "Edit Freight Term" | "Delete Freight Term" | "Create Delivery Term" | "Edit Delivery Term" | "Delete Delivery Term" | "Create Transporter" | "Edit Transporter" | "Delete Transporter" | "Map Invoice" | "Update Invoice" | "Update Payment" | "Update Order Status" | "Map Customer PO" | "Update Google Drive Settings" | "Create Email Template" | "Update Email Template" | "Delete Email Template" | "Send Email" | "Create Payment Term" | "Edit Payment Term" | "Delete Payment Term" | "Create Payment Credit Period" | "Edit Payment Credit Period" | "Delete Payment Credit Period" | "Create Tax Rate" | "Edit Tax Rate" | "Delete Tax Rate" | "Update Email Sending Mode" | "Update Single Setted ID Config" | "Update User SMTP Credentials" | "Remove User SMTP Credentials" | "Add Payment Receipt" | "Delete Payment Record" | "Update Payment Details" | "Add Bad Debtor" | "Update Bad Debtor" | "Delete Bad Debtor" | "Bulk Import Bad Debtors" | "Update Email Config" | "Create Dr/Cr Note" | "Edit Dr/Cr Note" | "Delete Dr/Cr Note";
+  targetType: "Lead" | "Task" | "User" | "Product" | "Order" | "Category" | "Group" | "Manufacturer" | "Freight Term" | "Delivery Term" | "Transporter" | "Settings" | "EmailTemplate" | "Payment Term" | "Payment Credit Period" | "Tax Rate" | "BadDebtor" | "BadDebtors" | "DebitCreditNote";
   targetId: string;
   targetName: string;
   details: string;

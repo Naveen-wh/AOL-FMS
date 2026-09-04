@@ -1,4 +1,4 @@
-import { User } from "../types";
+import { User, WarehouseManagedBy } from "../types";
 
 export interface TemplateVariableGroup {
   id: string;
@@ -43,9 +43,25 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
     variables: [
       { key: "{{assignedToName}}", label: "Assigned User Name", description: "Name of the assigned Sales Representative", sampleValue: "Mohit Jain" },
       { key: "{{assignedToEmail}}", label: "Assigned User Email", description: "Email of the assigned Sales Representative", sampleValue: "mohit@aromaorganic.in" },
-      { key: "{{assignedToPhone}}", label: "Assigned User Phone", description: "Phone number of the assigned Sales Representative", sampleValue: "+91 9123456789" },
+      { key: "{{assignedToPhone}}", label: "Assign To Sales Person Phone Number", description: "Direct mobile/phone number of the assigned Sales Person / Representative", sampleValue: "+91 9123456789" },
+      { key: "{{assignedSalesPersonPhone}}", label: "Assigned Sales Person Phone (Alias)", description: "Alias for assigned sales person phone number", sampleValue: "+91 9123456789" },
+      { key: "{{salesPersonPhone}}", label: "Sales Person Phone (Alias)", description: "Direct alias for sales person phone number", sampleValue: "+91 9123456789" },
       { key: "{{teamLeadEmail}}", label: "Team Lead Email", description: "Email of the Assigned User's Team Lead", sampleValue: "teamlead@aromaorganic.in" },
       { key: "{{managerEmail}}", label: "Manager Email", description: "Email of the Assigned User's Reporting Manager", sampleValue: "manager@aromaorganic.in" },
+    ],
+  },
+  {
+    id: "warehouse_management",
+    name: "🏭 Warehouse Manager & Contacts",
+    description: "Warehouse manager person email ID, phone number, and fulfillment warehouse details",
+    forms: ["any", "create_order", "edit_order", "invoice_issuance"],
+    variables: [
+      { key: "{{warehouseManagedBy}}", label: "Warehouse Managed By / Location", description: "Warehouse location name or title", sampleValue: "Central Bhiwandi Warehouse" },
+      { key: "{{warehouseManager}}", label: "Warehouse Manager Name", description: "Full name of the person managing the warehouse", sampleValue: "Vikram Singh" },
+      { key: "{{warehouseManagedByEmail}}", label: "Warehouse Managed By Email ID", description: "Contact email ID of the person managing the warehouse", sampleValue: "warehouse@aromaorganic.in" },
+      { key: "{{warehouseManagerEmail}}", label: "Warehouse Manager Email (Alias)", description: "Alias for warehouse manager email ID", sampleValue: "warehouse@aromaorganic.in" },
+      { key: "{{warehouseManagedByPhone}}", label: "Warehouse Managed By Phone Number", description: "Direct phone/mobile number of the person managing the warehouse", sampleValue: "+91 9811223344" },
+      { key: "{{warehouseManagerPhone}}", label: "Warehouse Manager Phone (Alias)", description: "Alias for warehouse manager phone number", sampleValue: "+91 9811223344" },
     ],
   },
   {
@@ -58,11 +74,17 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
       { key: "{{companyName}}", label: "Company Name", description: "Client company name", sampleValue: "Hindustan Coca-Cola Beverages" },
       { key: "{{email}}", label: "Client Email", description: "Primary client email address", sampleValue: "care@aromaorganic.in" },
       { key: "{{phone}}", label: "Client Phone", description: "Primary client phone number", sampleValue: "+91 9123456789" },
+      { key: "{{assignedToPhone}}", label: "Assign To Sales Person Phone Number", description: "Direct phone number of the assigned Sales Person", sampleValue: "+91 9123456789" },
+      { key: "{{salesPersonPhone}}", label: "Sales Person Phone (Alias)", description: "Direct alias for sales person phone number", sampleValue: "+91 9123456789" },
       { key: "{{billingAddress}}", label: "Client Billing Address", description: "Client billing address for invoicing", sampleValue: "Plot 42, Commercial Complex, Sector 5, Kolkata 700091" },
       { key: "{{billingGstin}}", label: "Billing GSTIN", description: "Billing GST Identification Number", sampleValue: "27AAAAA0000A1Z5" },
       { key: "{{clientBillingAddress}}", label: "Client Billing Address Alias", description: "Alias for client billing address", sampleValue: "Plot 42, Commercial Complex, Sector 5, Kolkata 700091" },
       { key: "{{status}}", label: "Pipeline Status", description: "Stage / Pipeline Status (e.g. New, Contacted, Closed Won)", sampleValue: "Closed Won" },
-      { key: "{{totalValue}}", label: "Total Value ($)", description: "Total deal amount or order total", sampleValue: "$225,000" },
+      { key: "{{grandTotalOrderAmount}}", label: "Grand Total Order Amount (₹)", description: "Grand total order amount (totalProductCost + totalGstAmount + freightChargedInBill)", sampleValue: "₹2,25,000" },
+      { key: "{{totalProductCost}}", label: "Total Product Cost (₹)", description: "Total product rate*qty without GST", sampleValue: "₹1,90,000" },
+      { key: "{{totalGstAmount}}", label: "Total GST Amount (₹)", description: "Total GST amount across items and freight", sampleValue: "₹35,000" },
+      { key: "{{freightChargedInBill}}", label: "Freight Charged in Bill (₹)", description: "Freight amount charged in bill", sampleValue: "₹500" },
+      { key: "{{totalValue}}", label: "Total Value / Grand Total (Alias)", description: "Grand total order amount", sampleValue: "₹2,25,000" },
       { key: "{{itemsList}}", label: "Product Items Summary", description: "Formatted table or bulleted list of product line items", sampleValue: "1. Hydrogen Peroxide - 1,500 units @ $150" },
       { key: "{{itemsTable}}", label: "HTML Products Table", description: "A beautifully styled HTML table with Product, HSN Code, Quantity, Packing, Price, Taxes & Amount columns", sampleValue: "<table>...</table>" },
       { key: "{{payment}}", label: "Payment Terms", description: "Agreed payment terms", sampleValue: "100% advance against PI" },
@@ -77,7 +99,7 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
     id: "dispatch_closed_won",
     name: "🚚 Dispatch & Indent Form / Event",
     description: "Logistics, PO, freight, transporter, and warehouse details",
-    forms: ["any", "create_order", "edit_order"],
+    forms: ["any", "create_order", "edit_order", "invoice_issuance"],
     variables: [
       { key: "{{customerPoNumber}}", label: "Customer PO Number", description: "Customer Purchase Order number", sampleValue: "PO-2026-8891" },
       { key: "{{poDate}}", label: "PO Date", description: "Date of Purchase Order", sampleValue: "2026-07-30" },
@@ -91,7 +113,12 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
       { key: "{{gstin}}", label: "GSTIN", description: "Customer GST Identification Number", sampleValue: "27AAAAA0000A1Z5" },
       { key: "{{dispatchDate}}", label: "Dispatch Date", description: "Target or actual date of dispatch", sampleValue: "2026-08-05" },
       { key: "{{dispatchLocation}}", label: "Dispatch Location", description: "Source factory/terminal dispatch point", sampleValue: "Kolkata Depot" },
-      { key: "{{warehouseManagedBy}}", label: "Warehouse Managed By", description: "Warehouse location or manager", sampleValue: "Central Chemical Hub" },
+      { key: "{{warehouseManagedBy}}", label: "Warehouse Managed By / Location", description: "Warehouse location name or title", sampleValue: "Central Chemical Hub" },
+      { key: "{{warehouseManager}}", label: "Warehouse Manager Name", description: "Full name of the person managing the warehouse", sampleValue: "Vikram Singh" },
+      { key: "{{warehouseManagedByEmail}}", label: "Warehouse Managed By Email ID", description: "Contact email ID of the person managing the warehouse", sampleValue: "warehouse@aromaorganic.in" },
+      { key: "{{warehouseManagerEmail}}", label: "Warehouse Manager Email (Alias)", description: "Alias for warehouse manager email ID", sampleValue: "warehouse@aromaorganic.in" },
+      { key: "{{warehouseManagedByPhone}}", label: "Warehouse Managed By Phone Number", description: "Direct phone/mobile number of the person managing the warehouse", sampleValue: "+91 9811223344" },
+      { key: "{{warehouseManagerPhone}}", label: "Warehouse Manager Phone (Alias)", description: "Alias for warehouse manager phone number", sampleValue: "+91 9811223344" },
     ],
   },
   {
@@ -145,6 +172,9 @@ export interface ReplaceVariablesContext {
   billingGstin?: string;
   clientBillingAddress?: string;
   status?: string;
+  grandTotalOrderAmount?: string | number;
+  totalProductCost?: string | number;
+  totalGstAmount?: string | number;
   totalValue?: string | number;
   itemsList?: string;
   payment?: string;
@@ -167,7 +197,18 @@ export interface ReplaceVariablesContext {
   gstin?: string;
   dispatchDate?: string;
   dispatchLocation?: string;
+
+  // Warehouse Details & Manager Contacts
   warehouseManagedBy?: string;
+  warehouseManager?: string;
+  warehouseManagedByName?: string;
+  warehouseManagedByEmail?: string;
+  warehouseManagerEmail?: string;
+  warehouseEmail?: string;
+  warehouseManagedByPhone?: string;
+  warehouseManagerPhone?: string;
+  warehousePhone?: string;
+
   amountReceived?: string | number;
   pendingAmount?: string | number;
   paymentStatus?: string;
@@ -184,10 +225,12 @@ export interface ReplaceVariablesContext {
   creatorPhone?: string;
   creatorEmail?: string;
 
-  // Assigned info
+  // Assigned info & Sales Person Contacts
   assignedToName?: string;
   assignedToEmail?: string;
   assignedToPhone?: string;
+  assignedSalesPersonPhone?: string;
+  salesPersonPhone?: string;
   teamLeadEmail?: string;
   managerEmail?: string;
   currentUserEmail?: string;
@@ -209,6 +252,8 @@ export function getSampleTemplateContext(assignedForm?: string): ReplaceVariable
     assignedToName: "Mohit Jain",
     assignedToEmail: "mohit@aromaorganic.in",
     assignedToPhone: "+91 9123456789",
+    assignedSalesPersonPhone: "+91 9123456789",
+    salesPersonPhone: "+91 9123456789",
     teamLeadEmail: "lead@aromaorganic.in",
     managerEmail: "manager@aromaorganic.in",
     currentUserEmail: "naveen@chsurya.in",
@@ -267,6 +312,14 @@ export function getSampleTemplateContext(assignedForm?: string): ReplaceVariable
     dispatchDate: "2026-08-20",
     dispatchLocation: "Kolkata Depot",
     warehouseManagedBy: "Central Chemical Hub",
+    warehouseManager: "Vikram Singh",
+    warehouseManagedByName: "Vikram Singh",
+    warehouseManagedByEmail: "warehouse@aromaorganic.in",
+    warehouseManagerEmail: "warehouse@aromaorganic.in",
+    warehouseEmail: "warehouse@aromaorganic.in",
+    warehouseManagedByPhone: "+91 9811223344",
+    warehouseManagerPhone: "+91 9811223344",
+    warehousePhone: "+91 9811223344",
     invoiceNumber: "INV-2026-0412",
     invoiceFileLink: "https://drive.google.com/file/d/sample-invoice/view",
     amountReceived: 50000,
@@ -324,9 +377,26 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
   if (!text) return "";
 
   const recordIdVal = ctx.recordId || "";
-  const totalValFormatted = typeof ctx.totalValue === "number" ? `₹${ctx.totalValue.toLocaleString('en-IN')}` : (ctx.totalValue || "");
+  const grandTotalValFormatted = typeof ctx.grandTotalOrderAmount === "number"
+    ? `₹${ctx.grandTotalOrderAmount.toLocaleString('en-IN')}`
+    : (ctx.grandTotalOrderAmount || (typeof ctx.totalValue === "number" ? `₹${ctx.totalValue.toLocaleString('en-IN')}` : (ctx.totalValue || "")));
+  const totalProductCostFormatted = typeof ctx.totalProductCost === "number"
+    ? `₹${ctx.totalProductCost.toLocaleString('en-IN')}`
+    : (ctx.totalProductCost || "");
+  const totalGstAmountFormatted = typeof ctx.totalGstAmount === "number"
+    ? `₹${ctx.totalGstAmount.toLocaleString('en-IN')}`
+    : (ctx.totalGstAmount || "");
+  const freightChargedFormatted = typeof ctx.freightChargedInBill === "number"
+    ? `₹${ctx.freightChargedInBill.toLocaleString('en-IN')}`
+    : (ctx.freightChargedInBill || "");
+  const totalValFormatted = grandTotalValFormatted;
   const amountRecFormatted = typeof ctx.amountReceived === "number" ? `₹${ctx.amountReceived.toLocaleString('en-IN')}` : (ctx.amountReceived || "");
   const pendingAmtFormatted = typeof ctx.pendingAmount === "number" ? `₹${ctx.pendingAmount.toLocaleString('en-IN')}` : (ctx.pendingAmount || "");
+
+  const salesPhone = ctx.assignedToPhone || ctx.assignedSalesPersonPhone || ctx.salesPersonPhone || "";
+  const whMgrEmail = ctx.warehouseManagedByEmail || ctx.warehouseManagerEmail || ctx.warehouseEmail || "";
+  const whMgrPhone = ctx.warehouseManagedByPhone || ctx.warehouseManagerPhone || ctx.warehousePhone || "";
+  const whManager = ctx.warehouseManager || ctx.warehouseManagedByName || ctx.warehouseManagedBy || "";
 
   return text
     // Record Database ID
@@ -338,10 +408,14 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{creatorPhone\}\}|\{creatorPhone\}/gi, ctx.creatorPhone || "")
     .replace(/\{\{creatorEmail\}\}|\{creatorEmail\}/gi, ctx.creatorEmail || "")
 
-    // Assigned details & Hierarchy
+    // Assigned details & Hierarchy & Sales Person
     .replace(/\{\{assignedToName\}\}|\{assignedToName\}/gi, ctx.assignedToName || "")
     .replace(/\{\{assignedToEmail\}\}|\{assignedToEmail\}/gi, ctx.assignedToEmail || "")
-    .replace(/\{\{assignedToPhone\}\}|\{assignedToPhone\}/gi, ctx.assignedToPhone || "")
+    .replace(/\{\{assignedToPhone\}\}|\{assignedToPhone\}/gi, salesPhone)
+    .replace(/\{\{assignedSalesPersonPhone\}\}|\{assignedSalesPersonPhone\}/gi, salesPhone)
+    .replace(/\{\{salesPersonPhone\}\}|\{salesPersonPhone\}/gi, salesPhone)
+    .replace(/\{\{salesPersonMobile\}\}|\{salesPersonMobile\}/gi, salesPhone)
+    .replace(/\{\{assignedToMobile\}\}|\{assignedToMobile\}/gi, salesPhone)
     .replace(/\{\{teamLeadEmail\}\}|\{teamLeadEmail\}/gi, ctx.teamLeadEmail || "")
     .replace(/\{\{managerEmail\}\}|\{managerEmail\}/gi, ctx.managerEmail || "")
     .replace(/\{\{currentUserEmail\}\}|\{currentUserEmail\}/gi, ctx.currentUserEmail || ctx.creatorEmail || "")
@@ -355,6 +429,10 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{billingGstin\}\}|\{billingGstin\}/gi, ctx.billingGstin || "")
     .replace(/\{\{clientBillingAddress\}\}|\{clientBillingAddress\}/gi, ctx.clientBillingAddress || ctx.billingAddress || "")
     .replace(/\{\{status\}\}|\{status\}/gi, ctx.status || "")
+    .replace(/\{\{grandTotalOrderAmount\}\}|\{grandTotalOrderAmount\}/gi, grandTotalValFormatted)
+    .replace(/\{\{totalProductCost\}\}|\{totalProductCost\}/gi, totalProductCostFormatted)
+    .replace(/\{\{totalGstAmount\}\}|\{totalGstAmount\}/gi, totalGstAmountFormatted)
+    .replace(/\{\{freightChargedInBill\}\}|\{freightChargedInBill\}/gi, freightChargedFormatted)
     .replace(/\{\{totalValue\}\}|\{totalValue\}/gi, totalValFormatted)
     .replace(/\{\{itemsList\}\}|\{itemsList\}/gi, ctx.itemsList || "")
     .replace(/\{\{itemsTable\}\}|\{itemsTable\}/gi, ctx.itemsTable || "")
@@ -370,7 +448,7 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{invoiceNumber\}\}|\{invoiceNumber\}/gi, ctx.invoiceNumber || "")
     .replace(/\{\{invoiceFileLink\}\}|\{invoiceFileLink\}/gi, ctx.invoiceFileLink || "")
 
-    // Dispatch & Closed Won
+    // Dispatch & Closed Won & Warehouse Details
     .replace(/\{\{customerPoNumber\}\}|\{customerPoNumber\}/gi, ctx.customerPoNumber || "")
     .replace(/\{\{poDate\}\}|\{poDate\}/gi, ctx.poDate || "")
     .replace(/\{\{freightTerm\}\}|\{freightTerm\}/gi, ctx.freightTerm || "")
@@ -384,6 +462,15 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{dispatchDate\}\}|\{dispatchDate\}/gi, ctx.dispatchDate || "")
     .replace(/\{\{dispatchLocation\}\}|\{dispatchLocation\}/gi, ctx.dispatchLocation || "")
     .replace(/\{\{warehouseManagedBy\}\}|\{warehouseManagedBy\}/gi, ctx.warehouseManagedBy || "")
+    .replace(/\{\{warehouseManager\}\}|\{warehouseManager\}/gi, whManager)
+    .replace(/\{\{warehouseManagedByName\}\}|\{warehouseManagedByName\}/gi, whManager)
+    .replace(/\{\{warehouseManagedByEmail\}\}|\{warehouseManagedByEmail\}/gi, whMgrEmail)
+    .replace(/\{\{warehouseManagerEmail\}\}|\{warehouseManagerEmail\}/gi, whMgrEmail)
+    .replace(/\{\{warehouseEmail\}\}|\{warehouseEmail\}/gi, whMgrEmail)
+    .replace(/\{\{warehouseManagedByPhone\}\}|\{warehouseManagedByPhone\}/gi, whMgrPhone)
+    .replace(/\{\{warehouseManagerPhone\}\}|\{warehouseManagerPhone\}/gi, whMgrPhone)
+    .replace(/\{\{warehousePhone\}\}|\{warehousePhone\}/gi, whMgrPhone)
+    .replace(/\{\{warehouseMobile\}\}|\{warehouseMobile\}/gi, whMgrPhone)
 
     // Payment collection
     .replace(/\{\{amountReceived\}\}|\{amountReceived\}/gi, amountRecFormatted)
@@ -444,8 +531,60 @@ export function resolveUserHierarchyInfo(creatorUserId: string, assignedToUserId
     assignedToName,
     assignedToEmail,
     assignedToPhone,
+    assignedSalesPersonPhone: assignedToPhone,
+    salesPersonPhone: assignedToPhone,
     teamLeadEmail,
     managerEmail,
+  };
+}
+
+/**
+ * Resolve warehouse details including warehouse manager, contact email, and mobile/phone number
+ */
+export function resolveWarehouseInfo(warehouseNameOrManager: string | undefined, warehouses: WarehouseManagedBy[] = []) {
+  if (!warehouseNameOrManager) {
+    return {
+      warehouseManagedBy: "",
+      warehouseManager: "",
+      warehouseManagedByName: "",
+      warehouseManagedByEmail: "",
+      warehouseManagerEmail: "",
+      warehouseEmail: "",
+      warehouseManagedByPhone: "",
+      warehouseManagerPhone: "",
+      warehousePhone: "",
+    };
+  }
+
+  const query = warehouseNameOrManager.trim().toLowerCase();
+  const matchedWh = warehouses.find((w) => {
+    const nameMatch = w.name && w.name.trim().toLowerCase() === query;
+    const whNameMatch = w.warehouseName && w.warehouseName.trim().toLowerCase() === query;
+    const mgrMatch = w.warehouseManager && w.warehouseManager.trim().toLowerCase() === query;
+    const combinedMatch = (w.warehouseManager && w.warehouseName) && 
+      `${w.warehouseManager.trim().toLowerCase()} (${w.warehouseName.trim().toLowerCase()})` === query;
+    return nameMatch || whNameMatch || mgrMatch || combinedMatch;
+  }) || warehouses.find((w) => {
+    return (w.name && query.includes(w.name.trim().toLowerCase())) ||
+      (w.warehouseName && query.includes(w.warehouseName.trim().toLowerCase())) ||
+      (w.warehouseManager && query.includes(w.warehouseManager.trim().toLowerCase()));
+  });
+
+  const email = matchedWh?.emailId?.trim() || "";
+  const phone = matchedWh?.mobileNo?.trim() || "";
+  const managerName = matchedWh?.warehouseManager?.trim() || matchedWh?.name?.trim() || "";
+  const displayName = matchedWh?.warehouseName?.trim() || matchedWh?.name?.trim() || warehouseNameOrManager;
+
+  return {
+    warehouseManagedBy: displayName,
+    warehouseManager: managerName,
+    warehouseManagedByName: managerName,
+    warehouseManagedByEmail: email,
+    warehouseManagerEmail: email,
+    warehouseEmail: email,
+    warehouseManagedByPhone: phone,
+    warehouseManagerPhone: phone,
+    warehousePhone: phone,
   };
 }
 

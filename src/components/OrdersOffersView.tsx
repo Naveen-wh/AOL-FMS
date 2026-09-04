@@ -11,10 +11,9 @@ import {
   getEmailAutoSelectSettings,
   saveEmailAutoSelectSettings,
   savePaymentDetails,
-  saveEmailSentLog,
 } from "../lib/firebaseService";
 import { auth } from "../firebase";
-import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
+import { replaceTemplateVars, resolveUserHierarchyInfo, resolveWarehouseInfo, formatEmailBodyForSending } from "../lib/templateUtils";
 import { dispatchSystemEmail } from "../lib/emailService";
 import { Plus, Search, Edit2, Trash2, ShieldAlert, Lock, Unlock, Filter, IndianRupee, Calendar, X, Check, HelpCircle, Building2, ShoppingCart, Percent, ShoppingBag, Upload, FileText, Loader2, Mail, FileSpreadsheet, Eye, Phone, User as UserIcon, RefreshCw, ChevronDown, Layers, TrendingUp, BarChart3, Clock, CheckCircle2, CalendarDays, ArrowUpDown } from "lucide-react";
 import InlineDeleteConfirm from "./InlineDeleteConfirm";
@@ -336,10 +335,6 @@ export default function OrdersOffersView({
     { key: "paymentReceivedDate", label: "Payment Received Date", sampleValue: "2025-08-25", description: "Date payment receipt was realized (YYYY-MM-DD)" },
     { key: "utrId", label: "Payment UTR / Transaction ID", sampleValue: "UTR99887766", description: "Bank transaction UTR ID or cheque reference" },
     { key: "paymentComments", label: "Payment Reconciliation Comments", sampleValue: "Paid in full via NEFT", description: "Notes on payment reconciliation" },
-
-    // Mail Sent Status (Firestore: emailStatus)
-    { key: "mailSentStatus", label: "Mail Sent Status", sampleValue: "Sent", description: "Sent, Simulated, Failed, or Pending" },
-    { key: "mailSentTimestamp", label: "Mail Sent Timestamp", sampleValue: "2025-08-20 10:30:00", description: "Date/time email was sent (YYYY-MM-DD HH:MM:SS)" },
   ];
 
   const handleImportOrders = async (rows: Record<string, any>[]) => {
@@ -497,29 +492,6 @@ export default function OrdersOffersView({
       const csvGstAmount = parseFloat(row.totalGstAmount) || (csvBreakdown.productsGstTotal + csvBreakdown.freightGst);
       const csvGrandTotal = totalVal;
 
-      // Mail Sent Status mapping
-      const rawMailStatus = (row.mailSentStatus || row.emailStatus)?.trim();
-      const rawMailTimestamp = (row.mailSentTimestamp || row.emailTimestamp)?.trim();
-      let emailStatusSummary: EmailSentStatusSummary | undefined = undefined;
-
-      if (rawMailStatus) {
-        let validStatus: EmailDeliveryStatus = "Sent";
-        const sLower = rawMailStatus.toLowerCase();
-        if (sLower.includes("simulat")) validStatus = "Simulated";
-        else if (sLower.includes("fail") || sLower.includes("error")) validStatus = "Failed";
-        else if (sLower.includes("pend")) validStatus = "Pending";
-        else if (sLower.includes("sent")) validStatus = "Sent";
-
-        emailStatusSummary = {
-          to: row.email?.trim() || "",
-          status: validStatus,
-          timestamp: rawMailTimestamp || new Date().toISOString(),
-          category: "create_order",
-          subject: `Order Confirmation - ${companyName}`,
-          sentByUserName: activeUser?.name || "System Import",
-        };
-      }
-
       // Assigned Sales Person resolution
       const assignedNameInput = (row.assignedToUserName || row.assignedToUser || row.assignedTo || row.salesPersonName || row.salesPerson || row.orderAssignedTo)?.toString()?.trim();
       let assignedUserId = row.assignedToUserId?.trim() || activeUserId;
@@ -566,7 +538,6 @@ export default function OrdersOffersView({
         billingAddress: row.billingAddress?.trim() || existingOrder?.billingAddress || "",
         billingGstin: billingGstin || existingOrder?.billingGstin || "",
         status: finalStatus,
-        totalValue: totalVal,
         totalProductCost: csvProductCost,
         totalGstAmount: csvGstAmount,
         grandTotalOrderAmount: csvGrandTotal,
@@ -581,7 +552,7 @@ export default function OrdersOffersView({
         otherTerms: row.otherTerms?.trim() || existingOrder?.otherTerms || "",
         billingDetails: billingDetails || existingOrder?.billingDetails,
         closedWonDetails: closedWonDetails || existingOrder?.closedWonDetails,
-        emailStatus: emailStatusSummary || existingOrder?.emailStatus,
+        emailStatus: existingOrder?.emailStatus,
       };
 
       try {
@@ -630,23 +601,6 @@ export default function OrdersOffersView({
             updatedAt: new Date().toISOString(),
             updatedByUserId: activeUserId,
             updatedByUserName: activeUser?.name || "System",
-          });
-        }
-
-        if (emailStatusSummary) {
-          await saveEmailSentLog({
-            id: `log-imp-${Date.now()}-${i}`,
-            orderId,
-            invoiceNumber: effectiveInvoiceNo || orderId,
-            companyName,
-            clientName,
-            to: row.email?.trim() || "",
-            subject: `Order Confirmation - ${companyName}`,
-            category: "create_order",
-            status: emailStatusSummary.status,
-            timestamp: emailStatusSummary.timestamp,
-            senderUserId: activeUserId,
-            senderUserName: activeUser?.name || "System Bulk Import",
           });
         }
 
@@ -971,22 +925,29 @@ export default function OrdersOffersView({
     });
   };
 
-  const calculateBaseTotal = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
-    const bd = getFormInvoiceBreakdown(itemsList, status, freightVal);
-    return bd.productsBaseTotal + bd.freightBase;
+  const calculateTotalProductCost = (itemsList: Omit<OrderItem, "amount">[]) => {
+    const bd = getFormInvoiceBreakdown(itemsList);
+    return bd.productsBaseTotal;
   };
 
-  const calculateTotalGst = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
+  const calculateTotalGstAmount = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
     const bd = getFormInvoiceBreakdown(itemsList, status, freightVal);
     return bd.productsGstTotal + bd.freightGst;
   };
 
-  const calculateTotalValueWithGst = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
+  const calculateGrandTotalOrderAmount = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
     const bd = getFormInvoiceBreakdown(itemsList, status, freightVal);
-    return bd.totalInvoiceAmount;
+    return bd.productsBaseTotal + (bd.productsGstTotal + bd.freightGst) + bd.freightBase;
   };
 
-  const calculateTotalValue = calculateTotalValueWithGst;
+  // Aliases for compatibility
+  const calculateTotalValueWithGst = calculateGrandTotalOrderAmount;
+  const calculateTotalValue = calculateGrandTotalOrderAmount;
+  const calculateBaseTotal = (itemsList: Omit<OrderItem, "amount">[], status?: string, freightVal?: string) => {
+    const bd = getFormInvoiceBreakdown(itemsList, status, freightVal);
+    return bd.productsBaseTotal + bd.freightBase;
+  };
+  const calculateTotalGst = calculateTotalGstAmount;
 
   // Add order item row handlers
   const handleAddProductRow = (isEdit: boolean) => {
@@ -1235,13 +1196,12 @@ export default function OrdersOffersView({
         const qty = Number(item.quantity) || 0;
         const rate = Number(item.rate) || 0;
         const taxStr = (item as any).taxes || defaultTaxValue;
-        const totalAmountWithGst = calculateItemTotalWithGst({ quantity: qty, rate, taxes: taxStr });
         return {
           ...item,
           quantity: qty,
           rate: rate,
           taxes: taxStr,
-          amount: totalAmountWithGst
+          amount: qty * rate // 2. totalProductCost -only Total product rate*qty = amount without GST
         };
       });
 
@@ -1270,9 +1230,14 @@ export default function OrdersOffersView({
         closedWonDetails: newClosedWonDetailsObj,
       });
 
-      const computedTotal = createOrderInvoiceBreakdown.totalInvoiceAmount;
+      // 1. freightChargedInBill - correctly align - no need to do any thing
+      // 2. totalProductCost -only Total product rate*qty = amount without GST
       const computedProductCost = createOrderInvoiceBreakdown.productsBaseTotal;
+      // 3. totalGstAmount - Total GST amount across items and freight
       const computedGstAmount = createOrderInvoiceBreakdown.productsGstTotal + createOrderInvoiceBreakdown.freightGst;
+      // 4. grandTotalOrderAmount = totalProductCost + totalGstAmount + freightChargedInBill
+      const freightChargedInBillAmount = createOrderInvoiceBreakdown.freightBase;
+      const computedGrandTotal = computedProductCost + computedGstAmount + freightChargedInBillAmount;
 
       let initialEmailSummary: EmailSentStatusSummary | undefined = undefined;
 
@@ -1347,8 +1312,8 @@ export default function OrdersOffersView({
   </tbody>
   <tfoot>
     <tr style="background-color:#f1f5f9; font-weight:bold; border-top:2px solid #cbd5e1; color:#0f172a;">
-      <td colspan="6" style="padding:12px; text-align:right; border-right:1px solid #e2e8f0; text-transform:uppercase; font-size:11px; letter-spacing:0.5px;">Grand Total Value:</td>
-      <td style="padding:12px; text-align:right; font-size:14px; font-family:monospace; color:#0f172a;">₹${computedTotal.toLocaleString()}</td>
+      <td colspan="6" style="padding:12px; text-align:right; border-right:1px solid #e2e8f0; text-transform:uppercase; font-size:11px; letter-spacing:0.5px;">Grand Total Order Amount:</td>
+      <td style="padding:12px; text-align:right; font-size:14px; font-family:monospace; color:#0f172a;">₹${computedGrandTotal.toLocaleString()}</td>
     </tr>
   </tfoot>
 </table>
@@ -1363,7 +1328,10 @@ export default function OrdersOffersView({
             phone: newPhone,
             billingAddress: newBillingAddress,
             status: newStatus,
-            totalValue: computedTotal,
+            totalValue: computedGrandTotal,
+            grandTotalOrderAmount: computedGrandTotal,
+            totalProductCost: computedProductCost,
+            totalGstAmount: computedGstAmount,
             itemsList: itemsListString,
             itemsTable: itemsTableHtml,
             bankDetailsTable: bankDetailsTableHtml,
@@ -1385,6 +1353,7 @@ export default function OrdersOffersView({
             dispatchDate: newDispatchDate,
             dispatchLocation: newDispatchLocation,
             warehouseManagedBy: newWarehouseManagedBy,
+            ...resolveWarehouseInfo(newWarehouseManagedBy, warehouses),
             ...hierarchy,
           });
         };
@@ -1444,7 +1413,7 @@ export default function OrdersOffersView({
       }
 
       setSubmittingMessage("Saving order details to database...");
-      await onAddOrder({
+      const orderPayload: any = {
         clientName: newClientName,
         companyName: newCompanyName,
         email: newEmail,
@@ -1452,10 +1421,9 @@ export default function OrdersOffersView({
         billingAddress: newBillingAddress,
         billingGstin: newBillingGstin,
         status: newStatus,
-        totalValue: computedTotal,
         totalProductCost: computedProductCost,
         totalGstAmount: computedGstAmount,
-        grandTotalOrderAmount: computedTotal,
+        grandTotalOrderAmount: computedGrandTotal,
         items: finalItems,
         assignedToUserId: newAssignedTo,
         notes: newNotes,
@@ -1466,26 +1434,10 @@ export default function OrdersOffersView({
         delivery: newDelivery,
         otherTerms: newOtherTerms,
         emailStatus: initialEmailSummary,
-        closedWonDetails: newStatus === "Closed Won" ? {
-          customerPoNumber: newPoNumber,
-          poDate: newPoDate,
-          freightTerm: newFreightTerm,
-          freightChargedInBill: newFreightChargedInBill,
-          freightCostToAol: newFreightCostToAol,
-          cartageLabourCharges: newCartageLabourCharges,
-          transporterName: newTransporterName,
-          vehicleNo: newVehicleNo,
-          deliveryTerm: newDeliveryTerm,
-          destinationAddress: newDestinationAddress,
-          gstin: newGstin,
-          dispatchDate: newDispatchDate,
-          dispatchLocation: newDispatchLocation,
-          warehouseManagedBy: newWarehouseManagedBy,
-          poAttachmentUrl: newPoAttachments[0]?.url || newPoAttachmentUrl || "",
-          poAttachmentUrls: newPoAttachments.map(a => a.url),
-          poAttachments: newPoAttachments,
-        } : undefined,
-      });
+        closedWonDetails: newClosedWonDetailsObj,
+      };
+      delete orderPayload.totalValue; // 5. totalValue - delete it
+      await onAddOrder(orderPayload);
 
       setIsAddOpen(false);
       resetAddForm();
@@ -1606,13 +1558,12 @@ export default function OrdersOffersView({
         const qty = Number(item.quantity) || 0;
         const rate = Number(item.rate) || 0;
         const taxStr = (item as any).taxes || defaultTaxValue;
-        const totalAmountWithGst = calculateItemTotalWithGst({ quantity: qty, rate, taxes: taxStr });
         return {
           ...item,
           quantity: qty,
           rate: rate,
           taxes: taxStr,
-          amount: totalAmountWithGst
+          amount: qty * rate // 2. totalProductCost -only Total product rate*qty = amount without GST
         };
       });
 
@@ -1641,9 +1592,14 @@ export default function OrdersOffersView({
         closedWonDetails: editClosedWonDetailsObj,
       });
 
-      const computedTotal = editOrderInvoiceBreakdown.totalInvoiceAmount;
+      // 1. freightChargedInBill - correctly align - no need to do any thing
+      // 2. totalProductCost -only Total product rate*qty = amount without GST
       const computedProductCost = editOrderInvoiceBreakdown.productsBaseTotal;
+      // 3. totalGstAmount - Total GST amount across items and freight
       const computedGstAmount = editOrderInvoiceBreakdown.productsGstTotal + editOrderInvoiceBreakdown.freightGst;
+      // 4. grandTotalOrderAmount = totalProductCost + totalGstAmount + freightChargedInBill
+      const freightChargedInBillAmount = editOrderInvoiceBreakdown.freightBase;
+      const computedGrandTotal = computedProductCost + computedGstAmount + freightChargedInBillAmount;
 
       let newSummary: EmailSentStatusSummary | undefined = undefined;
 
@@ -1718,8 +1674,8 @@ export default function OrdersOffersView({
   </tbody>
   <tfoot>
     <tr style="background-color:#f1f5f9; font-weight:bold; border-top:2px solid #cbd5e1; color:#0f172a;">
-      <td colspan="6" style="padding:12px; text-align:right; border-right:1px solid #e2e8f0; text-transform:uppercase; font-size:11px; letter-spacing:0.5px;">Grand Total Value:</td>
-      <td style="padding:12px; text-align:right; font-size:14px; font-family:monospace; color:#0f172a;">₹${computedTotal.toLocaleString()}</td>
+      <td colspan="6" style="padding:12px; text-align:right; border-right:1px solid #e2e8f0; text-transform:uppercase; font-size:11px; letter-spacing:0.5px;">Grand Total Order Amount:</td>
+      <td style="padding:12px; text-align:right; font-size:14px; font-family:monospace; color:#0f172a;">₹${computedGrandTotal.toLocaleString()}</td>
     </tr>
   </tfoot>
 </table>
@@ -1734,7 +1690,10 @@ export default function OrdersOffersView({
             phone: editPhone,
             billingAddress: editBillingAddress,
             status: editStatus,
-            totalValue: computedTotal,
+            totalValue: computedGrandTotal,
+            grandTotalOrderAmount: computedGrandTotal,
+            totalProductCost: computedProductCost,
+            totalGstAmount: computedGstAmount,
             itemsList: itemsListString,
             itemsTable: itemsTableHtml,
             bankDetailsTable: bankDetailsTableHtml,
@@ -1758,6 +1717,7 @@ export default function OrdersOffersView({
             dispatchDate: editDispatchDate,
             dispatchLocation: editDispatchLocation,
             warehouseManagedBy: editWarehouseManagedBy,
+            ...resolveWarehouseInfo(editWarehouseManagedBy, warehouses),
             ...hierarchy,
           });
         };
@@ -1808,7 +1768,7 @@ export default function OrdersOffersView({
       }
 
       setSubmittingMessage("Saving order changes to database...");
-      await onEditOrder({
+      const updatedOrderPayload: any = {
         ...editingOrder,
         clientName: editClientName,
         companyName: editCompanyName,
@@ -1817,10 +1777,9 @@ export default function OrdersOffersView({
         billingAddress: editBillingAddress,
         billingGstin: editBillingGstin,
         status: editStatus,
-        totalValue: computedTotal,
         totalProductCost: computedProductCost,
         totalGstAmount: computedGstAmount,
-        grandTotalOrderAmount: computedTotal,
+        grandTotalOrderAmount: computedGrandTotal,
         items: finalItems,
         assignedToUserId: editAssignedTo,
         notes: editNotes,
@@ -1831,26 +1790,10 @@ export default function OrdersOffersView({
         delivery: editDelivery,
         otherTerms: editOtherTerms,
         emailStatus: newSummary || editingOrder.emailStatus,
-        closedWonDetails: editStatus === "Closed Won" ? {
-          customerPoNumber: editPoNumber,
-          poDate: editPoDate,
-          freightTerm: editFreightTerm,
-          freightChargedInBill: editFreightChargedInBill,
-          freightCostToAol: editFreightCostToAol,
-          cartageLabourCharges: editCartageLabourCharges,
-          transporterName: editTransporterName,
-          vehicleNo: editVehicleNo,
-          deliveryTerm: editDeliveryTerm,
-          destinationAddress: editDestinationAddress,
-          gstin: editGstin,
-          dispatchDate: editDispatchDate,
-          dispatchLocation: editDispatchLocation,
-          warehouseManagedBy: editWarehouseManagedBy,
-          poAttachmentUrl: editPoAttachments[0]?.url || editPoAttachmentUrl || "",
-          poAttachmentUrls: editPoAttachments.map(a => a.url),
-          poAttachments: editPoAttachments,
-        } : undefined,
-      });
+        closedWonDetails: editClosedWonDetailsObj,
+      };
+      delete updatedOrderPayload.totalValue; // 5. totalValue - delete it
+      await onEditOrder(updatedOrderPayload);
 
       setIsEditOpen(false);
       setEditingOrder(null);
@@ -2010,8 +1953,8 @@ export default function OrdersOffersView({
   </tbody>
   <tfoot>
     <tr style="background-color:#f1f5f9; font-weight:bold; border-top:2px solid #cbd5e1; color:#0f172a;">
-      <td colspan="3" style="padding:12px; text-align:right; border-right:1px solid #e2e8f0; text-transform:uppercase; font-size:11px;">Grand Total Value:</td>
-      <td style="padding:12px; text-align:right; font-size:14px; font-family:monospace; color:#0f172a;">₹${(order.totalValue || 0).toLocaleString()}</td>
+      <td colspan="3" style="padding:12px; text-align:right; border-right:1px solid #e2e8f0; text-transform:uppercase; font-size:11px;">Grand Total Order Amount:</td>
+      <td style="padding:12px; text-align:right; font-size:14px; font-family:monospace; color:#0f172a;">₹${getOrderTotalInvoiceAmount(order).toLocaleString()}</td>
     </tr>
   </tfoot>
 </table>`.trim();
@@ -2025,7 +1968,11 @@ export default function OrdersOffersView({
           phone: order.phone,
           billingAddress: order.billingAddress,
           status: order.status,
-          totalValue: order.totalValue,
+          grandTotalOrderAmount: getOrderTotalInvoiceAmount(order),
+          totalProductCost: order.totalProductCost ?? (order.items?.reduce((s, it) => s + (Number(it.amount) || (it.rate * it.quantity)), 0) || 0),
+          totalGstAmount: order.totalGstAmount ?? 0,
+          freightChargedInBill: parseFreightAmount(order.closedWonDetails?.freightChargedInBill),
+          totalValue: getOrderTotalInvoiceAmount(order),
           itemsList: itemsListString,
           itemsTable: itemsTableHtml,
           bankDetailsTable: bankDetailsTableHtml,
@@ -2043,6 +1990,7 @@ export default function OrdersOffersView({
           dispatchDate: order.closedWonDetails?.dispatchDate,
           dispatchLocation: order.closedWonDetails?.dispatchLocation,
           warehouseManagedBy: order.closedWonDetails?.warehouseManagedBy,
+          ...resolveWarehouseInfo(order.closedWonDetails?.warehouseManagedBy, warehouses),
           ...hierarchy,
         });
       };
@@ -3390,10 +3338,10 @@ export default function OrdersOffersView({
                           </div>
 
                           <div className="col-span-2 flex flex-col justify-center items-end gap-0.5 pr-1">
-                            <span className="text-[9px] font-bold text-slate-400 uppercase font-mono">Amount (Incl. GST)</span>
+                            <span className="text-[9px] font-bold text-slate-400 uppercase font-mono">Amount (Excl. GST)</span>
                             <div className="flex items-center gap-1">
                               <span className="text-[11px] font-bold text-indigo-900 font-mono">
-                                ₹{calculateItemTotalWithGst(item).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                ₹{((Number(item.quantity) || 0) * (Number(item.rate) || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </span>
                               <button
                                 type="button"
@@ -3451,47 +3399,53 @@ export default function OrdersOffersView({
                   </div>
                 </div>
 
-                {/* Total amount panel with GST breakdown */}
+                {/* Total amount panel with 4 aligned fields */}
                 {(() => {
                   const bd = getFormInvoiceBreakdown(newItems, newStatus, newFreightChargedInBill);
+                  const totalProductCost = bd.productsBaseTotal;
+                  const freightChargedInBill = bd.freightBase;
+                  const totalGstAmount = bd.productsGstTotal + bd.freightGst;
+                  const grandTotalOrderAmount = totalProductCost + totalGstAmount + freightChargedInBill;
+
                   return (
-                    <div className="bg-slate-100 p-3.5 rounded-xl border border-slate-200 mt-2 font-mono text-xs space-y-1.5">
-                      <div className="flex justify-between items-center text-slate-600">
-                        <span>Base Subtotal (Excl. Tax):</span>
-                        <span className="font-bold">₹{bd.productsBaseTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <div className="bg-slate-100 p-3.5 rounded-xl border border-slate-200 mt-2 font-mono text-xs space-y-2">
+                      <div className="flex justify-between items-center text-slate-700">
+                        <span className="font-semibold">1. Freight Charged in Bill:</span>
+                        <span className="font-bold font-mono">₹{freightChargedInBill.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                       </div>
 
-                      {/* Itemized GST Buckets per Rate */}
-                      {bd.gstBuckets.length > 0 && bd.gstBuckets.map((bucket) => (
-                        <div key={bucket.rate} className="flex justify-between items-center text-slate-600 pl-2 border-l-2 border-indigo-400">
-                          <span>Product GST @ {bucket.rate}% (Taxable Amt: ₹{bucket.productBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}):</span>
-                          <span className="font-bold text-indigo-700">₹{bucket.productGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                        </div>
-                      ))}
+                      <div className="flex justify-between items-center text-slate-700">
+                        <span className="font-semibold">2. Total Product Cost (Rate × Qty, Excl. GST):</span>
+                        <span className="font-bold font-mono text-slate-900">₹{totalProductCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
 
-                      {/* Freight Details and Max GST Rate */}
-                      {newStatus === "Closed Won" && bd.freightBase > 0 && (
-                        <div className="bg-emerald-50/90 p-2 rounded-lg border border-emerald-200/80 space-y-1 my-1.5">
-                          <div className="flex justify-between items-center text-emerald-800 font-sans">
-                            <span>Freight Charged in Bill:</span>
-                            <span className="font-bold font-mono">₹{bd.freightBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                          </div>
-                          <div className="flex justify-between items-center text-emerald-700 text-[11px] font-sans">
-                            <span>GST on Freight @ {bd.maxGstPercent}% (Max Product GST Rate):</span>
-                            <span className="font-bold font-mono">₹{bd.freightGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                          </div>
+                      {/* Itemized GST Buckets */}
+                      {bd.gstBuckets.length > 0 && (
+                        <div className="space-y-1 pl-2 border-l-2 border-indigo-400 text-[11px] text-slate-500 font-sans">
+                          {bd.gstBuckets.map((bucket) => (
+                            <div key={bucket.rate} className="flex justify-between items-center">
+                              <span>• Product GST @ {bucket.rate}% (Taxable: ₹{bucket.productBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}):</span>
+                              <span className="font-bold font-mono text-indigo-700">₹{bucket.productGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                          ))}
+                          {newStatus === "Closed Won" && freightChargedInBill > 0 && (
+                            <div className="flex justify-between items-center text-emerald-700">
+                              <span>• Freight GST @ {bd.maxGstPercent}% (Max Rate):</span>
+                              <span className="font-bold font-mono">₹{bd.freightGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                          )}
                         </div>
                       )}
 
-                      <div className="flex justify-between items-center text-slate-600 font-semibold border-t border-slate-200/80 pt-1">
-                        <span>Total GST Amount:</span>
-                        <span className="font-bold text-indigo-700">₹{(bd.productsGstTotal + bd.freightGst).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      <div className="flex justify-between items-center text-slate-700 font-semibold border-t border-slate-200/80 pt-1.5">
+                        <span>3. Total GST Amount (Items + Freight):</span>
+                        <span className="font-bold font-mono text-indigo-700">₹{totalGstAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                       </div>
 
-                      <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-300 pt-2 mt-1">
-                        <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
+                      <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-300 pt-2">
+                        <span className="uppercase tracking-tight">4. Grand Total Order Amount:</span>
                         <span className="text-indigo-900 font-black text-sm sm:text-base bg-white px-2.5 py-1 rounded border border-slate-200 shadow-2xs">
-                          ₹{bd.totalInvoiceAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ₹{grandTotalOrderAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </div>
                     </div>
@@ -4215,10 +4169,10 @@ export default function OrdersOffersView({
                           </div>
 
                           <div className="col-span-2 flex flex-col justify-center items-end gap-0.5 pr-1">
-                            <span className="text-[9px] font-bold text-slate-400 uppercase font-mono">Amount (Incl. GST)</span>
+                            <span className="text-[9px] font-bold text-slate-400 uppercase font-mono">Amount (Excl. GST)</span>
                             <div className="flex items-center gap-1">
                               <span className="text-[11px] font-bold text-amber-950 font-mono">
-                                ₹{calculateItemTotalWithGst(item).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                ₹{((Number(item.quantity) || 0) * (Number(item.rate) || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </span>
                               <button
                                 type="button"
@@ -4276,47 +4230,53 @@ export default function OrdersOffersView({
                   </div>
                 </div>
 
-                {/* Total amount panel with GST breakdown */}
+                {/* Total amount panel with 4 aligned fields */}
                 {(() => {
                   const bd = getFormInvoiceBreakdown(editItems, editStatus, editFreightChargedInBill);
+                  const totalProductCost = bd.productsBaseTotal;
+                  const freightChargedInBill = bd.freightBase;
+                  const totalGstAmount = bd.productsGstTotal + bd.freightGst;
+                  const grandTotalOrderAmount = totalProductCost + totalGstAmount + freightChargedInBill;
+
                   return (
-                    <div className="bg-slate-100 p-3.5 rounded-xl border border-slate-200 mt-2 font-mono text-xs space-y-1.5">
-                      <div className="flex justify-between items-center text-slate-600">
-                        <span>Base Subtotal (Excl. Tax):</span>
-                        <span className="font-bold">₹{bd.productsBaseTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <div className="bg-slate-100 p-3.5 rounded-xl border border-slate-200 mt-2 font-mono text-xs space-y-2">
+                      <div className="flex justify-between items-center text-slate-700">
+                        <span className="font-semibold">1. Freight Charged in Bill:</span>
+                        <span className="font-bold font-mono">₹{freightChargedInBill.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                       </div>
 
-                      {/* Itemized GST Buckets per Rate */}
-                      {bd.gstBuckets.length > 0 && bd.gstBuckets.map((bucket) => (
-                        <div key={bucket.rate} className="flex justify-between items-center text-slate-600 pl-2 border-l-2 border-amber-500">
-                          <span>Product GST @ {bucket.rate}% (Taxable Amt: ₹{bucket.productBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}):</span>
-                          <span className="font-bold text-amber-800">₹{bucket.productGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                        </div>
-                      ))}
+                      <div className="flex justify-between items-center text-slate-700">
+                        <span className="font-semibold">2. Total Product Cost (Rate × Qty, Excl. GST):</span>
+                        <span className="font-bold font-mono text-slate-900">₹{totalProductCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
 
-                      {/* Freight Details and Max GST Rate */}
-                      {editStatus === "Closed Won" && bd.freightBase > 0 && (
-                        <div className="bg-emerald-50/90 p-2 rounded-lg border border-emerald-200/80 space-y-1 my-1.5">
-                          <div className="flex justify-between items-center text-emerald-800 font-sans">
-                            <span>Freight Charged in Bill:</span>
-                            <span className="font-bold font-mono">₹{bd.freightBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                          </div>
-                          <div className="flex justify-between items-center text-emerald-700 text-[11px] font-sans">
-                            <span>GST on Freight @ {bd.maxGstPercent}% (Max Product GST Rate):</span>
-                            <span className="font-bold font-mono">₹{bd.freightGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                          </div>
+                      {/* Itemized GST Buckets */}
+                      {bd.gstBuckets.length > 0 && (
+                        <div className="space-y-1 pl-2 border-l-2 border-amber-500 text-[11px] text-slate-500 font-sans">
+                          {bd.gstBuckets.map((bucket) => (
+                            <div key={bucket.rate} className="flex justify-between items-center">
+                              <span>• Product GST @ {bucket.rate}% (Taxable: ₹{bucket.productBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}):</span>
+                              <span className="font-bold font-mono text-amber-800">₹{bucket.productGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                          ))}
+                          {editStatus === "Closed Won" && freightChargedInBill > 0 && (
+                            <div className="flex justify-between items-center text-emerald-700">
+                              <span>• Freight GST @ {bd.maxGstPercent}% (Max Rate):</span>
+                              <span className="font-bold font-mono">₹{bd.freightGst.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                          )}
                         </div>
                       )}
 
-                      <div className="flex justify-between items-center text-slate-600 font-semibold border-t border-slate-200/80 pt-1">
-                        <span>Total GST Amount:</span>
-                        <span className="font-bold text-amber-800">₹{(bd.productsGstTotal + bd.freightGst).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      <div className="flex justify-between items-center text-slate-700 font-semibold border-t border-slate-200/80 pt-1.5">
+                        <span>3. Total GST Amount (Items + Freight):</span>
+                        <span className="font-bold font-mono text-amber-800">₹{totalGstAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                       </div>
 
-                      <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-300 pt-2 mt-1">
-                        <span className="uppercase tracking-tight">GRAND TOTAL ORDER VALUE (INCL. GST) *:</span>
+                      <div className="flex justify-between items-center text-xs sm:text-sm font-black text-slate-900 border-t border-slate-300 pt-2">
+                        <span className="uppercase tracking-tight">4. Grand Total Order Amount:</span>
                         <span className="text-amber-950 font-black text-sm sm:text-base bg-white px-2.5 py-1 rounded border border-slate-200 shadow-2xs">
-                          ₹{bd.totalInvoiceAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ₹{grandTotalOrderAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </div>
                     </div>
@@ -5014,7 +4974,7 @@ export default function OrdersOffersView({
                 <h3 className="text-[10px] font-extrabold text-slate-400 uppercase font-mono tracking-wider mb-3">Order Terms & Assignment</h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50 border border-slate-150 rounded-xl p-4">
                   <div className="space-y-0.5">
-                    <span className="text-[9px] font-mono text-slate-400 uppercase block">Total Value</span>
+                    <span className="text-[9px] font-mono text-slate-400 uppercase block">Grand Total Order Amount</span>
                     <span className="text-sm font-extrabold text-slate-900 font-mono">
                       ₹{getOrderTotalInvoiceAmount(selectedOrderDetails).toLocaleString()}
                     </span>

@@ -4,8 +4,8 @@
  */
 
 import React, { useState, useEffect, useMemo } from "react";
-import { User, OrderOffer, Role, PaymentBank, EmailTemplate, PaymentDetails, PaymentReceiptRecord, BadDebtor, EmailSentLog, EmailSentStatusSummary, EmailDeliveryStatus } from "../types";
-import { saveLog, savePaymentDetails, saveBadDebtor, deleteBadDebtorDoc, saveEmailSentLog } from "../lib/firebaseService";
+import { User, OrderOffer, Role, PaymentBank, EmailTemplate, PaymentDetails, PaymentReceiptRecord, BadDebtor, EmailSentLog, EmailSentStatusSummary, EmailDeliveryStatus, DebitCreditNote } from "../types";
+import { saveLog, savePaymentDetails, saveBadDebtor, deleteBadDebtorDoc, saveEmailSentLog, saveDebitCreditNote, deleteDebitCreditNoteDoc } from "../lib/firebaseService";
 import { auth } from "../firebase";
 import { openOrDownloadDocument } from "../lib/googleDriveService";
 import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
@@ -61,7 +61,10 @@ import {
   Download,
   Clipboard,
   AlertCircle,
-  FileUp
+  FileUp,
+  Calculator,
+  PlusCircle,
+  MinusCircle
 } from "lucide-react";
 
 /**
@@ -85,6 +88,38 @@ export function formatEmailPreviewHtml(bodyStr: string): string {
 }
 
 /**
+ * Helper to calculate cumulative Dr/Cr Note effected amount for an order.
+ * A Credit Note decreases net amount customer owes (- amount).
+ * A Debit Note increases net amount customer owes (+ amount).
+ */
+export function getOrderDrCrEffectedAmount(
+  order: OrderOffer,
+  debitCreditNotes: DebitCreditNote[] = []
+): number {
+  if (!debitCreditNotes || debitCreditNotes.length === 0) return 0;
+  const invNo = (order.billingDetails?.invoiceNumber || "").trim().toLowerCase();
+  const orderId = (order.id || "").trim().toLowerCase();
+  const poNo = (order.closedWonDetails?.customerPoNumber || "").trim().toLowerCase();
+
+  return debitCreditNotes
+    .filter((note) => {
+      const noteOrderId = (note.orderId || "").trim().toLowerCase();
+      const noteInv = (note.invoiceNumber || "").trim().toLowerCase();
+      if (noteOrderId && noteOrderId === orderId) return true;
+      if (noteInv && invNo && noteInv === invNo) return true;
+      if (noteInv && poNo && noteInv === poNo) return true;
+      return false;
+    })
+    .reduce((sum, note) => {
+      if (note.effectedAmount !== undefined && !isNaN(note.effectedAmount)) {
+        return sum + note.effectedAmount;
+      }
+      const isCredit = note.noteType === "Credit Note" || note.type === "credit_note" || (note as any).type === "Credit Note";
+      return sum + (isCredit ? -Math.abs(note.amount || 0) : Math.abs(note.amount || 0));
+    }, 0);
+}
+
+/**
  * Helper to get payment details for any order, automatically synthesizing payment details for Bad Debtors
  */
 export function getPaymentDetailsForOrder(
@@ -96,7 +131,7 @@ export function getPaymentDetailsForOrder(
     const totalReceived =
       (bd.receipts || []).reduce((sum, r) => sum + (r.amount || 0), 0) ||
       (bd.amountReceived || 0);
-    const invoiceAmt = bd.invoiceAmount || (bd as any).orderAmount || order.totalValue || 0;
+    const invoiceAmt = bd.invoiceAmount || (bd as any).orderAmount || getOrderTotalInvoiceAmount(order);
     const pendingAmt = Math.max(0, invoiceAmt - totalReceived);
     const status =
       pendingAmt <= 0 && invoiceAmt > 0
@@ -122,14 +157,19 @@ export function getPaymentDetailsForOrder(
 }
 
 /**
- * Generates formatted HTML table for consolidated invoice details
+ * Generates formatted HTML table for consolidated invoice details including Dr/Cr column
  */
-export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], paymentDetailsList: PaymentDetails[]) {
+export function generateConsolidatedInvoiceTableHTML(
+  orders: OrderOffer[],
+  paymentDetailsList: PaymentDetails[],
+  debitCreditNotes: DebitCreditNote[] = []
+) {
   const rows = orders.map((o) => {
     const pDet = getPaymentDetailsForOrder(o, paymentDetailsList);
     const totalAmt = getOrderTotalInvoiceAmount(o);
+    const drCrAmt = getOrderDrCrEffectedAmount(o, debitCreditNotes);
     const receivedAmt = pDet ? pDet.amountReceived : 0;
-    const pendingAmt = pDet ? pDet.pendingAmount : Math.max(0, totalAmt - receivedAmt);
+    const pendingAmt = pDet ? pDet.pendingAmount : Math.max(0, (totalAmt + drCrAmt) - receivedAmt);
     const actualDispatchDate = getOrderActualDispatchDate(o);
     const dueInfo = o.isBadDebtor && o.badDebtorRecord
       ? {
@@ -145,6 +185,12 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
     const poNum = o.closedWonDetails?.customerPoNumber || "N/A";
     const dispDate = actualDispatchDate ? formatDate(actualDispatchDate) : "N/A";
     const dueDateColor = dueInfo.isOverdue ? "#dc2626" : "#1e293b";
+    const drCrFormatted = drCrAmt === 0
+      ? "₹0"
+      : drCrAmt > 0
+      ? `+₹${formatIndianNumber(drCrAmt)}`
+      : `-₹${formatIndianNumber(Math.abs(drCrAmt))}`;
+    const drCrColor = drCrAmt > 0 ? "#15803d" : drCrAmt < 0 ? "#b91c1c" : "#64748b";
 
     return `<tr style="background-color:#ffffff;">` +
       `<td style="padding:10px 12px; border:1px solid #cbd5e1; font-family:monospace; font-weight:bold; color:#0f172a; text-align:left;">${invNum}</td>` +
@@ -153,6 +199,7 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
       `<td style="padding:10px 12px; border:1px solid #cbd5e1; font-family:monospace; font-weight:bold; color:${dueDateColor}; text-align:left;">${dueInfo.dueDateFormatted}</td>` +
       `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; color:#0f172a;">₹${formatIndianNumber(totalAmt)}</td>` +
       `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; color:#166534; font-weight:bold;">₹${formatIndianNumber(receivedAmt)}</td>` +
+      `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; font-weight:bold; color:${drCrColor};">${drCrFormatted}</td>` +
       `<td style="padding:10px 12px; border:1px solid #cbd5e1; text-align:right; font-family:monospace; font-weight:800; color:#dc2626;">₹${formatIndianNumber(pendingAmt)}</td>` +
     `</tr>`;
   }).join("");
@@ -162,12 +209,23 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
     const p = getPaymentDetailsForOrder(o, paymentDetailsList);
     return sum + (p ? p.amountReceived : 0);
   }, 0);
+  const grandTotalDrCr = orders.reduce((sum, o) => {
+    return sum + getOrderDrCrEffectedAmount(o, debitCreditNotes);
+  }, 0);
   const grandTotalPending = orders.reduce((sum, o) => {
     const p = getPaymentDetailsForOrder(o, paymentDetailsList);
     const tot = getOrderTotalInvoiceAmount(o);
+    const drCr = getOrderDrCrEffectedAmount(o, debitCreditNotes);
     const rec = p ? p.amountReceived : 0;
-    return sum + (p ? p.pendingAmount : Math.max(0, tot - rec));
+    return sum + (p ? p.pendingAmount : Math.max(0, (tot + drCr) - rec));
   }, 0);
+
+  const grandDrCrFormatted = grandTotalDrCr === 0
+    ? "₹0"
+    : grandTotalDrCr > 0
+    ? `+₹${formatIndianNumber(grandTotalDrCr)}`
+    : `-₹${formatIndianNumber(Math.abs(grandTotalDrCr))}`;
+  const grandDrCrColor = grandTotalDrCr > 0 ? "#15803d" : grandTotalDrCr < 0 ? "#b91c1c" : "#64748b";
 
   const tableHtml = `<div style="margin:16px 0; overflow-x:auto;">` +
     `<table border="0" cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif; font-size:12px; border:1px solid #047857; background-color:#ffffff; text-align:left;">` +
@@ -179,6 +237,7 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:left; color:#ffffff; background-color:#065f46;">DUE DATE</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:right; color:#ffffff; background-color:#065f46;">INVOICE AMOUNT</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:right; color:#ffffff; background-color:#065f46;">PAYMENT RECEIVED</th>` +
+          `<th style="padding:10px 12px; border:1px solid #047857; text-align:right; color:#ffffff; background-color:#065f46;">DR/CR AMOUNT</th>` +
           `<th style="padding:10px 12px; border:1px solid #047857; text-align:right; color:#ffffff; background-color:#065f46;">PENDING AMOUNT</th>` +
         `</tr>` +
       `</thead>` +
@@ -188,6 +247,7 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
           `<td colspan="4" style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#065f46; font-weight:bold;">CONSOLIDATED OUTSTANDING TOTAL:</td>` +
           `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#0f172a; font-family:monospace; font-weight:bold;">₹${formatIndianNumber(grandTotalValue)}</td>` +
           `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#166534; font-family:monospace; font-weight:bold;">₹${formatIndianNumber(grandTotalReceived)}</td>` +
+          `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:${grandDrCrColor}; font-family:monospace; font-weight:bold;">${grandDrCrFormatted}</td>` +
           `<td style="padding:10px 12px; border:1px solid #a7f3d0; text-align:right; color:#dc2626; font-family:monospace; font-size:13px; font-weight:800;">₹${formatIndianNumber(grandTotalPending)}</td>` +
         `</tr>` +
       `</tbody>` +
@@ -200,16 +260,18 @@ export function generateConsolidatedInvoiceTableHTML(orders: OrderOffer[], payme
 /**
  * Helper to check if an order is 100% fully paid
  */
-export function isOrderFullyPaid(order: OrderOffer, pDetails?: PaymentDetails): boolean {
-  const totalAmt = order.totalValue || 0;
+export function isOrderFullyPaid(order: OrderOffer, pDetails?: PaymentDetails, debitCreditNotes: DebitCreditNote[] = []): boolean {
+  const totalAmt = getOrderTotalInvoiceAmount(order);
+  const drCrAmt = getOrderDrCrEffectedAmount(order, debitCreditNotes);
+  const effectiveTotal = totalAmt + drCrAmt;
   const receivedAmt = pDetails ? pDetails.amountReceived : 0;
-  const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt - receivedAmt);
+  const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, effectiveTotal - receivedAmt);
   const status = (pDetails?.paymentStatus || "").toLowerCase();
 
   if (status.includes("fully") || status === "paid") {
     return true;
   }
-  if (totalAmt > 0 && receivedAmt >= totalAmt) {
+  if (effectiveTotal > 0 && receivedAmt >= effectiveTotal) {
     return true;
   }
   if (pDetails && pendingAmt <= 0 && receivedAmt > 0) {
@@ -307,6 +369,7 @@ interface PaymentListViewProps {
   users: User[];
   orders: OrderOffer[];
   badDebtors?: BadDebtor[];
+  debitCreditNotes?: DebitCreditNote[];
   onEditOrder: (order: OrderOffer) => void;
   paymentBanks?: PaymentBank[];
   visibleSubTabs?: { [key: string]: string[] };
@@ -323,6 +386,7 @@ export default function PaymentListView({
   users,
   orders = [],
   badDebtors = [],
+  debitCreditNotes = [],
   onEditOrder,
   paymentBanks = [],
   visibleSubTabs,
@@ -441,6 +505,35 @@ export default function PaymentListView({
     comments: "",
   });
   const [isSavingBadDebtorPayment, setIsSavingBadDebtorPayment] = useState(false);
+
+  // Dr/Cr Note tab states & form
+  const [drCrSearchTerm, setDrCrSearchTerm] = useState("");
+  const [drCrTypeFilter, setDrCrTypeFilter] = useState<"all" | "debit_note" | "credit_note">("all");
+  const [drCrEditingId, setDrCrEditingId] = useState<string | null>(null);
+  const [isSavingDrCrNote, setIsSavingDrCrNote] = useState(false);
+  const [drCrForm, setDrCrForm] = useState<{
+    entryDate: string;
+    tallyDate: string;
+    type: "debit_note" | "credit_note";
+    noteNumber: string;
+    orderId: string;
+    invoiceNumber: string;
+    companyName: string;
+    clientName: string;
+    amount: string;
+    reason: string;
+  }>({
+    entryDate: new Date().toISOString().split("T")[0],
+    tallyDate: new Date().toISOString().split("T")[0],
+    type: "debit_note",
+    noteNumber: "",
+    orderId: "",
+    invoiceNumber: "",
+    companyName: "",
+    clientName: "",
+    amount: "",
+    reason: "",
+  });
 
   const [badDebtorForm, setBadDebtorForm] = useState<{
     companyName: string;
@@ -724,7 +817,7 @@ export default function PaymentListView({
 
         const updatedReceipts = [...existingReceipts, ...newReceipts];
         const totalReceived = updatedReceipts.reduce((sum, rec) => sum + (rec.amount || 0), 0);
-        const orderTotal = order.totalValue || 0;
+        const orderTotal = getOrderTotalInvoiceAmount(order);
         const pendAmt = Math.max(0, orderTotal - totalReceived);
 
         let autoStatus: "Unpaid" | "Partial paid" | "Fully paid" = "Unpaid";
@@ -828,7 +921,7 @@ export default function PaymentListView({
   // Base list calculations (checking fully paid status)
   const checkFullyPaid = (order: OrderOffer) => {
     const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
-    return isOrderFullyPaid(order, pDetails);
+    return isOrderFullyPaid(order, pDetails, debitCreditNotes);
   };
 
   // Helper to check if an order's payment due status is today or overdue (1 or more days)
@@ -839,12 +932,12 @@ export default function PaymentListView({
     return dueInfo.daysRemaining !== null && dueInfo.daysRemaining <= 0;
   };
 
-  const debtorsBase = useMemo(() => mappedOrders.filter((o) => !checkFullyPaid(o)), [mappedOrders, paymentDetailsList]);
+  const debtorsBase = useMemo(() => mappedOrders.filter((o) => !checkFullyPaid(o)), [mappedOrders, paymentDetailsList, debitCreditNotes]);
   const reminderBase = useMemo(
     () => mappedOrders.filter((o) => !checkFullyPaid(o) && isOrderDueTodayOrOverdue(o)),
-    [mappedOrders, paymentDetailsList]
+    [mappedOrders, paymentDetailsList, debitCreditNotes]
   );
-  const fullyPaidBase = useMemo(() => mappedOrders.filter((o) => checkFullyPaid(o)), [mappedOrders, paymentDetailsList]);
+  const fullyPaidBase = useMemo(() => mappedOrders.filter((o) => checkFullyPaid(o)), [mappedOrders, paymentDetailsList, debitCreditNotes]);
 
   // Helper to build party-wise consolidated structures
   const buildPartyMap = (ordersList: OrderOffer[]) => {
@@ -857,6 +950,7 @@ export default function PaymentListView({
       orders: OrderOffer[];
       totalOrderValue: number;
       totalReceivedAmount: number;
+      totalDrCrAmount: number;
       totalPendingAmount: number;
       invoiceCount: number;
       oldestDueDateFormatted: string;
@@ -871,8 +965,9 @@ export default function PaymentListView({
 
       const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
       const totalAmt = getOrderTotalInvoiceAmount(order);
+      const drCrAmt = getOrderDrCrEffectedAmount(order, debitCreditNotes);
       const receivedAmt = pDetails ? pDetails.amountReceived : 0;
-      const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt - receivedAmt);
+      const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, (totalAmt + drCrAmt) - receivedAmt);
       const actualDispatchDate = getOrderActualDispatchDate(order);
       const dueInfo = order.isBadDebtor && order.badDebtorRecord
         ? {
@@ -894,6 +989,7 @@ export default function PaymentListView({
           orders: [order],
           totalOrderValue: totalAmt,
           totalReceivedAmount: receivedAmt,
+          totalDrCrAmount: drCrAmt,
           totalPendingAmount: pendingAmt,
           invoiceCount: 1,
           oldestDueDateFormatted: dueInfo.dueDateFormatted,
@@ -905,6 +1001,7 @@ export default function PaymentListView({
         item.orders.push(order);
         item.totalOrderValue += totalAmt;
         item.totalReceivedAmount += receivedAmt;
+        item.totalDrCrAmount += drCrAmt;
         item.totalPendingAmount += pendingAmt;
         item.invoiceCount += 1;
         if (!item.email && order.email) item.email = order.email;
@@ -926,7 +1023,7 @@ export default function PaymentListView({
   // Debtors party-wise consolidation (all unpaid invoices)
   const consolidatedDebtorParties = useMemo(
     () => buildPartyMap(debtorsBase),
-    [debtorsBase, paymentDetailsList]
+    [debtorsBase, paymentDetailsList, debitCreditNotes]
   );
 
   // Helper: Convert Bad Debtors to OrderOffer compatible format for Reminder subtabs
@@ -949,7 +1046,9 @@ export default function PaymentListView({
           phone: bd.phone || "",
           billingAddress: "",
           status: "Closed Won" as const,
-          totalValue: invAmt,
+          totalProductCost: invAmt,
+          totalGstAmount: 0,
+          grandTotalOrderAmount: invAmt,
           items: [{
             id: `item-${bd.id}`,
             productName: `Bad Debt Invoice #${bd.invoiceNumber}`,
@@ -1033,6 +1132,7 @@ export default function PaymentListView({
   const allSubTabs = [
     { id: "debtors", label: "Debtors", icon: FileText, count: consolidatedDebtorParties.length },
     { id: "bad_debtors", label: "Bad Debtors", icon: AlertTriangle, count: (badDebtors || []).length },
+    { id: "dr_cr_notes", label: "Dr/Cr Note", icon: Calculator, count: (debitCreditNotes || []).length },
     { id: "payment_reminder", label: "Payment Reminder", icon: BellRing, count: reminderBaseWithBadDebtors.length },
     { id: "payment_reminder_consolidated", label: "Payment Reminder Consolidated", icon: Layers, count: consolidatedReminderParties.length },
     { id: "fully_paid", label: "Fully Paid", icon: CheckCircle2, count: fullyPaidBase.length },
@@ -1040,8 +1140,13 @@ export default function PaymentListView({
 
   const visibleTabsForPayment = visibleSubTabs?.["payment_list"] || allSubTabs.map((t) => t.id);
   const filteredSubTabs = useMemo(() => {
-    return allSubTabs.filter((t) => visibleTabsForPayment.includes(t.id));
-  }, [JSON.stringify(visibleTabsForPayment), reminderBaseWithBadDebtors.length, badDebtors.length, consolidatedDebtorParties.length, consolidatedReminderParties.length, fullyPaidBase.length]);
+    return allSubTabs.filter((t) => {
+      if (t.id === "dr_cr_notes") {
+        return visibleTabsForPayment.includes("dr_cr_notes") || visibleTabsForPayment.includes("dr_cr_note");
+      }
+      return visibleTabsForPayment.includes(t.id);
+    });
+  }, [JSON.stringify(visibleTabsForPayment), reminderBaseWithBadDebtors.length, badDebtors.length, (debitCreditNotes || []).length, consolidatedDebtorParties.length, consolidatedReminderParties.length, fullyPaidBase.length]);
 
   const [activeSubTab, setActiveSubTab] = useState<string>(filteredSubTabs[0]?.id || "debtors");
 
@@ -2371,6 +2476,125 @@ export default function PaymentListView({
     }
   };
 
+  // Save / Update Dr/Cr Note
+  const handleSaveDrCrNote = async () => {
+    if (!drCrForm.noteNumber.trim()) {
+      alert("Please enter Dr/Cr Note Number.");
+      return;
+    }
+    const amt = parseFloat(drCrForm.amount) || 0;
+    if (amt <= 0) {
+      alert("Please enter a valid amount greater than 0.");
+      return;
+    }
+
+    setIsSavingDrCrNote(true);
+    try {
+      const noteId = drCrEditingId || `drcr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const isCredit = drCrForm.type === "credit_note" || drCrForm.type === "Credit Note";
+      const noteType: "Debit Note" | "Credit Note" = isCredit ? "Credit Note" : "Debit Note";
+      const effectedAmount = isCredit ? -Math.abs(amt) : Math.abs(amt);
+
+      const noteDoc: DebitCreditNote = {
+        id: noteId,
+        entryDate: drCrForm.entryDate || new Date().toISOString().split("T")[0],
+        tallyDate: drCrForm.tallyDate || new Date().toISOString().split("T")[0],
+        noteType: noteType,
+        type: isCredit ? "credit_note" : "debit_note",
+        noteNumber: drCrForm.noteNumber.trim(),
+        orderId: drCrForm.orderId || undefined,
+        invoiceNumber: drCrForm.invoiceNumber.trim() || "",
+        companyName: drCrForm.companyName.trim() || "",
+        clientName: drCrForm.clientName.trim() || undefined,
+        amount: amt,
+        effectedAmount: effectedAmount,
+        reason: drCrForm.reason.trim() || undefined,
+        createdByUserId: activeUser.id,
+        createdByUserName: activeUser.name,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await saveDebitCreditNote(noteDoc);
+
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Create Order",
+        targetType: "Order",
+        targetId: noteId,
+        targetName: `${drCrForm.type} #${drCrForm.noteNumber}`,
+        details: `${drCrEditingId ? "Updated" : "Added"} ${drCrForm.type} #${drCrForm.noteNumber}: Amount=₹${formatIndianNumber(amt)}, Effected Amount=${effectedAmount > 0 ? "+" : ""}₹${formatIndianNumber(effectedAmount)}`,
+      });
+
+      setPaymentSaveSuccess(`${drCrForm.type} #${drCrForm.noteNumber} saved successfully.`);
+      setTimeout(() => setPaymentSaveSuccess(null), 4000);
+
+      setDrCrEditingId(null);
+      setDrCrForm({
+        tallyDate: new Date().toISOString().split("T")[0],
+        type: "Debit Note",
+        noteNumber: "",
+        orderId: "",
+        invoiceNumber: "",
+        companyName: "",
+        clientName: "",
+        amount: "",
+        reason: "",
+      });
+    } catch (err: any) {
+      console.error("Error saving Dr/Cr note:", err);
+      alert(`Failed to save Dr/Cr Note: ${err.message || "Please check connection."}`);
+    } finally {
+      setIsSavingDrCrNote(false);
+    }
+  };
+
+  // Delete Dr/Cr Note
+  const handleDeleteDrCrNote = async (id: string, noteNumber: string) => {
+    if (!window.confirm(`Are you sure you want to delete Dr/Cr note #${noteNumber}?`)) {
+      return;
+    }
+
+    try {
+      await deleteDebitCreditNoteDoc(id);
+      if (drCrEditingId === id) {
+        setDrCrEditingId(null);
+        setDrCrForm({
+          entryDate: new Date().toISOString().split("T")[0],
+          tallyDate: new Date().toISOString().split("T")[0],
+          type: "debit_note",
+          noteNumber: "",
+          orderId: "",
+          invoiceNumber: "",
+          companyName: "",
+          clientName: "",
+          amount: "",
+          reason: "",
+        });
+      }
+      await saveLog({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        actionType: "Delete Order",
+        targetType: "DebitCreditNote",
+        targetId: id,
+        targetName: noteNumber,
+        details: `Deleted Dr/Cr Note #${noteNumber}`,
+      });
+
+      setPaymentSaveSuccess(`Dr/Cr note #${noteNumber} deleted.`);
+      setTimeout(() => setPaymentSaveSuccess(null), 4000);
+    } catch (err: any) {
+      console.error("Error deleting Dr/Cr note:", err);
+      alert(`Failed to delete Dr/Cr Note: ${err.message || "Please check connection."}`);
+    }
+  };
+
   if (!teamCanView) {
     return (
       <div className="bg-white border border-slate-200 rounded-lg p-8 text-center max-w-2xl mx-auto my-12 shadow-sm">
@@ -3161,6 +3385,463 @@ export default function PaymentListView({
           )}
         </div>
       )}
+
+      {/* SUB-TAB: DR/CR NOTE */}
+      {activeSubTab === "dr_cr_notes" && (
+        <div className="space-y-6">
+          {/* Top KPI Banner */}
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Notes</p>
+                <p className="text-xl font-black font-mono text-slate-900 mt-1">{debitCreditNotes.length}</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Debit & Credit Notes</p>
+              </div>
+              <div className="p-3 bg-slate-100 text-slate-700 rounded-xl">
+                <Calculator size={20} />
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Debit Notes (+)</p>
+                <p className="text-xl font-black font-mono text-amber-600 mt-1">
+                  ₹{formatIndianNumber(debitCreditNotes.filter(n => n.noteType === "Debit Note" || n.type === "debit_note" || (n as any).type === "Debit Note").reduce((sum, n) => sum + (n.amount || 0), 0))}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Increases customer pending balance</p>
+              </div>
+              <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
+                <PlusCircle size={20} />
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Total Credit Notes (-)</p>
+                <p className="text-xl font-black font-mono text-emerald-600 mt-1">
+                  ₹{formatIndianNumber(debitCreditNotes.filter(n => n.noteType === "Credit Note" || n.type === "credit_note" || (n as any).type === "Credit Note").reduce((sum, n) => sum + (n.amount || 0), 0))}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Decreases customer pending balance</p>
+              </div>
+              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
+                <MinusCircle size={20} />
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200/85 shadow-2xs flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-slate-400">Net Effected Amount</p>
+                {(() => {
+                  const net = debitCreditNotes.reduce((sum, n) => sum + (n.effectedAmount || 0), 0);
+                  return (
+                    <p className={`text-xl font-black font-mono mt-1 ${net > 0 ? "text-amber-600" : net < 0 ? "text-emerald-600" : "text-slate-700"}`}>
+                      {net > 0 ? `+₹${formatIndianNumber(net)}` : net < 0 ? `-₹${formatIndianNumber(Math.abs(net))}` : "₹0"}
+                    </p>
+                  );
+                })()}
+                <p className="text-[10px] text-slate-500 mt-0.5">Overall balance adjustment</p>
+              </div>
+              <div className="p-3 bg-blue-50 text-blue-600 rounded-xl">
+                <FileText size={20} />
+              </div>
+            </div>
+          </div>
+
+          {/* Form & Table Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Form Column */}
+            <div className="lg:col-span-1 bg-white border border-slate-200/85 rounded-2xl p-5 shadow-xs h-fit space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <h3 className="text-xs font-mono uppercase font-black text-slate-800 flex items-center gap-2">
+                  <Calculator size={16} className="text-emerald-600" />
+                  <span>{drCrEditingId ? "Edit Dr/Cr Note" : "New Dr/Cr Note"}</span>
+                </h3>
+                {drCrEditingId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDrCrEditingId(null);
+                      setDrCrForm({
+                        tallyDate: new Date().toISOString().split("T")[0],
+                        type: "Debit Note",
+                        noteNumber: "",
+                        orderId: "",
+                        invoiceNumber: "",
+                        companyName: "",
+                        clientName: "",
+                        amount: "",
+                        reason: "",
+                      });
+                    }}
+                    className="text-[11px] text-slate-500 hover:text-slate-800 underline font-mono cursor-pointer"
+                  >
+                    Reset Form
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-3.5 text-xs font-sans">
+                {/* Entry Date (Auto Readonly) */}
+                <div>
+                  <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                    Entry Date <span className="text-slate-400 font-normal">(Auto Readonly)</span>
+                  </label>
+                  <input
+                    type="text"
+                    readOnly
+                    value={new Date().toISOString().split("T")[0]}
+                    className="w-full bg-slate-100/80 border border-slate-200 rounded-xl px-3 py-2 font-mono text-slate-600 cursor-not-allowed select-none"
+                  />
+                </div>
+
+                {/* Tally Date */}
+                <div>
+                  <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                    Tally Date *
+                  </label>
+                  <input
+                    type="date"
+                    value={drCrForm.tallyDate}
+                    onChange={(e) => setDrCrForm(prev => ({ ...prev, tallyDate: e.target.value }))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-mono text-slate-800 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+
+                {/* Type (Dropdown) */}
+                <div>
+                  <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                    Debit/Credit Note Type *
+                  </label>
+                  <select
+                    value={drCrForm.type}
+                    onChange={(e) => setDrCrForm(prev => ({ ...prev, type: e.target.value as "Debit Note" | "Credit Note" }))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-bold text-slate-800 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                  >
+                    <option value="Debit Note">Debit Note (Increases Outstanding)</option>
+                    <option value="Credit Note">Credit Note (Decreases Outstanding)</option>
+                  </select>
+                </div>
+
+                {/* Dr/Cr Number */}
+                <div>
+                  <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                    Dr/Cr Number *
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. DN-2025-001 or CN-2025-001"
+                    value={drCrForm.noteNumber}
+                    onChange={(e) => setDrCrForm(prev => ({ ...prev, noteNumber: e.target.value }))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-mono font-bold text-slate-800 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+
+                {/* Select Order / Invoice Link */}
+                <div>
+                  <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                    Link to Invoice / Order
+                  </label>
+                  <select
+                    value={drCrForm.orderId}
+                    onChange={(e) => {
+                      const selectedOrderId = e.target.value;
+                      const matchedOrder = mappedOrders.find(o => o.id === selectedOrderId);
+                      if (matchedOrder) {
+                        setDrCrForm(prev => ({
+                          ...prev,
+                          orderId: matchedOrder.id,
+                          invoiceNumber: matchedOrder.billingDetails?.invoiceNumber || "",
+                          companyName: matchedOrder.companyName || "",
+                          clientName: matchedOrder.clientName || "",
+                        }));
+                      } else {
+                        setDrCrForm(prev => ({
+                          ...prev,
+                          orderId: "",
+                        }));
+                      }
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                  >
+                    <option value="">-- General / Manual Party --</option>
+                    {mappedOrders.map(o => (
+                      <option key={o.id} value={o.id}>
+                        {o.billingDetails?.invoiceNumber || o.id} - {o.companyName || o.clientName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Company Name & Invoice Number */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                      Company Name
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Company Name"
+                      value={drCrForm.companyName}
+                      onChange={(e) => setDrCrForm(prev => ({ ...prev, companyName: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                      Invoice #
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. INV-2025-001"
+                      value={drCrForm.invoiceNumber}
+                      onChange={(e) => setDrCrForm(prev => ({ ...prev, invoiceNumber: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-mono text-xs text-slate-800 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Amount */}
+                <div>
+                  <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                    Amount (₹) *
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Enter amount"
+                    value={drCrForm.amount}
+                    onChange={(e) => setDrCrForm(prev => ({ ...prev, amount: e.target.value }))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-mono font-black text-slate-900 text-sm outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+
+                {/* Effected Amount (Readonly Info) */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1">
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <span className="font-extrabold uppercase text-slate-500">Effected Amount:</span>
+                    {(() => {
+                      const num = parseFloat(drCrForm.amount) || 0;
+                      const eff = drCrForm.type === "Credit Note" ? -num : num;
+                      return (
+                        <span className={`font-black text-xs ${eff > 0 ? "text-amber-600" : eff < 0 ? "text-emerald-600" : "text-slate-400"}`}>
+                          {eff > 0 ? `+₹${formatIndianNumber(eff)}` : eff < 0 ? `-₹${formatIndianNumber(Math.abs(eff))}` : "₹0"}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <p className="text-[10px] text-slate-500 italic leading-snug">
+                    {drCrForm.type === "Credit Note"
+                      ? "A credit note decreases the net amount your customer owes on the total invoice value."
+                      : "A debit note increases the net amount your customer owes on the total invoice value."}
+                  </p>
+                </div>
+
+                {/* Reason / Remarks */}
+                <div>
+                  <label className="block text-[10px] font-mono uppercase font-bold text-slate-500 mb-1">
+                    Reason / Remarks
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Reason for debit/credit note"
+                    value={drCrForm.reason}
+                    onChange={(e) => setDrCrForm(prev => ({ ...prev, reason: e.target.value }))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+
+                {/* Save Button */}
+                <button
+                  type="button"
+                  disabled={isSavingDrCrNote}
+                  onClick={handleSaveDrCrNote}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-mono font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingDrCrNote ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin text-white" />
+                      <span>Saving Dr/Cr Note...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check size={14} />
+                      <span>{drCrEditingId ? "Update Dr/Cr Note" : "Save Dr/Cr Note"}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Table Column */}
+            <div className="lg:col-span-2 space-y-4">
+              {/* Search & Type Filter Bar */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 border border-slate-200/85 rounded-xl shadow-xs">
+                <div className="relative flex-1 w-full">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search note number, invoice, company, client, or reason..."
+                    value={drCrSearchTerm}
+                    onChange={(e) => setDrCrSearchTerm(e.target.value)}
+                    className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <select
+                    value={drCrTypeFilter}
+                    onChange={(e) => setDrCrTypeFilter(e.target.value as any)}
+                    className="bg-slate-50 border border-slate-200 text-xs font-mono font-bold text-slate-800 rounded-xl px-3 py-2 outline-none cursor-pointer"
+                  >
+                    <option value="all">All Note Types</option>
+                    <option value="Debit Note">Debit Notes (+)</option>
+                    <option value="Credit Note">Credit Notes (-)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Table */}
+              {(() => {
+                const isNoteCredit = (n: DebitCreditNote) => n.noteType === "Credit Note" || n.type === "credit_note" || (n as any).type === "Credit Note";
+                const filteredNotes = debitCreditNotes.filter((note) => {
+                  if (drCrTypeFilter === "debit_note" && isNoteCredit(note)) return false;
+                  if (drCrTypeFilter === "credit_note" && !isNoteCredit(note)) return false;
+                  if (drCrTypeFilter === "Debit Note" && isNoteCredit(note)) return false;
+                  if (drCrTypeFilter === "Credit Note" && !isNoteCredit(note)) return false;
+                  if (!drCrSearchTerm.trim()) return true;
+                  const term = drCrSearchTerm.toLowerCase().trim();
+                  return (
+                    (note.noteNumber || "").toLowerCase().includes(term) ||
+                    (note.invoiceNumber || "").toLowerCase().includes(term) ||
+                    (note.companyName || "").toLowerCase().includes(term) ||
+                    (note.clientName || "").toLowerCase().includes(term) ||
+                    (note.reason || "").toLowerCase().includes(term)
+                  );
+                });
+
+                if (filteredNotes.length === 0) {
+                  return (
+                    <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center shadow-2xs">
+                      <Calculator size={36} className="mx-auto text-slate-300 mb-3" />
+                      <h3 className="text-sm font-bold text-slate-800">No Debit/Credit Notes Found</h3>
+                      <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                        {drCrSearchTerm
+                          ? "No Dr/Cr notes matched your search criteria."
+                          : "Use the form on the left to record your first Debit or Credit Note."}
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="bg-white border border-slate-200/85 rounded-2xl shadow-2xs overflow-hidden">
+                    <div className="overflow-x-auto scrollbar-thin">
+                      <table className="w-full text-left border-collapse min-w-[750px]">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-200/85 text-[10px] font-mono uppercase text-slate-500 font-bold tracking-wider">
+                            <th className="py-3 px-3 w-8 text-center">#</th>
+                            <th className="py-3 px-3">Entry Date</th>
+                            <th className="py-3 px-3">Tally Date</th>
+                            <th className="py-3 px-3">Type</th>
+                            <th className="py-3 px-3">Dr/Cr Number</th>
+                            <th className="py-3 px-3">Invoice / Party</th>
+                            <th className="py-3 px-3 text-right">Amount</th>
+                            <th className="py-3 px-3 text-right">Effected Amount</th>
+                            <th className="py-3 px-3">Reason</th>
+                            <th className="py-3 px-3 text-center">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-xs font-sans">
+                          {filteredNotes.map((note, idx) => {
+                            const isCredit = note.noteType === "Credit Note" || note.type === "credit_note" || (note as any).type === "Credit Note";
+                            const eff = note.effectedAmount;
+
+                            return (
+                              <tr key={note.id} className="hover:bg-slate-50/70 transition-colors">
+                                <td className="py-3 px-3 text-center font-mono text-slate-400 font-semibold">{idx + 1}</td>
+                                <td className="py-3 px-3 font-mono text-[11px] text-slate-600">
+                                  {formatDate(note.entryDate)}
+                                </td>
+                                <td className="py-3 px-3 font-mono text-[11px] text-slate-800 font-semibold">
+                                  {formatDate(note.tallyDate)}
+                                </td>
+                                <td className="py-3 px-3">
+                                  <span className={`inline-flex items-center gap-1 text-[10px] font-mono font-extrabold uppercase px-2 py-0.5 rounded border ${
+                                    isCredit
+                                      ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                                      : "bg-amber-50 text-amber-800 border-amber-200"
+                                  }`}>
+                                    {isCredit ? <MinusCircle size={10} /> : <PlusCircle size={10} />}
+                                    {note.type}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3 font-mono font-bold text-slate-900">
+                                  {note.noteNumber}
+                                </td>
+                                <td className="py-3 px-3">
+                                  <p className="font-bold text-slate-800">{note.companyName || note.clientName || "General"}</p>
+                                  {note.invoiceNumber && (
+                                    <p className="text-[10px] font-mono text-slate-500">Inv #{note.invoiceNumber}</p>
+                                  )}
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
+                                  ₹{formatIndianNumber(note.amount)}
+                                </td>
+                                <td className={`py-3 px-3 text-right font-mono font-black text-sm ${
+                                  eff > 0 ? "text-amber-600" : "text-emerald-600"
+                                }`}>
+                                  {eff > 0 ? `+₹${formatIndianNumber(eff)}` : `-₹${formatIndianNumber(Math.abs(eff))}`}
+                                </td>
+                                <td className="py-3 px-3 text-slate-600 max-w-[150px] truncate" title={note.reason || ""}>
+                                  {note.reason || <span className="text-slate-300 italic">No remarks</span>}
+                                </td>
+                                <td className="py-3 px-3 text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setDrCrEditingId(note.id);
+                                        setDrCrForm({
+                                          tallyDate: note.tallyDate,
+                                          type: note.type,
+                                          noteNumber: note.noteNumber,
+                                          orderId: note.orderId || "",
+                                          invoiceNumber: note.invoiceNumber || "",
+                                          companyName: note.companyName || "",
+                                          clientName: note.clientName || "",
+                                          amount: String(note.amount),
+                                          reason: note.reason || "",
+                                        });
+                                      }}
+                                      className="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all cursor-pointer"
+                                      title="Edit Note"
+                                    >
+                                      <Edit3 size={14} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteDrCrNote(note.id, note.noteNumber)}
+                                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
+                                      title="Delete Note"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeSubTab === "payment_reminder_consolidated" && (
         <div className="space-y-4">
           {/* Summary KPI Banner */}
@@ -3337,6 +4018,7 @@ export default function PaymentListView({
                       <th className="py-3 px-3 text-center">Pending Invoices</th>
                       <th className="py-3 px-4 text-right">Total Invoice Value</th>
                       <th className="py-3 px-4 text-right">Payment Received</th>
+                      <th className="py-3 px-4 text-right">Dr/Cr Amount</th>
                       <th className="py-3 px-4 text-right">Total Pending Outstanding</th>
                       <th className="py-3 px-3 text-center">Due Status</th>
                       <th className="py-3 px-4 text-center">Actions</th>
@@ -3412,6 +4094,9 @@ export default function PaymentListView({
                             <td className="py-3 px-4 text-right font-mono font-bold text-emerald-700">
                               ₹{formatIndianNumber(party.totalReceivedAmount)}
                             </td>
+                            <td className={`py-3 px-4 text-right font-mono font-bold ${party.totalDrCrAmount > 0 ? "text-amber-600" : party.totalDrCrAmount < 0 ? "text-emerald-600" : "text-slate-400"}`}>
+                              {party.totalDrCrAmount > 0 ? `+₹${formatIndianNumber(party.totalDrCrAmount)}` : party.totalDrCrAmount < 0 ? `-₹${formatIndianNumber(Math.abs(party.totalDrCrAmount))}` : "₹0"}
+                            </td>
                             <td className="py-3 px-4 text-right font-mono font-extrabold text-rose-600 text-sm">
                               ₹{formatIndianNumber(party.totalPendingAmount)}
                             </td>
@@ -3458,7 +4143,7 @@ export default function PaymentListView({
                           {/* Expanded Row: Invoice Breakdown & Template Table Live Preview */}
                           {isExpanded && (
                             <tr className="bg-slate-50/70 border-b border-slate-200">
-                              <td colSpan={11} className="p-4">
+                              <td colSpan={12} className="p-4">
                                 <div className="space-y-4 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
                                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
                                     <div className="flex items-center gap-2">
@@ -3487,6 +4172,7 @@ export default function PaymentListView({
                                           <th className="p-2.5">Due Date</th>
                                           <th className="p-2.5 text-right">Invoice Amount</th>
                                           <th className="p-2.5 text-right">Payment Received</th>
+                                          <th className="p-2.5 text-right">Dr/Cr Amount</th>
                                           <th className="p-2.5 text-right">Pending Amount</th>
                                           <th className="p-2.5 text-center">Invoice Link</th>
                                         </tr>
@@ -3496,7 +4182,8 @@ export default function PaymentListView({
                                           const pDet = getPaymentDetailsForOrder(o, paymentDetailsList);
                                           const tot = getOrderTotalInvoiceAmount(o);
                                           const rec = pDet ? pDet.amountReceived : 0;
-                                          const pend = pDet ? pDet.pendingAmount : Math.max(0, tot - rec);
+                                          const drCr = getOrderDrCrEffectedAmount(o, debitCreditNotes);
+                                          const pend = pDet ? pDet.pendingAmount : Math.max(0, (tot + drCr) - rec);
                                           const actualDispatchDate = getOrderActualDispatchDate(o);
                                           const due = o.isBadDebtor && o.badDebtorRecord
                                             ? {
@@ -3535,6 +4222,9 @@ export default function PaymentListView({
                                               </td>
                                               <td className="p-2.5 text-right font-mono">₹{formatIndianNumber(tot)}</td>
                                               <td className="p-2.5 text-right font-mono font-bold text-emerald-700">₹{formatIndianNumber(rec)}</td>
+                                              <td className={`p-2.5 text-right font-mono font-bold ${drCr > 0 ? "text-amber-600" : drCr < 0 ? "text-emerald-600" : "text-slate-400"}`}>
+                                                {drCr > 0 ? `+₹${formatIndianNumber(drCr)}` : drCr < 0 ? `-₹${formatIndianNumber(Math.abs(drCr))}` : "₹0"}
+                                              </td>
                                               <td className="p-2.5 text-right font-mono font-extrabold text-rose-600">₹{formatIndianNumber(pend)}</td>
                                               <td className="p-2.5 text-center">
                                                 {o.billingDetails?.invoiceFileUrl ? (
@@ -3947,6 +4637,7 @@ export default function PaymentListView({
                       <th className="p-4">Invoice # & PO</th>
                       <th className="p-4 text-right">Order Amount</th>
                       <th className="p-4 text-right">Amount Received</th>
+                      <th className="p-4 text-right">Dr/Cr Amount</th>
                       <th className="p-4 text-right">Pending Amount</th>
                       <th className="p-4">Actual Dispatch Date</th>
                       <th className="p-4">Payment Terms / Days</th>
@@ -3980,7 +4671,8 @@ export default function PaymentListView({
                       const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
                       const totalAmt = getOrderTotalInvoiceAmount(order);
                       const receivedAmt = pDetails ? pDetails.amountReceived : 0;
-                      const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt - receivedAmt);
+                      const drCrAmt = getOrderDrCrEffectedAmount(order, debitCreditNotes);
+                      const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, (totalAmt + drCrAmt) - receivedAmt);
 
                       return (
                         <tr
@@ -4053,6 +4745,11 @@ export default function PaymentListView({
                           {/* Amount Received */}
                           <td className="p-4 text-right font-mono font-bold text-emerald-700">
                             ₹{formatIndianNumber(receivedAmt)}
+                          </td>
+
+                          {/* Dr/Cr Amount */}
+                          <td className={`p-4 text-right font-mono font-bold ${drCrAmt > 0 ? "text-amber-600" : drCrAmt < 0 ? "text-emerald-600" : "text-slate-400"}`}>
+                            {drCrAmt > 0 ? `+₹${formatIndianNumber(drCrAmt)}` : drCrAmt < 0 ? `-₹${formatIndianNumber(Math.abs(drCrAmt))}` : "₹0"}
                           </td>
 
                           {/* Pending Amount */}
@@ -4529,7 +5226,7 @@ export default function PaymentListView({
                                             <tr className="bg-emerald-50/40 font-bold border-t border-emerald-100">
                                               <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
                                               <td className="p-2 text-right text-emerald-950 font-mono text-xs" colSpan={2}>
-                                                ₹{formatIndianNumber(order.totalValue || 0)}
+                                                ₹{formatIndianNumber(getOrderTotalInvoiceAmount(order))}
                                               </td>
                                             </tr>
                                           </tbody>
@@ -4603,7 +5300,7 @@ export default function PaymentListView({
                 <div>
                   <span className="text-slate-500 font-bold uppercase block text-[10px] tracking-wider truncate">Order Total</span>
                   <span className="text-slate-900 font-black text-xs sm:text-sm block mt-0.5">
-                    ₹{formatIndianNumber(getOrderTotalInvoiceAmount(editingPaymentOrder) || editingPaymentOrder.totalValue || 0)}
+                    ₹{formatIndianNumber(getOrderTotalInvoiceAmount(editingPaymentOrder))}
                   </span>
                 </div>
                 <div>
@@ -4738,7 +5435,7 @@ export default function PaymentListView({
                         onChange={(e) => {
                           const val = e.target.value;
                           const entryAmt = parseFloat(val) || 0;
-                          const total = getOrderTotalInvoiceAmount(editingPaymentOrder) || editingPaymentOrder.totalValue || 0;
+                          const total = getOrderTotalInvoiceAmount(editingPaymentOrder);
                           const existingSum = orderReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
                           const totalReceived = existingSum + entryAmt;
                           const calcPending = Math.max(0, total - totalReceived);
@@ -4806,7 +5503,7 @@ export default function PaymentListView({
                         onChange={(e) => {
                           const val = e.target.value;
                           const numVal = parseFloat(val) || 0;
-                          const total = getOrderTotalInvoiceAmount(editingPaymentOrder) || editingPaymentOrder.totalValue || 0;
+                          const total = getOrderTotalInvoiceAmount(editingPaymentOrder);
                           const calcPending = Math.max(0, total - numVal);
                           const calcEntry = Math.max(0, numVal - previousAmountReceived);
 

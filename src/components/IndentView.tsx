@@ -36,7 +36,7 @@ import {
   saveEmailSentLog,
 } from "../lib/firebaseService";
 import { auth } from "../firebase";
-import { replaceTemplateVars, resolveUserHierarchyInfo, formatEmailBodyForSending } from "../lib/templateUtils";
+import { replaceTemplateVars, resolveUserHierarchyInfo, resolveWarehouseInfo, formatEmailBodyForSending } from "../lib/templateUtils";
 import { dispatchSystemEmail } from "../lib/emailService";
 import { formatDate, getOrderTotalInvoiceAmount, calculateOrderTotalInvoiceBreakdown } from "../utils";
 import { EmailSentStatusCell } from "./EmailSentStatusCell";
@@ -283,7 +283,9 @@ export default function IndentView({
           phone: row.phone?.trim() || existingOrder.phone,
           billingAddress: row.billingAddress?.trim() || existingOrder.billingAddress,
           status: "Closed Won",
-          totalValue: totalVal || existingOrder.totalValue,
+          totalProductCost: totalVal || existingOrder.totalProductCost || existingOrder.grandTotalOrderAmount || 0,
+          totalGstAmount: existingOrder.totalGstAmount || 0,
+          grandTotalOrderAmount: totalVal || existingOrder.grandTotalOrderAmount || 0,
           billingDetails: {
             invoiceNumber: invNum,
             invoiceFileName: fileName,
@@ -326,7 +328,9 @@ export default function IndentView({
           phone: row.phone?.trim() || "+1 (555) 000-0000",
           billingAddress: row.billingAddress?.trim() || "",
           status: "Closed Won",
-          totalValue: totalVal,
+          totalProductCost: totalVal,
+          totalGstAmount: 0,
+          grandTotalOrderAmount: totalVal,
           items: itemsList,
           payment: "Advance Payment",
           delivery: "FOB",
@@ -514,24 +518,34 @@ export default function IndentView({
   const handleSaveLogistics = async (order: OrderOffer) => {
     setSavingLogisticsId(order.id);
     try {
+      const updatedClosedWonDetails = {
+        customerPoNumber: order.closedWonDetails?.customerPoNumber || "",
+        poDate: order.closedWonDetails?.poDate || "",
+        destinationAddress: order.closedWonDetails?.destinationAddress || "",
+        poAttachmentUrl: order.closedWonDetails?.poAttachmentUrl || "",
+        dispatchDate: getLogisticsValue(order, "dispatchDate"),
+        dispatchLocation: getLogisticsValue(order, "dispatchLocation"),
+        warehouseManagedBy: getLogisticsValue(order, "warehouseManagedBy"),
+        transporterName: getLogisticsValue(order, "transporterName"),
+        vehicleNo: getLogisticsValue(order, "vehicleNo"),
+        freightTerm: getLogisticsValue(order, "freightTerm"),
+        deliveryTerm: getLogisticsValue(order, "deliveryTerm"),
+        cartageLabourCharges: getLogisticsValue(order, "cartageLabourCharges"),
+        freightChargedInBill: getLogisticsValue(order, "freightChargedInBill"),
+        freightCostToAol: getLogisticsValue(order, "freightCostToAol"),
+      };
+
+      const breakdown = calculateOrderTotalInvoiceBreakdown({
+        ...order,
+        closedWonDetails: updatedClosedWonDetails,
+      });
+
       const updatedOrder: OrderOffer = {
         ...order,
-        closedWonDetails: {
-          customerPoNumber: order.closedWonDetails?.customerPoNumber || "",
-          poDate: order.closedWonDetails?.poDate || "",
-          destinationAddress: order.closedWonDetails?.destinationAddress || "",
-          poAttachmentUrl: order.closedWonDetails?.poAttachmentUrl || "",
-          dispatchDate: getLogisticsValue(order, "dispatchDate"),
-          dispatchLocation: getLogisticsValue(order, "dispatchLocation"),
-          warehouseManagedBy: getLogisticsValue(order, "warehouseManagedBy"),
-          transporterName: getLogisticsValue(order, "transporterName"),
-          vehicleNo: getLogisticsValue(order, "vehicleNo"),
-          freightTerm: getLogisticsValue(order, "freightTerm"),
-          deliveryTerm: getLogisticsValue(order, "deliveryTerm"),
-          cartageLabourCharges: getLogisticsValue(order, "cartageLabourCharges"),
-          freightChargedInBill: getLogisticsValue(order, "freightChargedInBill"),
-          freightCostToAol: getLogisticsValue(order, "freightCostToAol"),
-        },
+        grandTotalOrderAmount: breakdown.totalInvoiceAmount,
+        totalProductCost: breakdown.productsBaseTotal,
+        totalGstAmount: breakdown.productsGstTotal + breakdown.freightGst,
+        closedWonDetails: updatedClosedWonDetails,
       };
       await onEditOrder(updatedOrder);
       setEditingLogisticsOrderId(null);
@@ -593,7 +607,6 @@ export default function IndentView({
 
   const handleSaveProductDetails = async (order: OrderOffer) => {
     const items = productItemsForm[order.id] || order.items || [];
-    const computedTotal = items.reduce((sum, it) => sum + ((Number(it.quantity) || 0) * (Number(it.rate) || 0)), 0);
     const finalItems: OrderItem[] = items.map(it => ({
       ...it,
       quantity: Number(it.quantity) || 0,
@@ -601,12 +614,19 @@ export default function IndentView({
       amount: (Number(it.quantity) || 0) * (Number(it.rate) || 0)
     }));
 
+    const breakdown = calculateOrderTotalInvoiceBreakdown({
+      ...order,
+      items: finalItems,
+    });
+
     setSavingProductId(order.id);
     try {
       const updatedOrder: OrderOffer = {
         ...order,
         items: finalItems,
-        totalValue: computedTotal,
+        grandTotalOrderAmount: breakdown.totalInvoiceAmount,
+        totalProductCost: breakdown.productsBaseTotal,
+        totalGstAmount: breakdown.productsGstTotal + breakdown.freightGst,
       };
       await onEditOrder(updatedOrder);
       setProductSuccessId(order.id);
@@ -829,7 +849,10 @@ export default function IndentView({
               phone: order.phone || "",
               billingAddress: order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "",
               status: order.status,
-              totalValue: order.totalValue,
+              grandTotalOrderAmount: getOrderTotalInvoiceAmount(order),
+              totalProductCost: order.totalProductCost ?? (order.items?.reduce((s, it) => s + (Number(it.amount) || (it.rate * it.quantity)), 0) || 0),
+              totalGstAmount: order.totalGstAmount ?? 0,
+              totalValue: getOrderTotalInvoiceAmount(order),
               itemsList: itemsListString,
               invoiceNumber: invNum,
               invoiceFileLink: multiLinkString,
@@ -851,6 +874,7 @@ export default function IndentView({
               dispatchDate: order.closedWonDetails?.dispatchDate || "",
               dispatchLocation: order.closedWonDetails?.dispatchLocation || "",
               warehouseManagedBy: order.closedWonDetails?.warehouseManagedBy || "",
+              ...resolveWarehouseInfo(order.closedWonDetails?.warehouseManagedBy, warehouses),
               ...hierarchy,
             });
           };
@@ -1003,7 +1027,10 @@ export default function IndentView({
           phone: order.phone || "",
           billingAddress: order.billingAddress || (clients?.find(c => c.companyName === order.companyName && c.fullName === order.clientName)?.address) || (clients?.find(c => c.companyName === order.companyName)?.address) || "",
           status: order.status,
-          totalValue: order.totalValue,
+          grandTotalOrderAmount: getOrderTotalInvoiceAmount(order),
+          totalProductCost: order.totalProductCost ?? (order.items?.reduce((s, it) => s + (Number(it.amount) || (it.rate * it.quantity)), 0) || 0),
+          totalGstAmount: order.totalGstAmount ?? 0,
+          totalValue: getOrderTotalInvoiceAmount(order),
           itemsList: itemsListString,
           invoiceNumber: invNum,
           invoiceFileLink: fileUrl,
@@ -1025,12 +1052,13 @@ export default function IndentView({
           dispatchDate: order.closedWonDetails?.dispatchDate || "",
           dispatchLocation: order.closedWonDetails?.dispatchLocation || "",
           warehouseManagedBy: order.closedWonDetails?.warehouseManagedBy || "",
+          ...resolveWarehouseInfo(order.closedWonDetails?.warehouseManagedBy, warehouses),
           ...hierarchy,
         });
       };
 
       const subject = applyTemplate(template?.subject || `Invoice Notification: ${invNum} for ${order.companyName || order.clientName}`);
-      const rawBody = applyTemplate(template?.body || `Hello ${order.clientName},\n\nPlease find attached the invoice details for your order.\n\nInvoice Number: ${invNum}\nInvoice Link: ${fileUrl}\nTotal Value: ₹${order.totalValue?.toLocaleString()}\n\nThank you.`);
+      const rawBody = applyTemplate(template?.body || `Hello ${order.clientName},\n\nPlease find attached the invoice details for your order.\n\nInvoice Number: ${invNum}\nInvoice Link: ${fileUrl}\nTotal Value: ₹${getOrderTotalInvoiceAmount(order).toLocaleString()}\n\nThank you.`);
       const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(rawBody);
 
       const dynamicTo = cleanEmailList(template?.to ? applyTemplate(template.to) : (order.email || ""));
@@ -1257,6 +1285,15 @@ export default function IndentView({
             <div className="w-full max-w-[90%] mx-auto space-y-6">
               {filteredOrders.map((order, index) => {
                 const isExpanded = !!expandedOrderIds[order.id];
+                const currentFreight = getLogisticsValue(order, "freightChargedInBill");
+                const effectiveOrderForBreakdown: OrderOffer = {
+                  ...order,
+                  closedWonDetails: {
+                    ...order.closedWonDetails,
+                    freightChargedInBill: currentFreight,
+                  },
+                };
+                const logisticsBreakdown = calculateOrderTotalInvoiceBreakdown(effectiveOrderForBreakdown);
 
                 return (
                   <div 
@@ -1297,8 +1334,14 @@ export default function IndentView({
                           </div>
                         </div>
                         <div className="text-left sm:text-right shrink-0 flex flex-col sm:items-end gap-1.5 bg-slate-50 sm:bg-transparent p-2.5 sm:p-0 rounded-xl border sm:border-0 border-slate-100">
-                          <span className="text-base sm:text-lg lg:text-xl font-black text-slate-950 block font-mono">
-                            ₹{order.totalValue?.toLocaleString()}
+                          <span 
+                            className="text-base sm:text-lg lg:text-xl font-black text-slate-950 block font-mono"
+                            title="Grand Total Order Amount (Products + Respective GST + Freight with Max GST)"
+                          >
+                            ₹{logisticsBreakdown.totalInvoiceAmount.toLocaleString()}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-500 font-bold uppercase tracking-tight">
+                            Grand Total Order Amount
                           </span>
                           <span className="text-[11px] font-mono text-slate-400 block flex items-center sm:justify-end gap-1 font-semibold">
                             <Calendar size={12} />
@@ -1831,11 +1874,11 @@ export default function IndentView({
                               </div>
                             </div>
 
-                            {/* Box 4: Product Details (Read-Only) */}
+                            {/* Box 4: Product Details & Calculation Breakdown */}
                             <div className="bg-white border border-slate-200 rounded-xl p-4 relative space-y-3 shadow-sm">
                               <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
                                 <span className="flex items-center justify-center w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-extrabold font-mono shrink-0">4</span>
-                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Product Details</span>
+                                <span className="text-[10px] font-mono font-black text-slate-800 uppercase tracking-wider">Product Details & Invoice Breakdown</span>
                               </div>
                               <div className="border border-slate-200 rounded-lg overflow-x-auto scrollbar-thin bg-white">
                                 <table className="w-full text-left text-[10px] min-w-[360px] sm:min-w-full font-mono">
@@ -1844,26 +1887,65 @@ export default function IndentView({
                                       <th className="p-2">Product</th>
                                       <th className="p-2 text-right">Qty</th>
                                       <th className="p-2 text-right">Rate</th>
-                                      <th className="p-2 text-right">Amount</th>
+                                      <th className="p-2 text-right">Base Amount</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-100 text-slate-600">
-                                    {order.items?.map((item, idx) => (
+                                    {logisticsBreakdown.itemBreakdowns.map((ib, idx) => (
                                       <tr key={idx} className="hover:bg-slate-50/50">
-                                        <td className="p-2 font-semibold text-slate-800">{item.productName}</td>
-                                        <td className="p-2 text-right font-bold">{item.quantity}</td>
-                                        <td className="p-2 text-right text-slate-500">₹{item.rate?.toLocaleString()}</td>
-                                        <td className="p-2 text-right font-black text-slate-700">₹{item.amount?.toLocaleString()}</td>
+                                        <td className="p-2 font-semibold text-slate-800">{ib.item.productName || "Unnamed Product"}</td>
+                                        <td className="p-2 text-right font-bold">{ib.quantity}</td>
+                                        <td className="p-2 text-right text-slate-500">₹{ib.rate?.toLocaleString()}</td>
+                                        <td className="p-2 text-right font-black text-slate-700">₹{ib.baseAmount?.toLocaleString()}</td>
                                       </tr>
                                     ))}
-                                    <tr className="bg-slate-50/50 font-black border-t border-slate-200">
-                                      <td className="p-2 text-slate-700" colSpan={2}>Grand Total</td>
-                                      <td className="p-2 text-right text-slate-900 text-xs font-mono" colSpan={2}>
-                                        ₹{order.totalValue?.toLocaleString()}
-                                      </td>
-                                    </tr>
                                   </tbody>
                                 </table>
+                              </div>
+
+                              {/* Total Invoice Amount Calculation Breakdown */}
+                              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 font-mono text-[10px] space-y-1.5">
+                                <div className="flex justify-between items-center text-slate-600">
+                                  <span>Products Base Total (Excl. GST):</span>
+                                  <span className="font-bold text-slate-800">₹{logisticsBreakdown.productsBaseTotal.toLocaleString()}</span>
+                                </div>
+
+                                {/* Separate GST Rate Amounts for Products */}
+                                {logisticsBreakdown.gstBuckets.length > 0 && logisticsBreakdown.gstBuckets.map((bucket) => (
+                                  <div key={bucket.rate} className="flex justify-between items-center text-slate-600 pl-2 border-l-2 border-slate-300">
+                                    <span>Product GST @ {bucket.rate}% (Taxable: ₹{bucket.productBase.toLocaleString()}):</span>
+                                    <span className="font-bold text-slate-800">₹{bucket.productGst.toLocaleString()}</span>
+                                  </div>
+                                ))}
+
+                                {logisticsBreakdown.freightBase > 0 && (
+                                  <>
+                                    <div className="flex justify-between items-center text-slate-600 pt-1 border-t border-slate-200/60">
+                                      <span>Freight Charged in Bill:</span>
+                                      <span className="font-bold text-emerald-800">₹{logisticsBreakdown.freightBase.toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-slate-600">
+                                      <span>Freight GST Amount (@ {logisticsBreakdown.maxGstPercent}% GST):</span>
+                                      <span className="font-bold text-emerald-800">₹{logisticsBreakdown.freightGst.toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-slate-700 font-semibold pl-2 border-l-2 border-emerald-400">
+                                      <span>Freight Total with GST:</span>
+                                      <span className="font-bold text-emerald-900">₹{logisticsBreakdown.freightTotalWithGst.toLocaleString()}</span>
+                                    </div>
+                                  </>
+                                )}
+
+                                <div className="flex justify-between items-center text-slate-800 pt-1 border-t border-slate-200 font-bold">
+                                  <span>Total GST Amount (Products + Freight GST):</span>
+                                  <span className="text-indigo-700 font-black">₹{(logisticsBreakdown.productsGstTotal + logisticsBreakdown.freightGst).toLocaleString()}</span>
+                                </div>
+
+                                <div className="flex justify-between items-center border-t-2 border-slate-300 pt-2 text-[11px] font-black text-slate-900">
+                                  <span className="uppercase tracking-wider">Grand Total Order Amount:</span>
+                                  <span className="text-emerald-800 bg-white px-3 py-1 rounded-lg border border-emerald-300 shadow-2xs font-black font-mono text-xs">
+                                    ₹{logisticsBreakdown.totalInvoiceAmount.toLocaleString()}
+                                  </span>
+                                </div>
                               </div>
                             </div>
 
@@ -2959,7 +3041,7 @@ export default function IndentView({
                               )}
                             </td>
                             <td className="p-4 text-right font-mono font-extrabold text-slate-800">
-                              ₹{order.totalValue?.toLocaleString()}
+                              ₹{getOrderTotalInvoiceAmount(order).toLocaleString()}
                             </td>
                             <td className="p-4">
                               <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 font-mono font-bold text-[10px] px-2.5 py-1 rounded-lg border border-emerald-150">

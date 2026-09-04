@@ -152,6 +152,15 @@ service cloud.firestore {
         && data.invoiceNumber is string && data.invoiceNumber.size() <= 128;
     }
 
+    function isValidDebitCreditNote(data) {
+      return data.id is string && data.id.size() <= 128
+        && (!('companyName' in data) || data.companyName is string)
+        && (!('invoiceNumber' in data) || data.invoiceNumber is string)
+        && data.noteType in ["Debit Note", "Credit Note"]
+        && data.amount is number
+        && data.effectedAmount is number;
+    }
+
     function isValidFAQItem(data) {
       return data.id is string && data.id.size() <= 128
         && data.question is string && data.question.size() <= 1000
@@ -296,7 +305,14 @@ service cloud.firestore {
     match /bad_debtors/{id} {
       allow read: if isVerified();
       allow create, update: if isVerified() && isValidBadDebtor(incoming());
-      allow delete: if isAdmin();
+      allow delete: if isVerified();
+    }
+
+    // Debit and Credit Notes
+    match /debit_credit_notes/{id} {
+      allow read: if isVerified();
+      allow create, update: if isVerified() && isValidDebitCreditNote(incoming());
+      allow delete: if isVerified();
     }
 
     // Frequently Asked Questions

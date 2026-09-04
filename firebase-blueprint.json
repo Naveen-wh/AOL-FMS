@@ -165,10 +165,9 @@
         "billingAddress": { "type": "string", "maxLength": 1000, "description": "Client billing address" },
         "billingGstin": { "type": "string", "maxLength": 32, "description": "Client GSTIN" },
         "status": { "type": "string", "maxLength": 64, "description": "Order status" },
-        "totalValue": { "type": "number", "description": "Total value" },
-        "totalProductCost": { "type": "number", "description": "Total product cost base amount" },
+        "totalProductCost": { "type": "number", "description": "Total product cost base amount (only rate*qty = amount without GST)" },
         "totalGstAmount": { "type": "number", "description": "Total GST amount across items and freight" },
-        "grandTotalOrderAmount": { "type": "number", "description": "Grand total order value (Product Cost + GST + Freight + Freight GST)" },
+        "grandTotalOrderAmount": { "type": "number", "description": "Grand total order amount = totalProductCost + totalGstAmount + freightChargedInBill" },
         "payment": { "type": "string", "maxLength": 256, "description": "Payment terms" },
         "paymentCreditPeriod": { "type": "string", "maxLength": 64, "description": "Payment credit period" },
         "paymentBankId": { "type": "string", "maxLength": 128, "description": "Linked bank ID" },
@@ -220,7 +219,7 @@
           }
         }
       },
-      "required": ["id", "clientName", "companyName", "email", "phone", "status", "totalValue", "payment", "delivery", "otherTerms", "assignedToUserId", "createdByUserId", "notes", "createdAt"]
+      "required": ["id", "clientName", "companyName", "email", "phone", "status", "grandTotalOrderAmount", "payment", "delivery", "otherTerms", "assignedToUserId", "createdByUserId", "notes", "createdAt"]
     },
     "PaymentBank": {
       "title": "PaymentBank",
@@ -388,6 +387,30 @@
         "error": { "type": "string", "maxLength": 2000, "description": "Error message if failed" }
       },
       "required": ["id", "to", "subject", "category", "status", "timestamp"]
+    },
+    "DebitCreditNote": {
+      "title": "DebitCreditNote",
+      "description": "Debit or Credit Note associated with an invoice/party.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "description": "Note unique identifier" },
+        "orderId": { "type": "string", "maxLength": 128, "description": "Linked Order ID" },
+        "invoiceNumber": { "type": "string", "maxLength": 128, "description": "Linked Invoice Number" },
+        "companyName": { "type": "string", "maxLength": 128, "description": "Customer company name" },
+        "clientName": { "type": "string", "maxLength": 128, "description": "Client contact person" },
+        "entryDate": { "type": "string", "maxLength": 64, "description": "Auto entry timestamp" },
+        "tallyDate": { "type": "string", "maxLength": 64, "description": "Tally booking date" },
+        "noteType": { "type": "string", "maxLength": 32, "enum": ["Debit Note", "Credit Note"], "description": "Note type" },
+        "noteNumber": { "type": "string", "maxLength": 128, "description": "Dr/Cr voucher number" },
+        "amount": { "type": "number", "description": "Note raw amount (positive)" },
+        "effectedAmount": { "type": "number", "description": "Effected amount (-ve for credit note, +ve for debit note)" },
+        "reason": { "type": "string", "maxLength": 1000, "description": "Remarks or reason" },
+        "createdAt": { "type": "string", "maxLength": 64, "description": "Creation timestamp" },
+        "createdByUserId": { "type": "string", "maxLength": 128, "description": "Created by user ID" },
+        "createdByUserName": { "type": "string", "maxLength": 128, "description": "Created by user name" },
+        "updatedAt": { "type": "string", "maxLength": 64, "description": "Last update timestamp" }
+      },
+      "required": ["id", "invoiceNumber", "companyName", "entryDate", "tallyDate", "noteType", "noteNumber", "amount", "effectedAmount"]
     }
   },
   "firestore": {
@@ -406,6 +429,7 @@
     "/payment_details/{detailId}": { "schema": { "$ref": "PaymentDetails" }, "description": "Payment reconciliations" },
     "/payment_records/{recordId}": { "schema": { "$ref": "PaymentReceiptRecord" }, "description": "Individual payment receipt records" },
     "/bad_debtors/{id}": { "schema": { "$ref": "BadDebtor" }, "description": "Bad debtors defaulted invoices" },
+    "/debit_credit_notes/{id}": { "schema": { "$ref": "DebitCreditNote" }, "description": "Debit and Credit notes" },
     "/faqs/{faqId}": { "schema": { "$ref": "FAQItem" }, "description": "Frequently asked questions" },
     "/bug_requests/{bugId}": { "schema": { "$ref": "BugRequest" }, "description": "Bug and feature tickets" },
     "/settings/{docId}": { "schema": "object", "description": "Global application configurations" },

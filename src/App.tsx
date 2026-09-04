@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { User, ProjectWorkflow, SalesTask, ActionLog, Role, AccessLevel, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, TaxRate, BadDebtor, EmailSentLog } from "./types";
+import { User, ProjectWorkflow, SalesTask, ActionLog, Role, AccessLevel, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, TaxRate, BadDebtor, EmailSentLog, DebitCreditNote } from "./types";
 import {
   canDeleteTask,
   canDeleteClient,
@@ -66,7 +66,10 @@ import {
   saveBugRequest,
   deleteBugRequestDoc,
   subscribeEmailSentLogs,
-  saveEmailSentLog
+  saveEmailSentLog,
+  subscribeDebitCreditNotes,
+  saveDebitCreditNote,
+  deleteDebitCreditNoteDoc
 } from "./lib/firebaseService";
 
 // Sub-components
@@ -84,6 +87,7 @@ import AuditLogsView from "./components/AuditLogsView";
 import EmailTemplateManagementView from "./components/EmailTemplateManagementView";
 import AboutMeView from "./components/AboutMeView";
 import { AolLogo } from "./components/AolLogo";
+import { getOrderTotalInvoiceAmount } from "./utils";
 
 // Lucide Icons
 import {
@@ -143,6 +147,7 @@ export default function App() {
   const [faqs, setFaqs] = useState<FAQItem[]>([]);
   const [bugRequests, setBugRequests] = useState<BugRequest[]>([]);
   const [badDebtors, setBadDebtors] = useState<BadDebtor[]>([]);
+  const [debitCreditNotes, setDebitCreditNotes] = useState<DebitCreditNote[]>([]);
   const [emailSentLogs, setEmailSentLogs] = useState<EmailSentLog[]>([]);
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [isAuditLogEnabledState, setIsAuditLogEnabledState] = useState<boolean>(true);
@@ -306,6 +311,7 @@ export default function App() {
     const unsubFaqs = subscribeCollection<FAQItem>("faqs", setFaqs, "createdAt");
     const unsubBugs = subscribeCollection<BugRequest>("bug_requests", setBugRequests, "createdAt");
     const unsubBadDebtors = subscribeCollection<BadDebtor>("bad_debtors", setBadDebtors, "createdAt");
+    const unsubDebitCreditNotes = subscribeDebitCreditNotes(setDebitCreditNotes);
     const unsubEmailSentLogs = subscribeEmailSentLogs(setEmailSentLogs);
 
     return () => {
@@ -335,6 +341,7 @@ export default function App() {
       unsubFaqs();
       unsubBugs();
       unsubBadDebtors();
+      unsubDebitCreditNotes();
       unsubEmailSentLogs();
     };
   }, [isAuthenticated]);
@@ -451,8 +458,8 @@ export default function App() {
       targetId: orderId,
       targetName: newOrder.companyName,
       details: newOrder.billingDetails?.invoiceNumber
-        ? `${activeUser.name} imported historical order with invoice #${newOrder.billingDetails.invoiceNumber} for "${newOrder.companyName}" (Total: ₹${newOrder.totalValue.toLocaleString()})`
-        : `${activeUser.name} created sales order/offer for client "${newOrder.clientName}" at "${newOrder.companyName}" with total value of ₹${newOrder.totalValue.toLocaleString()}`
+        ? `${activeUser.name} imported historical order with invoice #${newOrder.billingDetails.invoiceNumber} for "${newOrder.companyName}" (Total: ₹${getOrderTotalInvoiceAmount(newOrder).toLocaleString()})`
+        : `${activeUser.name} created sales order/offer for client "${newOrder.clientName}" at "${newOrder.companyName}" with total value of ₹${getOrderTotalInvoiceAmount(newOrder).toLocaleString()}`
     });
   };
 
@@ -1626,6 +1633,7 @@ export default function App() {
               users={users}
               orders={orders}
               badDebtors={badDebtors}
+              debitCreditNotes={debitCreditNotes}
               onEditOrder={handleEditOrder}
               paymentBanks={paymentBanks}
               visibleSubTabs={userTeamSetting?.visibleSubTabs}

@@ -204,7 +204,7 @@ export interface OrderTotalInvoiceBreakdown {
  */
 export function calculateOrderTotalInvoiceBreakdown(order?: Partial<OrderOffer> | null): OrderTotalInvoiceBreakdown {
   if (order?.isBadDebtor) {
-    const total = order.badDebtorRecord?.invoiceAmount || Number(order.totalValue) || 0;
+    const total = order.badDebtorRecord?.invoiceAmount || Number(order.grandTotalOrderAmount) || Number(order.totalValue) || 0;
     return {
       productsBaseTotal: total,
       productsGstTotal: 0,
@@ -281,7 +281,7 @@ export function calculateOrderTotalInvoiceBreakdown(order?: Partial<OrderOffer> 
 export function getOrderTotalInvoiceAmount(order?: Partial<OrderOffer> | null): number {
   if (!order) return 0;
   if (order.isBadDebtor) {
-    return order.badDebtorRecord?.invoiceAmount || Number(order.totalValue) || 0;
+    return order.badDebtorRecord?.invoiceAmount || Number(order.grandTotalOrderAmount) || Number(order.totalValue) || 0;
   }
   if (order.items && order.items.length > 0) {
     const breakdown = calculateOrderTotalInvoiceBreakdown(order);

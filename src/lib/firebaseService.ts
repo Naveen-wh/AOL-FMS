@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { User, Role, AccessLevel, ProjectWorkflow, SalesTask, ActionLog, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, EmailSendingConfig, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, EmailLimitsConfig, EmailDailyCounts, TaxRate, BadDebtor, EmailSentLog } from "../types";
+import { User, Role, AccessLevel, ProjectWorkflow, SalesTask, ActionLog, TeamTabSettings, Client, Team, Product, OrderOffer, PaymentBank, ProductCategory, ProductGroup, Manufacturer, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, EmailSendingConfig, PaymentDetails, PaymentReceiptRecord, PaymentTerm, PaymentCreditPeriod, FAQItem, BugRequest, EmailLimitsConfig, EmailDailyCounts, TaxRate, BadDebtor, EmailSentLog, DebitCreditNote } from "../types";
 import {
   auth,
   db,
@@ -1061,6 +1061,35 @@ export async function saveEmailSentLog(log: EmailSentLog): Promise<void> {
       console.warn(`[FirebaseService] Permission restricted on remote database for email_sent_logs/${log.id}.`);
       return;
     }
+  }
+}
+
+// Debit / Credit Notes Firestore CRUD
+export function subscribeDebitCreditNotes(onUpdate: (data: DebitCreditNote[]) => void) {
+  return subscribeCollection<DebitCreditNote>("debit_credit_notes", onUpdate, "createdAt");
+}
+
+export async function saveDebitCreditNote(note: DebitCreditNote): Promise<void> {
+  try {
+    await cacheBeforeWrite("debit_credit_notes", note.id, note);
+    await setDoc(doc(db, "debit_credit_notes", note.id), cleanUndefined(note), { merge: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `debit_credit_notes/${note.id}`);
+  }
+}
+
+export async function deleteDebitCreditNoteDoc(id: string): Promise<void> {
+  try {
+    await cacheBeforeDelete("debit_credit_notes", id);
+    await deleteDoc(doc(db, "debit_credit_notes", id));
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.warn(`[FirebaseService] Could not delete debit_credit_notes/${id}:`, msg);
+    if (msg.includes("permission") || msg.includes("Missing or insufficient permissions") || err?.code === "permission-denied") {
+      console.warn(`[FirebaseService] Permission restricted on remote database for debit_credit_notes/${id}.`);
+      return;
+    }
+    handleFirestoreError(err, OperationType.DELETE, `debit_credit_notes/${id}`);
   }
 }
 

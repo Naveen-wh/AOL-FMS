@@ -9,7 +9,7 @@ import { canViewTask, canViewOrderOffer, getReportingTreeUsers } from "../data";
 import { IndianRupee, CheckCircle, TrendingUp, Target, Package, Building2, Users, BarChart3, Search, Filter, Settings, Save, X, Loader2, Eye, EyeOff, ChevronDown, ChevronUp, Calendar, FileText, ShoppingCart, Percent } from "lucide-react";
 import AdminDriveSettings from "./AdminDriveSettings";
 import { updateUserDetails } from "../lib/firebaseService";
-import { formatCompactRupees, formatQuantityMT } from "../utils";
+import { formatCompactRupees, formatQuantityMT, getOrderTotalInvoiceAmount } from "../utils";
 
 interface DashboardViewProps {
   activeUserId: string;
@@ -120,9 +120,9 @@ export default function DashboardView({
   }, [tasks, activeUserId, users]);
 
   // Overall KPIs (derived from Orders & Offers)
-  const totalPipelineValue = visibleOrders.reduce((acc, order) => acc + (Number(order.totalValue) || 0), 0);
+  const totalPipelineValue = visibleOrders.reduce((acc, order) => acc + getOrderTotalInvoiceAmount(order), 0);
   const closedWonOrders = visibleOrders.filter((o) => o.status === "Closed Won");
-  const closedWonValue = closedWonOrders.reduce((acc, order) => acc + (Number(order.totalValue) || 0), 0);
+  const closedWonValue = closedWonOrders.reduce((acc, order) => acc + getOrderTotalInvoiceAmount(order), 0);
   const targetQuotaValue = activeUser.targetQuota || 30000;
   const quotaProgressPercentage = Math.min((closedWonValue / targetQuotaValue) * 100, 100);
 
@@ -179,7 +179,7 @@ export default function DashboardView({
           map[key] = { productId: key, productName: key, category: "General", totalQty: 0, totalValue: 0, orderCount: 0 };
         }
         map[key].totalQty += 1;
-        map[key].totalValue += Number(order.totalValue) || 0;
+        map[key].totalValue += getOrderTotalInvoiceAmount(order);
         map[key].orderCount += 1;
       }
     });
@@ -202,7 +202,7 @@ export default function DashboardView({
       } else {
         orderQty = 1;
       }
-      const val = Number(order.totalValue) || 0;
+      const val = getOrderTotalInvoiceAmount(order);
 
       if (!map[company]) {
         map[company] = { companyName: company, clientName: client, totalQty: 0, totalValue: 0, orderCount: 0 };
@@ -229,7 +229,7 @@ export default function DashboardView({
 
       spOrders.forEach((order) => {
         const company = order.companyName || order.clientName || "Unknown Co.";
-        const orderVal = Number(order.totalValue) || 0;
+        const orderVal = getOrderTotalInvoiceAmount(order);
         totalRevenue += orderVal;
 
         if (order.items && order.items.length > 0) {
@@ -469,17 +469,17 @@ export default function DashboardView({
       const offerStatuses = ["New", "Contacted", "Proposal", "Negotiation"];
       const offerOrders = ordersList.filter(o => offerStatuses.includes(o.status));
       const offerCount = offerOrders.length;
-      const offerRevenue = offerOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0);
+      const offerRevenue = offerOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0);
 
       // Total Order: counts of having order status (Closed Won) and its revenue
       const orderOrders = ordersList.filter(o => o.status === "Closed Won");
       const orderCount = orderOrders.length;
-      const orderRevenue = orderOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0);
+      const orderRevenue = orderOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0);
 
       // Total Invoiced: count of order whose invoice attached and revenue
       const invoicedOrders = ordersList.filter(o => o.billingDetails?.invoiceNumber && o.billingDetails.invoiceNumber.trim() !== "");
       const invoicedCount = invoicedOrders.length;
-      const invoicedRevenue = invoicedOrders.reduce((sum, o) => sum + (o.totalValue || 0), 0);
+      const invoicedRevenue = invoicedOrders.reduce((sum, o) => sum + getOrderTotalInvoiceAmount(o), 0);
 
       // Total Qty Sold: sum of qty whose invoice attached and revenue
       const totalQtySold = invoicedOrders.reduce((sum, o) => {

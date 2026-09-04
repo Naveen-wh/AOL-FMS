@@ -16,7 +16,7 @@ import {
   getReportingTreeUsers,
 } from "../data";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
-import { formatDate } from "../utils";
+import { formatDate, getOrderTotalInvoiceAmount } from "../utils";
 import {
   Plus,
   CheckSquare,
@@ -212,7 +212,7 @@ export default function ClientsView({
   const visibleClientOrders = clientOrders.slice(0, 5);
 
   const clientTotalPipelineValue = clientOrders.reduce(
-    (sum, order) => sum + (Number(order.totalValue) || 0),
+    (sum, order) => sum + getOrderTotalInvoiceAmount(order),
     0
   );
 
@@ -916,7 +916,7 @@ export default function ClientsView({
                       
                       {/* Financial Deal Value badge */}
                       <span className="bg-emerald-50 text-emerald-800 border border-emerald-150 px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold">
-                        Amount: {order.totalValue ? `₹${Number(order.totalValue).toLocaleString("en-IN")}` : "₹0"}
+                        Amount: ₹{getOrderTotalInvoiceAmount(order).toLocaleString("en-IN")}
                         {order.items && order.items.length > 0 && (
                           <span className="text-[8.5px] text-emerald-600 font-normal ml-1">
                             ({order.items.length} items)
