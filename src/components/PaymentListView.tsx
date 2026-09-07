@@ -15,6 +15,7 @@ import { formatDate, getOrderTotalInvoiceAmount, formatIndianNumber, formatIndia
 const formatINR = formatIndianNumber;
 import { canViewOrderOffer } from "../data";
 import EmailSentStatusCell from "./EmailSentStatusCell";
+import InlineDeleteConfirm from "./InlineDeleteConfirm";
 import Papa from "papaparse";
 import {
   Search,
@@ -379,7 +380,105 @@ interface PaymentListViewProps {
   onNavigateToBilling?: (orderId: string) => void;
   teamPermissions?: { [tabId: string]: { view: boolean; edit: boolean; add: boolean } };
   levelWiseFilters?: { [tabOrSubTabId: string]: boolean };
+  onSaveDebitCreditNote?: (note: DebitCreditNote) => void;
+  onDeleteDebitCreditNote?: (id: string) => void;
 }
+
+/**
+ * Compact Contact Info cell component with overflow handling:
+ * - If more than two email IDs exist: displays the primary email with a "+n" badge (e.g., +2, +3)
+ * - Hovering shows a tooltip with all email addresses
+ * - Clicking the badge toggles full inline expansion/collapse
+ */
+const PartyContactInfoCell: React.FC<{
+  emails?: string[];
+  rawEmail?: string;
+  phone?: string;
+}> = ({ emails: propEmails, rawEmail, phone }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  // Compute clean list of unique emails
+  const emails = useMemo(() => {
+    const list = propEmails && propEmails.length > 0 ? propEmails : [];
+    if (list.length > 0) return list;
+    if (!rawEmail) return [];
+    const extracted: string[] = [];
+    rawEmail
+      .split(/[,;\n\r/]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .forEach((em) => {
+        if (!extracted.some((x) => x.toLowerCase() === em.toLowerCase())) {
+          extracted.push(em);
+        }
+      });
+    return extracted;
+  }, [propEmails, rawEmail]);
+
+  const hasEmails = emails.length > 0;
+  const isMoreThanTwo = emails.length > 2;
+  const moreCount = emails.length - 1;
+
+  return (
+    <div className="space-y-0.5 text-[11px] text-slate-600">
+      {hasEmails && (
+        <div>
+          {isMoreThanTwo && !isExpanded ? (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex items-center gap-1 min-w-0" title={emails[0]}>
+                <Mail size={11} className="text-slate-400 shrink-0" />
+                <span className="font-mono text-slate-700 truncate max-w-[140px]">{emails[0]}</span>
+              </div>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsExpanded(true);
+                }}
+                title={`All ${emails.length} contact emails:\n${emails.map((e) => `• ${e}`).join("\n")}\n\nClick to view all`}
+                className="inline-flex items-center px-1.5 py-0.2 rounded text-[9.5px] font-mono font-bold bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 border border-slate-200 hover:border-emerald-300 transition-colors cursor-pointer shrink-0 shadow-2xs"
+              >
+                +{moreCount}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-0.5">
+              {emails.map((em, idx) => (
+                <div key={idx} className="flex items-center gap-1 min-w-0" title={em}>
+                  <Mail size={11} className="text-slate-400 shrink-0" />
+                  <span className="font-mono text-slate-700 truncate max-w-[160px]">{em}</span>
+                </div>
+              ))}
+              {isMoreThanTwo && isExpanded && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsExpanded(false);
+                  }}
+                  className="text-[9.5px] font-mono text-slate-400 hover:text-slate-700 hover:underline cursor-pointer block pt-0.5"
+                >
+                  Show less (-{moreCount})
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {phone && (
+        <div className="flex items-center gap-1">
+          <Phone size={11} className="text-slate-400 shrink-0" />
+          <span className="font-mono text-slate-500">{phone}</span>
+        </div>
+      )}
+
+      {!hasEmails && !phone && (
+        <span className="text-slate-400 font-mono text-[10px]">N/A</span>
+      )}
+    </div>
+  );
+};
 
 export default function PaymentListView({
   activeUserId,
@@ -396,6 +495,8 @@ export default function PaymentListView({
   onNavigateToBilling,
   teamPermissions,
   levelWiseFilters,
+  onSaveDebitCreditNote,
+  onDeleteDebitCreditNote,
 }: PaymentListViewProps) {
   const activeUser = users.find((u) => u.id === activeUserId) || {
     id: activeUserId,
@@ -946,6 +1047,7 @@ export default function PaymentListView({
       companyName: string;
       clientName: string;
       email: string;
+      emails: string[];
       phone: string;
       orders: OrderOffer[];
       totalOrderValue: number;
@@ -979,12 +1081,25 @@ export default function PaymentListView({
           }
         : calculateDueDate(actualDispatchDate, order.payment);
 
+      const parsedEmails = (order.email || "")
+        .split(/[,;\n\r/]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
       if (!map.has(key)) {
+        const uniqueEmails: string[] = [];
+        parsedEmails.forEach((e) => {
+          if (!uniqueEmails.some((x) => x.toLowerCase() === e.toLowerCase())) {
+            uniqueEmails.push(e);
+          }
+        });
+
         map.set(key, {
           partyKey: key,
           companyName: company || client || "Unspecified Party",
           clientName: client || company || "Contact Person",
-          email: order.email || "",
+          email: uniqueEmails.join(", ") || order.email || "",
+          emails: uniqueEmails,
           phone: order.phone || "",
           orders: [order],
           totalOrderValue: totalAmt,
@@ -1004,7 +1119,14 @@ export default function PaymentListView({
         item.totalDrCrAmount += drCrAmt;
         item.totalPendingAmount += pendingAmt;
         item.invoiceCount += 1;
-        if (!item.email && order.email) item.email = order.email;
+        parsedEmails.forEach((e) => {
+          if (!item.emails.some((x) => x.toLowerCase() === e.toLowerCase())) {
+            item.emails.push(e);
+          }
+        });
+        if (item.emails.length > 0) {
+          item.email = item.emails.join(", ");
+        }
         if (!item.phone && order.phone) item.phone = order.phone;
         if (dueInfo.isOverdue) {
           item.isAnyOverdue = true;
@@ -2450,25 +2572,25 @@ export default function PaymentListView({
 
   // Delete Bad Debtor
   const handleDeleteBadDebtor = async (id: string, companyName: string) => {
-    if (!window.confirm(`Are you sure you want to delete the bad debtor record for ${companyName}?`)) {
-      return;
-    }
-
     try {
       await deleteBadDebtorDoc(id);
-      await saveLog({
-        id: `log-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        userId: activeUser.id,
-        userName: activeUser.name,
-        actionType: "Delete Bad Debtor",
-        targetType: "BadDebtor",
-        targetId: id,
-        targetName: companyName,
-        details: `Deleted Bad Debtor record for ${companyName}`,
-      });
+      try {
+        await saveLog({
+          id: `log-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          userId: activeUser.id,
+          userName: activeUser.name,
+          actionType: "Delete Bad Debtor",
+          targetType: "BadDebtor",
+          targetId: id,
+          targetName: companyName,
+          details: `Deleted Bad Debtor record for ${companyName}`,
+        });
+      } catch (logErr) {
+        console.warn("Could not save audit log for delete bad debtor:", logErr);
+      }
 
-      setPaymentSaveSuccess(`Bad debtor record deleted.`);
+      setPaymentSaveSuccess(`Bad debtor record for ${companyName} deleted.`);
       setTimeout(() => setPaymentSaveSuccess(null), 4000);
     } catch (err: any) {
       console.error("Error deleting bad debtor:", err);
@@ -2516,6 +2638,9 @@ export default function PaymentListView({
       };
 
       await saveDebitCreditNote(noteDoc);
+      if (onSaveDebitCreditNote) {
+        onSaveDebitCreditNote(noteDoc);
+      }
 
       await saveLog({
         id: `log-${Date.now()}`,
@@ -2554,12 +2679,11 @@ export default function PaymentListView({
 
   // Delete Dr/Cr Note
   const handleDeleteDrCrNote = async (id: string, noteNumber: string) => {
-    if (!window.confirm(`Are you sure you want to delete Dr/Cr note #${noteNumber}?`)) {
-      return;
-    }
-
     try {
       await deleteDebitCreditNoteDoc(id);
+      if (onDeleteDebitCreditNote) {
+        onDeleteDebitCreditNote(id);
+      }
       if (drCrEditingId === id) {
         setDrCrEditingId(null);
         setDrCrForm({
@@ -2575,19 +2699,23 @@ export default function PaymentListView({
           reason: "",
         });
       }
-      await saveLog({
-        id: `log-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        userId: activeUser.id,
-        userName: activeUser.name,
-        actionType: "Delete Order",
-        targetType: "DebitCreditNote",
-        targetId: id,
-        targetName: noteNumber,
-        details: `Deleted Dr/Cr Note #${noteNumber}`,
-      });
+      try {
+        await saveLog({
+          id: `log-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          userId: activeUser.id,
+          userName: activeUser.name,
+          actionType: "Delete Dr/Cr Note",
+          targetType: "DebitCreditNote",
+          targetId: id,
+          targetName: noteNumber,
+          details: `Deleted Dr/Cr Note #${noteNumber}`,
+        });
+      } catch (logErr) {
+        console.warn("Could not save audit log for delete dr/cr note:", logErr);
+      }
 
-      setPaymentSaveSuccess(`Dr/Cr note #${noteNumber} deleted.`);
+      setPaymentSaveSuccess(`Dr/Cr note #${noteNumber} deleted successfully.`);
       setTimeout(() => setPaymentSaveSuccess(null), 4000);
     } catch (err: any) {
       console.error("Error deleting Dr/Cr note:", err);
@@ -2808,20 +2936,11 @@ export default function PaymentListView({
                               </div>
                             </td>
                             <td className="py-3 px-4">
-                              <div className="space-y-0.5 text-[11px] text-slate-600">
-                                {party.email && (
-                                  <div className="flex items-center gap-1">
-                                    <Mail size={11} className="text-slate-400 shrink-0" />
-                                    <span className="font-mono text-slate-700">{party.email}</span>
-                                  </div>
-                                )}
-                                {party.phone && (
-                                  <div className="flex items-center gap-1">
-                                    <Phone size={11} className="text-slate-400 shrink-0" />
-                                    <span className="font-mono text-slate-500">{party.phone}</span>
-                                  </div>
-                                )}
-                              </div>
+                              <PartyContactInfoCell
+                                emails={party.emails}
+                                rawEmail={party.email}
+                                phone={party.phone}
+                              />
                             </td>
                             <td className="py-3 px-4">
                               <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
@@ -3364,15 +3483,13 @@ export default function PaymentListView({
                               >
                                 <Edit3 size={14} />
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteBadDebtor(bd.id, bd.companyName)}
+                              <InlineDeleteConfirm
+                                onConfirm={() => handleDeleteBadDebtor(bd.id, bd.companyName)}
+                                title={`Delete Bad Debtor for ${bd.companyName}`}
+                                confirmText="Delete?"
                                 disabled={!teamCanEdit}
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
-                                title="Delete Record"
-                              >
-                                <Trash2 size={14} />
-                              </button>
+                                size="sm"
+                              />
                             </div>
                           </td>
                         </tr>
@@ -3802,6 +3919,7 @@ export default function PaymentListView({
                                       onClick={() => {
                                         setDrCrEditingId(note.id);
                                         setDrCrForm({
+                                          entryDate: note.entryDate || new Date().toISOString().split("T")[0],
                                           tallyDate: note.tallyDate,
                                           type: note.type,
                                           noteNumber: note.noteNumber,
@@ -3818,14 +3936,12 @@ export default function PaymentListView({
                                     >
                                       <Edit3 size={14} />
                                     </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteDrCrNote(note.id, note.noteNumber)}
-                                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
-                                      title="Delete Note"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
+                                    <InlineDeleteConfirm
+                                      onConfirm={() => handleDeleteDrCrNote(note.id, note.noteNumber)}
+                                      title={`Delete Dr/Cr Note #${note.noteNumber}`}
+                                      confirmText="Delete?"
+                                      size="sm"
+                                    />
                                   </div>
                                 </td>
                               </tr>
@@ -4060,20 +4176,11 @@ export default function PaymentListView({
                               </div>
                             </td>
                             <td className="py-3 px-4">
-                              <div className="space-y-0.5 text-[11px] text-slate-600">
-                                {party.email && (
-                                  <div className="flex items-center gap-1">
-                                    <Mail size={11} className="text-slate-400 shrink-0" />
-                                    <span className="font-mono text-slate-700">{party.email}</span>
-                                  </div>
-                                )}
-                                {party.phone && (
-                                  <div className="flex items-center gap-1">
-                                    <Phone size={11} className="text-slate-400 shrink-0" />
-                                    <span className="font-mono text-slate-500">{party.phone}</span>
-                                  </div>
-                                )}
-                              </div>
+                              <PartyContactInfoCell
+                                emails={party.emails}
+                                rawEmail={party.email}
+                                phone={party.phone}
+                              />
                             </td>
                             <td className="py-3 px-4">
                               <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">

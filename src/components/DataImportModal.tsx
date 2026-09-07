@@ -23,6 +23,206 @@ export interface ImportFieldDefinition {
   required?: boolean;
   sampleValue?: string;
   description?: string;
+  aliases?: string[];
+}
+
+export function autoMapFields(fields: ImportFieldDefinition[], headers: string[]): Record<string, string> {
+  const mapping: Record<string, string> = {};
+  const usedHeaders = new Set<string>();
+
+  const cleanStr = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  const calculateScore = (f: ImportFieldDefinition, header: string): number => {
+    const hRaw = header.trim().toLowerCase();
+    const hClean = cleanStr(header);
+    const keyClean = cleanStr(f.key);
+    const labelClean = cleanStr(f.label);
+    const aliasesClean = (f.aliases || []).map(cleanStr);
+
+    // CRITICAL COLLISION PREVENTION:
+    // 1. If matching for physical address, NEVER accept headers containing email/mail or ip/web
+    if (f.key === "address" || keyClean.includes("address")) {
+      if (hClean.includes("email") || hClean.includes("mail") || hClean.includes("ip") || hClean.includes("mac") || hClean.includes("url") || hClean.includes("web")) {
+        return 0;
+      }
+    }
+
+    // 2. If matching for email, do NOT accept headers that have no email/mail connotation
+    if (f.key === "email" || keyClean.includes("email")) {
+      if (!hClean.includes("email") && !hClean.includes("mail")) {
+        return 0;
+      }
+    }
+
+    // 3. If matching for phone, reject headphone/microphone
+    if (f.key === "phone" || keyClean.includes("phone")) {
+      if (hClean.includes("headphone") || hClean.includes("microphone")) {
+        return 0;
+      }
+    }
+
+    // 4. If matching contact full name, avoid pure company/org columns unless contact is mentioned
+    if (f.key === "fullName" || keyClean.includes("fullname")) {
+      if ((hClean.includes("company") || hClean.includes("firm") || hClean.includes("org")) && !hClean.includes("person") && !hClean.includes("contact") && !hClean.includes("rep")) {
+        return 0;
+      }
+    }
+
+    // 5. If matching company name, avoid contact person columns unless company is mentioned
+    if (f.key === "companyName" || keyClean.includes("company")) {
+      if ((hClean.includes("person") || hClean.includes("individual")) && !hClean.includes("company") && !hClean.includes("firm")) {
+        return 0;
+      }
+    }
+
+    // Exact matches
+    if (hClean === keyClean) return 100;
+    if (hClean === labelClean) return 98;
+    if (aliasesClean.some((a) => a === hClean)) return 95;
+
+    for (const alias of f.aliases || []) {
+      if (hRaw === alias.trim().toLowerCase()) return 95;
+    }
+
+    // Field-specific smart matching
+    if (f.key === "address") {
+      if (
+        hClean === "address" ||
+        hClean === "billingaddress" ||
+        hClean === "officeaddress" ||
+        hClean === "registeredaddress" ||
+        hClean === "streetaddress" ||
+        hClean === "fulladdress" ||
+        hClean === "clientaddress" ||
+        hClean === "customeraddress" ||
+        hClean === "siteaddress" ||
+        hClean === "plantaddress" ||
+        hClean === "deliveryaddress"
+      ) {
+        return 94;
+      }
+      if (hClean.endsWith("address") || hClean.startsWith("address") || hClean.includes("address")) {
+        return 82;
+      }
+      if (hClean.includes("street") || hClean.includes("location") || hClean.includes("premises") || hClean.includes("premisesaddress")) {
+        return 70;
+      }
+    }
+
+    if (f.key === "email") {
+      if (hClean === "email" || hClean === "emailaddress" || hClean === "emailid" || hClean === "mailid" || hClean === "contactemail" || hClean === "clientemail" || hClean === "officialemail") {
+        return 94;
+      }
+      if (hClean.includes("email") || hClean.includes("mail")) {
+        return 80;
+      }
+    }
+
+    if (f.key === "phone") {
+      if (hClean === "phone" || hClean === "mobile" || hClean === "phonenumber" || hClean === "mobilenumber" || hClean === "contactno" || hClean === "contactnumber" || hClean === "mobileno" || hClean === "cell" || hClean === "whatsapp") {
+        return 94;
+      }
+      if (hClean.includes("phone") || hClean.includes("mobile") || hClean.includes("contactno") || hClean.includes("whatsapp")) {
+        return 80;
+      }
+    }
+
+    if (f.key === "gst") {
+      if (hClean === "gst" || hClean === "gstin" || hClean === "gstno" || hClean === "gstinnumber" || hClean === "taxid") {
+        return 94;
+      }
+      if (hClean.includes("gst") || hClean.includes("gstin") || hClean.includes("taxid") || hClean.includes("vat")) {
+        return 80;
+      }
+    }
+
+    if (f.key === "city") {
+      if (hClean === "city" || hClean === "town" || hClean === "district") {
+        return 94;
+      }
+      if (hClean.includes("city") || hClean.includes("town")) {
+        return 80;
+      }
+    }
+
+    if (f.key === "pincode") {
+      if (hClean === "pincode" || hClean === "pin" || hClean === "postalcode" || hClean === "zip" || hClean === "zipcode" || hClean === "pincodeno") {
+        return 94;
+      }
+      if (hClean.includes("pin") || hClean.includes("postal") || hClean.includes("zip")) {
+        return 80;
+      }
+    }
+
+    if (f.key === "companyName") {
+      if (hClean === "company" || hClean === "companyname" || hClean === "firm" || hClean === "firmname" || hClean === "partyname" || hClean === "accountname" || hClean === "customer" || hClean === "clientcompany") {
+        return 94;
+      }
+      if (hClean.includes("company") || hClean.includes("firm") || hClean.includes("party") || hClean.includes("business")) {
+        return 80;
+      }
+    }
+
+    if (f.key === "fullName") {
+      if (hClean === "fullname" || hClean === "contactfullname" || hClean === "contactperson" || hClean === "contactname" || hClean === "clientname" || hClean === "customername" || hClean === "name" || hClean === "poc") {
+        return 94;
+      }
+      if (hClean.includes("contact") || hClean.includes("person") || (hClean.includes("name") && !hClean.includes("company") && !hClean.includes("firm"))) {
+        return 80;
+      }
+    }
+
+    if (f.key === "teamName") {
+      if (hClean === "team" || hClean === "teamname" || hClean === "assignedteam" || hClean === "salesrep" || hClean === "salesexecutive" || hClean === "department") {
+        return 94;
+      }
+      if (hClean.includes("team") || hClean.includes("executive") || hClean.includes("department")) {
+        return 80;
+      }
+    }
+
+    // Generic fallback for any other fields
+    if (labelClean.length >= 3 && hClean.includes(labelClean)) {
+      return 60;
+    }
+    if (keyClean.length >= 3 && hClean.includes(keyClean)) {
+      return 55;
+    }
+
+    return 0;
+  };
+
+  // Build list of candidate matches with scores
+  const candidates: { fieldKey: string; header: string; score: number }[] = [];
+
+  fields.forEach((f) => {
+    headers.forEach((h) => {
+      const score = calculateScore(f, h);
+      if (score >= 50) {
+        candidates.push({ fieldKey: f.key, header: h, score });
+      }
+    });
+  });
+
+  // Sort candidate matches by score descending
+  candidates.sort((a, b) => b.score - a.score);
+
+  // Greedily assign best non-conflicting headers
+  candidates.forEach(({ fieldKey, header }) => {
+    if (!mapping[fieldKey] && !usedHeaders.has(header)) {
+      mapping[fieldKey] = header;
+      usedHeaders.add(header);
+    }
+  });
+
+  // Ensure every field has a key in the mapping
+  fields.forEach((f) => {
+    if (!mapping[f.key]) {
+      mapping[f.key] = "";
+    }
+  });
+
+  return mapping;
 }
 
 interface DataImportModalProps {
@@ -103,23 +303,8 @@ export default function DataImportModal({
         setParsedHeaders(headers);
         setParsedRows(data);
 
-        // Auto-map fields by fuzzy name matching
-        const initialMap: Record<string, string> = {};
-        fields.forEach((f) => {
-          const fieldNameLower = f.label.toLowerCase().replace(/[^a-z0-9]/g, "");
-          const keyLower = f.key.toLowerCase().replace(/[^a-z0-9]/g, "");
-
-          const matchedHeader = headers.find((h) => {
-            const hLower = h.toLowerCase().replace(/[^a-z0-9]/g, "");
-            return hLower === fieldNameLower || hLower === keyLower || hLower.includes(fieldNameLower) || fieldNameLower.includes(hLower);
-          });
-
-          if (matchedHeader) {
-            initialMap[f.key] = matchedHeader;
-          } else {
-            initialMap[f.key] = "";
-          }
-        });
+        // Auto-map fields using intelligent domain-aware matcher with collision prevention
+        const initialMap = autoMapFields(fields, headers);
 
         setColumnMapping(initialMap);
         setStep(2);

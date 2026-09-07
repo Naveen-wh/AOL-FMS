@@ -11,6 +11,7 @@ import {
   getEmailAutoSelectSettings,
   saveEmailAutoSelectSettings,
   savePaymentDetails,
+  saveClient,
 } from "../lib/firebaseService";
 import { auth } from "../firebase";
 import { replaceTemplateVars, resolveUserHierarchyInfo, resolveWarehouseInfo, formatEmailBodyForSending } from "../lib/templateUtils";
@@ -90,6 +91,7 @@ interface OrdersOffersViewProps {
   onDeleteOrder: (orderId: string) => void;
   onAddPaymentBank: (bankData: Omit<PaymentBank, "id" | "createdAt">) => void;
   onAddClient?: (clientData: Omit<Client, "id" | "createdAt">) => void;
+  onEditClient?: (clientId: string, updatedData: Partial<Omit<Client, "id" | "createdAt" | "createdByUserId">>) => void;
   teamPermissions?: { [tabId: string]: { view: boolean; edit: boolean; add: boolean } };
   levelWiseFilters?: { [tabOrSubTabId: string]: boolean };
 }
@@ -117,6 +119,7 @@ export default function OrdersOffersView({
   onDeleteOrder,
   onAddPaymentBank,
   onAddClient,
+  onEditClient,
   teamPermissions,
   levelWiseFilters,
 }: OrdersOffersViewProps) {
@@ -618,6 +621,7 @@ export default function OrdersOffersView({
   const [submittingMessage, setSubmittingMessage] = useState("");
   const [newClientName, setNewClientName] = useState("");
   const [newCompanyName, setNewCompanyName] = useState("");
+  const [lastLoadedClientId, setLastLoadedClientId] = useState<string | null>(null);
   const [newEmail, setNewEmail] = useState("");
   const [newSendEmail, setNewSendEmail] = useState(false);
   const [newTemplateId, setNewTemplateId] = useState("");
@@ -643,6 +647,7 @@ export default function OrdersOffersView({
   // Form states - Edit Order
   const [editClientName, setEditClientName] = useState("");
   const [editCompanyName, setEditCompanyName] = useState("");
+  const [editLoadedClientId, setEditLoadedClientId] = useState<string | null>(null);
   const [editEmail, setEditEmail] = useState("");
   const [editSendEmail, setEditSendEmail] = useState(false);
   const [editTemplateId, setEditTemplateId] = useState("");
@@ -1009,6 +1014,7 @@ export default function OrdersOffersView({
 
   // Reset form helper
   const resetAddForm = () => {
+    setLastLoadedClientId(null);
     setNewClientName("");
     setNewCompanyName("");
     setNewEmail("");
@@ -1051,6 +1057,115 @@ export default function OrdersOffersView({
     setNewSameAsBilling(false);
     setUploadError(null);
     setUploadProgressText("");
+  };
+
+  // Helper to synchronize / auto-update client database from order form
+  const syncClientDatabase = async (params: {
+    companyName: string;
+    clientName: string;
+    email: string;
+    phone?: string;
+    billingAddress?: string;
+    billingGstin?: string;
+    loadedClientId?: string | null;
+  }) => {
+    const comp = params.companyName?.trim();
+    const name = params.clientName?.trim();
+    const mail = params.email?.trim() || "";
+    const ph = params.phone?.trim() || "";
+    const addr = params.billingAddress?.trim() || "";
+    const gst = params.billingGstin?.trim() || "";
+
+    if (!comp || !name) return;
+
+    try {
+      const companyClients = clients.filter(
+        (c) => c.companyName?.trim().toLowerCase() === comp.toLowerCase()
+      );
+
+      // 1. Try to find the client record that was originally loaded
+      let targetClient: Client | undefined = params.loadedClientId
+        ? companyClients.find((c) => c.id === params.loadedClientId)
+        : undefined;
+
+      // 2. If not found by loaded ID, search by email match within company
+      if (!targetClient && mail) {
+        targetClient = companyClients.find(
+          (c) => c.email?.trim().toLowerCase() === mail.toLowerCase()
+        );
+      }
+
+      // 3. Search by fullName match within company
+      if (!targetClient) {
+        targetClient = companyClients.find(
+          (c) => c.fullName?.trim().toLowerCase() === name.toLowerCase()
+        );
+      }
+
+      // 4. If still not matched, but this company has exactly 1 client record, update that record
+      if (!targetClient && companyClients.length === 1) {
+        targetClient = companyClients[0];
+      }
+
+      const nowIso = new Date().toISOString();
+
+      if (targetClient) {
+        const hasChanged =
+          targetClient.fullName !== name ||
+          (mail && targetClient.email !== mail) ||
+          targetClient.phone !== ph ||
+          (addr && targetClient.address !== addr) ||
+          (gst && targetClient.gst !== gst);
+
+        if (hasChanged) {
+          const updatedClient: Client = {
+            ...targetClient,
+            fullName: name,
+            email: mail || targetClient.email,
+            phone: ph || targetClient.phone,
+            address: addr || targetClient.address,
+            gst: gst || targetClient.gst,
+            createdAt: nowIso, // Move to top of createdAt desc list so next selection picks updated record
+          };
+
+          if (onEditClient) {
+            await onEditClient(targetClient.id, {
+              fullName: updatedClient.fullName,
+              email: updatedClient.email,
+              phone: updatedClient.phone,
+              address: updatedClient.address,
+              gst: updatedClient.gst,
+            });
+          }
+          await saveClient(updatedClient);
+        }
+      } else {
+        // Create new client in company directory
+        const newClientId = `client-${Date.now()}`;
+        const newClientObj: Client = {
+          id: newClientId,
+          fullName: name,
+          companyName: comp,
+          email: mail,
+          phone: ph,
+          gst: gst,
+          city: "",
+          pincode: "",
+          address: addr,
+          createdAt: nowIso,
+          createdByUserId: activeUser.id,
+          teamName: activeUser.teamName || "",
+        };
+
+        if (onAddClient) {
+          await onAddClient(newClientObj);
+        } else {
+          await saveClient(newClientObj);
+        }
+      }
+    } catch (clientSyncErr) {
+      console.error("Failed to automatically sync client details to database:", clientSyncErr);
+    }
   };
 
   const handlePOFilesUpload = async (files: FileList | File[], isEdit: boolean) => {
@@ -1412,7 +1527,17 @@ export default function OrdersOffersView({
         }
       }
 
-      setSubmittingMessage("Saving order details to database...");
+      setSubmittingMessage("Updating client database & saving order details...");
+      await syncClientDatabase({
+        companyName: newCompanyName,
+        clientName: newClientName,
+        email: newEmail,
+        phone: newPhone,
+        billingAddress: newBillingAddress,
+        billingGstin: newBillingGstin,
+        loadedClientId: lastLoadedClientId,
+      });
+
       const orderPayload: any = {
         clientName: newClientName,
         companyName: newCompanyName,
@@ -1457,7 +1582,12 @@ export default function OrdersOffersView({
     setEditEmail(order.email);
     setEditSendEmail(false);
     setEditPhone(order.phone);
-    const clientMatch = clients.find(c => c.companyName === order.companyName && c.fullName === order.clientName) || clients.find(c => c.companyName === order.companyName);
+    const clientMatch = clients
+      .filter(c => c.companyName === order.companyName)
+      .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
+      .find(c => c.fullName === order.clientName || c.email === order.email)
+      || clients.filter(c => c.companyName === order.companyName)[0];
+    setEditLoadedClientId(clientMatch?.id || null);
     setEditBillingAddress(order.billingAddress || clientMatch?.address || "");
     setEditBillingGstin(order.billingGstin || clientMatch?.gst || "");
     setEditStatus(order.status);
@@ -1767,7 +1897,17 @@ export default function OrdersOffersView({
         }
       }
 
-      setSubmittingMessage("Saving order changes to database...");
+      setSubmittingMessage("Updating client database & saving order changes...");
+      await syncClientDatabase({
+        companyName: editCompanyName,
+        clientName: editClientName,
+        email: editEmail,
+        phone: editPhone,
+        billingAddress: editBillingAddress,
+        billingGstin: editBillingGstin,
+        loadedClientId: editLoadedClientId,
+      });
+
       const updatedOrderPayload: any = {
         ...editingOrder,
         clientName: editClientName,
@@ -1801,6 +1941,7 @@ export default function OrdersOffersView({
       console.error("Failed to edit order:", err);
       alert("Failed to update sales order. Please try again.");
     } finally {
+      setEditLoadedClientId(null);
       setIsSubmittingOrder(false);
       setSubmittingMessage("");
     }
@@ -2983,12 +3124,15 @@ export default function OrdersOffersView({
                       onChange={(e) => {
                         const val = e.target.value;
                         setNewCompanyName(val);
-                        // Autofill with first contact of that company
-                        const match = clients.find((c) => c.companyName === val);
+                        // Autofill with latest contact of that company
+                        const match = clients
+                          .filter((c) => c.companyName === val)
+                          .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
                         if (match) {
-                          setNewClientName(match.fullName);
-                          setNewEmail(match.email);
-                          setNewPhone(match.phone);
+                          setLastLoadedClientId(match.id);
+                          setNewClientName(match.fullName || "");
+                          setNewEmail(match.email || "");
+                          setNewPhone(match.phone || "");
                           setNewBillingAddress(match.address || "");
                           setNewBillingGstin(match.gst || "");
                           if (newSameAsBilling) {
@@ -2996,6 +3140,7 @@ export default function OrdersOffersView({
                             setNewGstin(match.gst || "");
                           }
                         } else {
+                          setLastLoadedClientId(null);
                           setNewClientName("");
                           setNewEmail("");
                           setNewPhone("");
@@ -3033,14 +3178,17 @@ export default function OrdersOffersView({
 
                 {/* Client Name Input */}
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Client Full Name *</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono flex items-center justify-between">
+                    <span>Client Full Name *</span>
+                    <span className="text-[10px] text-indigo-600 font-semibold normal-case">(Auto-syncs)</span>
+                  </label>
                   <input
                     type="text"
                     required
-                    readOnly
-                    placeholder="Select company above"
+                    placeholder="Enter client full name..."
                     value={newClientName}
-                    className="w-full text-sm border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none cursor-not-allowed select-none font-medium"
+                    onChange={(e) => setNewClientName(e.target.value)}
+                    className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-medium"
                   />
                 </div>
               </div>
@@ -3048,19 +3196,28 @@ export default function OrdersOffersView({
               {/* Conditionally render dynamic contact options selection dropdown according to selected Company Name */}
               {newCompanyName && clients.filter((c) => c.companyName === newCompanyName).length > 0 && (
                 <div className="bg-indigo-50 border border-indigo-100 p-2.5 rounded-xl text-xs space-y-1 animate-fade-in">
-                  <label className="text-[10px] font-extrabold text-indigo-800 block uppercase tracking-wider font-mono">
-                    Select Contact Option for {newCompanyName}
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-extrabold text-indigo-800 block uppercase tracking-wider font-mono">
+                      Select Contact Option for {newCompanyName}
+                    </label>
+                    <span className="text-[10px] text-indigo-600 font-medium">Or edit fields below to update</span>
+                  </div>
                   <select
+                    value={
+                      clients.find(c => c.companyName === newCompanyName && c.fullName === newClientName && c.email === newEmail)
+                        ? `${newClientName}|${newEmail}|${newPhone}`
+                        : "custom"
+                    }
                     onChange={(e) => {
                       const val = e.target.value;
-                      if (val) {
+                      if (val && val !== "custom") {
                         const [name, email, phone] = val.split("|");
-                        setNewClientName(name);
-                        setNewEmail(email);
-                        setNewPhone(phone);
                         const match = clients.find(c => c.companyName === newCompanyName && c.fullName === name && c.email === email);
                         if (match) {
+                          setLastLoadedClientId(match.id);
+                          setNewClientName(match.fullName || "");
+                          setNewEmail(match.email || "");
+                          setNewPhone(match.phone || "");
                           if (match.address) {
                             setNewBillingAddress(match.address);
                             if (newSameAsBilling) setNewDestinationAddress(match.address);
@@ -3072,27 +3229,38 @@ export default function OrdersOffersView({
                         }
                       }
                     }}
-                    className="w-full bg-white border border-indigo-200 text-slate-700 rounded-lg p-1 text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
+                    className="w-full bg-white border border-indigo-200 text-slate-700 rounded-lg p-1 text-xs focus:ring-1 focus:ring-indigo-500 outline-none font-medium"
                   >
-                    {clients.filter((c) => c.companyName === newCompanyName).map((c) => (
-                      <option key={c.id} value={`${c.fullName}|${c.email}|${c.phone}`}>
-                        {c.fullName} ({c.email})
+                    {clients
+                      .filter((c) => c.companyName === newCompanyName)
+                      .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
+                      .map((c) => (
+                        <option key={c.id} value={`${c.fullName}|${c.email}|${c.phone}`}>
+                          {c.fullName} ({c.email}) {c.phone ? `• ${c.phone}` : ""}
+                        </option>
+                      ))}
+                    {!clients.some(c => c.companyName === newCompanyName && c.fullName === newClientName && c.email === newEmail) && newClientName && (
+                      <option value="custom">
+                        ✏️ Custom / Modified: {newClientName} ({newEmail || "No email"})
                       </option>
-                    ))}
+                    )}
                   </select>
                 </div>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Email Address *</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono flex items-center justify-between">
+                    <span>Email Address *</span>
+                    <span className="text-[10px] text-indigo-600 font-semibold normal-case">(Auto-syncs)</span>
+                  </label>
                   <input
                     type="email"
                     required
-                    readOnly
-                    placeholder="Auto-filled email"
+                    placeholder="Enter client email address..."
                     value={newEmail}
-                    className="w-full text-sm border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none cursor-not-allowed select-none"
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
                   />
                   <div className="flex items-center gap-2 mt-1">
                     <input
@@ -3132,13 +3300,16 @@ export default function OrdersOffersView({
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Phone Number</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono flex items-center justify-between">
+                    <span>Phone Number</span>
+                    <span className="text-[10px] text-indigo-600 font-semibold normal-case">(Auto-syncs)</span>
+                  </label>
                   <input
                     type="text"
-                    readOnly
-                    placeholder="Auto-filled phone"
+                    placeholder="Enter client phone..."
                     value={newPhone}
-                    className="w-full text-sm border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none cursor-not-allowed select-none"
+                    onChange={(e) => setNewPhone(e.target.value)}
+                    className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
                   />
                 </div>
               </div>
@@ -3905,26 +4076,89 @@ export default function OrdersOffersView({
                   />
                 </div>
 
-                {/* Client Name (Read-only on edit) */}
+                {/* Client Name (Editable) */}
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Client Full Name</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono flex items-center justify-between">
+                    <span>Client Full Name *</span>
+                    <span className="text-[10px] text-amber-600 font-semibold normal-case">(Auto-syncs)</span>
+                  </label>
                   <input
                     type="text"
-                    readOnly
+                    required
                     value={editClientName}
-                    className="w-full text-sm border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none cursor-not-allowed select-none font-semibold"
+                    onChange={(e) => setEditClientName(e.target.value)}
+                    className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800 font-semibold"
                   />
                 </div>
               </div>
 
+              {/* Conditionally render dynamic contact options selection dropdown for Edit */}
+              {editCompanyName && clients.filter((c) => c.companyName === editCompanyName).length > 0 && (
+                <div className="bg-amber-50 border border-amber-100 p-2.5 rounded-xl text-xs space-y-1 animate-fade-in">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-extrabold text-amber-800 block uppercase tracking-wider font-mono">
+                      Select Contact Option for {editCompanyName}
+                    </label>
+                    <span className="text-[10px] text-amber-700 font-medium">Or edit fields below to update</span>
+                  </div>
+                  <select
+                    value={
+                      clients.find(c => c.companyName === editCompanyName && c.fullName === editClientName && c.email === editEmail)
+                        ? `${editClientName}|${editEmail}|${editPhone}`
+                        : "custom"
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val && val !== "custom") {
+                        const [name, email, phone] = val.split("|");
+                        const match = clients.find(c => c.companyName === editCompanyName && c.fullName === name && c.email === email);
+                        if (match) {
+                          setEditLoadedClientId(match.id);
+                          setEditClientName(match.fullName || "");
+                          setEditEmail(match.email || "");
+                          setEditPhone(match.phone || "");
+                          if (match.address) {
+                            setEditBillingAddress(match.address);
+                            if (editSameAsBilling) setEditDestinationAddress(match.address);
+                          }
+                          if (match.gst) {
+                            setEditBillingGstin(match.gst);
+                            if (editSameAsBilling) setEditGstin(match.gst);
+                          }
+                        }
+                      }
+                    }}
+                    className="w-full bg-white border border-amber-200 text-slate-700 rounded-lg p-1 text-xs focus:ring-1 focus:ring-amber-500 outline-none font-medium"
+                  >
+                    {clients
+                      .filter((c) => c.companyName === editCompanyName)
+                      .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
+                      .map((c) => (
+                        <option key={c.id} value={`${c.fullName}|${c.email}|${c.phone}`}>
+                          {c.fullName} ({c.email}) {c.phone ? `• ${c.phone}` : ""}
+                        </option>
+                      ))}
+                    {!clients.some(c => c.companyName === editCompanyName && c.fullName === editClientName && c.email === editEmail) && editClientName && (
+                      <option value="custom">
+                        ✏️ Custom / Modified: {editClientName} ({editEmail || "No email"})
+                      </option>
+                    )}
+                  </select>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Email Address</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono flex items-center justify-between">
+                    <span>Email Address *</span>
+                    <span className="text-[10px] text-amber-600 font-semibold normal-case">(Auto-syncs)</span>
+                  </label>
                   <input
                     type="email"
-                    readOnly
+                    required
                     value={editEmail}
-                    className="w-full text-sm border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none cursor-not-allowed select-none"
+                    onChange={(e) => setEditEmail(e.target.value)}
+                    className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
                   />
                   <div className="flex items-center gap-2 mt-1">
                     <input
@@ -3964,12 +4198,15 @@ export default function OrdersOffersView({
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Phone Number</label>
+                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono flex items-center justify-between">
+                    <span>Phone Number</span>
+                    <span className="text-[10px] text-amber-600 font-semibold normal-case">(Auto-syncs)</span>
+                  </label>
                   <input
                     type="text"
-                    readOnly
                     value={editPhone}
-                    className="w-full text-sm border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none cursor-not-allowed select-none"
+                    onChange={(e) => setEditPhone(e.target.value)}
+                    className="w-full text-sm border border-slate-200 bg-white px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
                   />
                 </div>
               </div>

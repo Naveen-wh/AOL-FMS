@@ -2204,40 +2204,16 @@ export default function IndentView({
                                     <span className="text-slate-400 font-bold uppercase tracking-tight">Payment Terms:</span>
                                     <span className="text-slate-700 font-bold">{order.payment || "N/A"}</span>
                                   </div>
-                                  {order.closedWonDetails?.poAttachments && order.closedWonDetails.poAttachments.length > 0 ? (
-                                    <div className="flex flex-col gap-1 pt-1 border-t border-slate-100/50">
-                                      <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document(s):</span>
-                                      <div className="flex flex-wrap gap-1">
-                                        {order.closedWonDetails.poAttachments.map((att, attIdx) => (
-                                          <a 
-                                            key={attIdx}
-                                            href="#"
-                                            onClick={(e) => {
-                                              e.preventDefault();
-                                              openOrDownloadDocument(att.url, att.name || `PO_${order.closedWonDetails!.customerPoNumber || "document"}_${attIdx + 1}.pdf`);
-                                            }}
-                                            className="text-indigo-600 hover:text-indigo-800 font-black underline flex items-center gap-1 text-[9.5px]"
-                                          >
-                                            <FileText size={10} /> {att.name || `PO ${attIdx + 1}`} ↗
-                                          </a>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  ) : order.closedWonDetails?.poAttachmentUrl ? (
-                                    <div className="flex justify-between items-center pt-1 border-t border-slate-100/50">
-                                      <span className="text-slate-400 font-bold uppercase tracking-tight">PO Document:</span>
-                                      <a 
-                                        href="#"
-                                        onClick={(e) => {
-                                          e.preventDefault();
-                                          openOrDownloadDocument(order.closedWonDetails.poAttachmentUrl, `PO_${order.closedWonDetails.customerPoNumber || "document"}.pdf`);
-                                        }}
-                                        className="text-indigo-600 hover:text-indigo-800 font-black underline flex items-center gap-1 text-[9.5px]"
-                                      >
-                                        <FileText size={10} /> View Customer PO ↗
-                                      </a>
-                                    </div>
-                                  ) : null}
+                                  <div className="flex justify-between items-center pt-1 border-t border-slate-100/50">
+                                    <span className="text-slate-400 font-bold uppercase tracking-tight">Payment Credit Period ( No. Of Days ):</span>
+                                    <span className={`font-bold ${order.paymentCreditPeriod ? "text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded text-[10px]" : "text-slate-500"}`}>
+                                      {order.paymentCreditPeriod ? (
+                                        /^\d+$/.test(order.paymentCreditPeriod.trim())
+                                          ? `${order.paymentCreditPeriod.trim()} Days`
+                                          : order.paymentCreditPeriod
+                                      ) : "N/A"}
+                                    </span>
+                                  </div>
                                 </div>
                               </div>
 

@@ -1058,7 +1058,8 @@ export default function App() {
 
     const updatedClient: Client = {
       ...targetClient,
-      ...updatedData
+      ...updatedData,
+      createdAt: new Date().toISOString()
     };
 
     await saveClient(updatedClient);
@@ -1598,6 +1599,7 @@ export default function App() {
               onDeleteOrder={handleDeleteOrder}
               onAddPaymentBank={handleAddPaymentBank}
               onAddClient={handleAddClient}
+              onEditClient={handleEditClient}
               emailTemplates={emailTemplates}
               emailSentLogs={emailSentLogs}
               teamPermissions={userTeamSetting?.teamPermissions}
@@ -1634,6 +1636,20 @@ export default function App() {
               orders={orders}
               badDebtors={badDebtors}
               debitCreditNotes={debitCreditNotes}
+              onSaveDebitCreditNote={(note) => {
+                setDebitCreditNotes((prev) => {
+                  const idx = prev.findIndex((n) => n.id === note.id);
+                  if (idx >= 0) {
+                    const updated = [...prev];
+                    updated[idx] = note;
+                    return updated;
+                  }
+                  return [note, ...prev];
+                });
+              }}
+              onDeleteDebitCreditNote={(id) => {
+                setDebitCreditNotes((prev) => prev.filter((n) => n.id !== id));
+              }}
               onEditOrder={handleEditOrder}
               paymentBanks={paymentBanks}
               visibleSubTabs={userTeamSetting?.visibleSubTabs}

@@ -120,36 +120,144 @@ export default function ClientsView({
   const [isImportOpen, setIsImportOpen] = useState(false);
 
   const clientImportFields: ImportFieldDefinition[] = [
-    { key: "fullName", label: "Contact Full Name", required: true, sampleValue: "Rajesh Sharma" },
-    { key: "companyName", label: "Company Name", required: true, sampleValue: "Apex BioTech Pvt Ltd" },
-    { key: "email", label: "Email Address", sampleValue: "rajesh@apexbio.com" },
-    { key: "phone", label: "Phone Number", sampleValue: "+91 9876543210" },
-    { key: "gst", label: "GSTIN Number", sampleValue: "27AAAAA0000A1Z5" },
-    { key: "city", label: "City", sampleValue: "Mumbai" },
-    { key: "pincode", label: "Pincode", sampleValue: "400001" },
-    { key: "address", label: "Address", sampleValue: "Andheri East" },
-    { key: "teamName", label: "Assigned Team", sampleValue: "Sales Executive" },
+    {
+      key: "fullName",
+      label: "Contact Person / Full Name",
+      sampleValue: "Rajesh Sharma",
+      aliases: [
+        "Contact Full Name",
+        "Contact Person",
+        "Client Name",
+        "Customer Name",
+        "Name",
+        "Full Name",
+        "Contact",
+        "POC",
+        "SPOC",
+        "Representative",
+      ],
+    },
+    {
+      key: "companyName",
+      label: "Company Name",
+      required: true,
+      sampleValue: "Apex BioTech Pvt Ltd",
+      aliases: [
+        "Company",
+        "Firm Name",
+        "Firm",
+        "Client Company",
+        "Customer",
+        "Account Name",
+        "Party Name",
+        "Party",
+        "Business Name",
+        "Organization",
+      ],
+    },
+    {
+      key: "email",
+      label: "Email",
+      sampleValue: "rajesh@apexbio.com",
+      aliases: [
+        "Email Address",
+        "E-mail",
+        "Email ID",
+        "Mail",
+        "Mail ID",
+        "Contact Email",
+        "Client Email",
+        "Official Email",
+      ],
+    },
+    {
+      key: "phone",
+      label: "Phone Number",
+      sampleValue: "+91 9876543210",
+      aliases: [
+        "Phone",
+        "Mobile",
+        "Mobile Number",
+        "Mobile No",
+        "Contact Number",
+        "Contact No",
+        "Tel",
+        "Telephone",
+        "Cell",
+        "WhatsApp",
+      ],
+    },
+    {
+      key: "gst",
+      label: "GSTIN Number",
+      sampleValue: "27AAAAA0000A1Z5",
+      aliases: ["GST", "GSTIN", "GST No", "Tax ID", "VAT Number"],
+    },
+    {
+      key: "city",
+      label: "City",
+      sampleValue: "Mumbai",
+      aliases: ["Town", "District", "Location City"],
+    },
+    {
+      key: "pincode",
+      label: "Pincode",
+      sampleValue: "400001",
+      aliases: ["Pin", "Pin Code", "Postal Code", "Zip", "Zip Code"],
+    },
+    {
+      key: "address",
+      label: "Address",
+      sampleValue: "Andheri East, Mumbai",
+      aliases: [
+        "Billing Address",
+        "Office Address",
+        "Registered Address",
+        "Street Address",
+        "Full Address",
+        "Company Address",
+        "Premises",
+        "Plant Address",
+        "Site Address",
+        "Works Address",
+        "Delivery Address",
+      ],
+    },
+    {
+      key: "teamName",
+      label: "Assigned Team",
+      sampleValue: "Sales Executive",
+      aliases: ["Team", "Department", "Sales Team", "Sales Executive", "Owner"],
+    },
   ];
 
   const handleImportClients = async (rows: Record<string, any>[]) => {
     let count = 0;
+    const errors: string[] = [];
     for (const row of rows) {
-      if (row.fullName && row.companyName) {
-        await onAddClient({
-          fullName: row.fullName.trim(),
-          companyName: row.companyName.trim(),
-          email: row.email?.trim() || "",
-          phone: row.phone?.trim() || "",
-          gst: row.gst?.trim() || "",
-          city: row.city?.trim() || "",
-          pincode: row.pincode?.trim() || "",
-          address: row.address?.trim() || "",
-          teamName: isExecutive ? (row.teamName?.trim() || undefined) : (activeUser.teamName || undefined),
-        });
-        count++;
+      const company = (row.companyName || "").trim();
+      const contact = (row.fullName || company || "").trim();
+      if (company || contact) {
+        try {
+          await onAddClient({
+            fullName: contact || company,
+            companyName: company || contact,
+            email: row.email?.trim() || "",
+            phone: row.phone?.trim() || "",
+            gst: row.gst?.trim() || "",
+            city: row.city?.trim() || "",
+            pincode: row.pincode?.trim() || "",
+            address: row.address?.trim() || "",
+            teamName: isExecutive ? (row.teamName?.trim() || undefined) : (activeUser.teamName || undefined),
+          });
+          count++;
+        } catch (err: any) {
+          console.error("Error importing client row:", err);
+          errors.push(`Row for ${company || contact}: ${err.message || err}`);
+        }
       }
     }
-    return { successCount: count };
+    return { successCount: count, errors: errors.length > 0 ? errors : undefined };
   };
 
   // Add Task Modal states
@@ -184,9 +292,9 @@ export default function ClientsView({
     }
 
     return (
-      client.fullName.toLowerCase().includes(term) ||
-      client.companyName.toLowerCase().includes(term) ||
-      client.email.toLowerCase().includes(term) ||
+      (client.fullName && client.fullName.toLowerCase().includes(term)) ||
+      (client.companyName && client.companyName.toLowerCase().includes(term)) ||
+      (client.email && client.email.toLowerCase().includes(term)) ||
       (client.city && client.city.toLowerCase().includes(term)) ||
       (client.gst && client.gst.toLowerCase().includes(term))
     );
@@ -203,8 +311,10 @@ export default function ClientsView({
   const clientOrders = activeClient
     ? orders.filter(
         (order) =>
-          (order.companyName === activeClient.companyName ||
-            order.clientName.toLowerCase() === activeClient.fullName.toLowerCase()) &&
+          ((activeClient.companyName && order.companyName === activeClient.companyName) ||
+            (order.clientName &&
+              activeClient.fullName &&
+              order.clientName.toLowerCase() === activeClient.fullName.toLowerCase())) &&
           canViewOrderOffer(activeUserId, order, users)
       )
     : [];
@@ -403,19 +513,19 @@ export default function ClientsView({
         <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-3xs">
           <span className="text-[9px] font-bold font-mono text-slate-400 block uppercase">Active Organizations</span>
           <span className="text-lg font-bold text-slate-800 leading-tight block mt-0.5">
-            {new Set(clients.map((c) => c.companyName.toLowerCase())).size}
+            {new Set(clients.map((c) => (c.companyName || "").trim().toLowerCase()).filter(Boolean)).size}
           </span>
         </div>
         <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-3xs">
           <span className="text-[9px] font-bold font-mono text-slate-400 block uppercase">GST Managed</span>
           <span className="text-lg font-bold text-slate-800 leading-tight block mt-0.5">
-            {clients.filter((c) => c.gst).length} Clients
+            {clients.filter((c) => Boolean(c.gst && c.gst.trim())).length} Clients
           </span>
         </div>
         <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-3xs">
           <span className="text-[9px] font-bold font-mono text-slate-400 block uppercase">Territories & Cities</span>
           <span className="text-lg font-bold text-slate-800 leading-tight block mt-0.5">
-            {new Set(clients.map((c) => c.city.toLowerCase()).filter(Boolean)).size || 0} Cities
+            {new Set(clients.map((c) => (c.city || "").trim().toLowerCase()).filter(Boolean)).size || 0} Cities
           </span>
         </div>
       </div>
@@ -499,8 +609,10 @@ export default function ClientsView({
                     const isSelected = activeClient?.id === client.id;
                     const matchesCount = orders.filter(
                       (o) =>
-                        o.companyName === client.companyName ||
-                        o.clientName?.toLowerCase() === client.fullName.toLowerCase()
+                        (client.companyName && o.companyName === client.companyName) ||
+                        (o.clientName &&
+                          client.fullName &&
+                          o.clientName.toLowerCase() === client.fullName.toLowerCase())
                     ).length;
 
                     const deletable = canDeleteClient(activeUserId, client, users);
