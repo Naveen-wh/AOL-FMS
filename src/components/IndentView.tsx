@@ -69,6 +69,8 @@ import {
   Trash2,
   Edit3,
   Save,
+  Zap,
+  Link as LinkIcon,
   X
 } from "lucide-react";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
@@ -383,6 +385,10 @@ export default function IndentView({
   const [selectedFiles, setSelectedFiles] = useState<{ [key: string]: File[] }>({});
   const [existingAttachments, setExistingAttachments] = useState<{ [key: string]: InvoiceAttachment[] }>({});
   const [uploadProgressText, setUploadProgressText] = useState<{ [key: string]: string }>({});
+  const [isUploadingInvoice, setIsUploadingInvoice] = useState<{ [key: string]: boolean }>({});
+  const [showManualInvoiceLink, setShowManualInvoiceLink] = useState<{ [key: string]: boolean }>({});
+  const [manualInvoiceLinkUrl, setManualInvoiceLinkUrl] = useState<{ [key: string]: string }>({});
+  const [manualInvoiceLinkName, setManualInvoiceLinkName] = useState<{ [key: string]: string }>({});
   const [selectedTemplates, setSelectedTemplates] = useState<{ [key: string]: string }>({});
   const [sendEmails, setSendEmails] = useState<{ [key: string]: boolean }>({});
   const [uploadProgress, setUploadProgress] = useState<{ [key: string]: boolean }>({});
@@ -651,7 +657,8 @@ export default function IndentView({
     setDragOverOrderId(null);
   };
 
-  const handleFilesAdd = (files: FileList | File[], orderId: string, order: OrderOffer) => {
+  // Direct Google Drive upload via Apps Script when user attaches file
+  const handleDirectInvoiceFileUpload = async (files: FileList | File[], orderId: string, order: OrderOffer) => {
     const fileList = Array.from(files);
     if (fileList.length === 0) return;
 
@@ -663,9 +670,7 @@ export default function IndentView({
               ? [{ name: order.billingDetails.invoiceFileName || `Invoice_${order.billingDetails.invoiceNumber || "Doc"}.pdf`, url: order.billingDetails.invoiceFileUrl }]
               : []));
 
-    const currentNew = selectedFiles[orderId] || [];
-    const currentTotal = currentExisting.length + currentNew.length;
-    const remainingSlots = 10 - currentTotal;
+    const remainingSlots = 10 - currentExisting.length;
 
     if (remainingSlots <= 0) {
       setOrderErrors((prev) => ({ ...prev, [orderId]: "Maximum limit of 10 invoice files reached. Remove an existing file to attach a new one." }));
@@ -683,42 +688,93 @@ export default function IndentView({
       return;
     }
 
-    setSelectedFiles((prev) => ({
+    setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
+    setIsUploadingInvoice((prev) => ({ ...prev, [orderId]: true }));
+    setUploadProgressText((prev) => ({
       ...prev,
-      [orderId]: [...(prev[orderId] || []), ...fileList].slice(0, 10 - currentExisting.length),
+      [orderId]: fileList.length === 1
+        ? `Uploading ${fileList[0].name} to Google Drive via Apps Script...`
+        : `Uploading ${fileList.length} invoice documents to Google Drive...`
     }));
-    if (existingAttachments[orderId] === undefined) {
+
+    try {
+      const invNum = invoiceNumbers[orderId]?.trim() || order.billingDetails?.invoiceNumber || "INV";
+      const invDate = invoiceDates[orderId]?.trim() || order.billingDetails?.invoiceDate || new Date().toISOString().split("T")[0];
+      const newlyUploaded: InvoiceAttachment[] = [];
+
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        if (fileList.length > 1) {
+          setUploadProgressText((prev) => ({
+            ...prev,
+            [orderId]: `Uploading ${i + 1} of ${fileList.length}: ${file.name} to Google Drive...`
+          }));
+        }
+
+        const uploadResult = await uploadInvoiceToDrive(file, order.companyName, invNum, invDate);
+        newlyUploaded.push({
+          id: uploadResult.id || `gas-inv-${Date.now()}-${i}`,
+          name: uploadResult.name || file.name,
+          url: uploadResult.webViewLink || uploadResult.url,
+          size: file.size,
+          uploadedAt: new Date().toISOString(),
+        });
+      }
+
+      const updatedAttachments = [...currentExisting, ...newlyUploaded].slice(0, 10);
       setExistingAttachments((prev) => ({
         ...prev,
-        [orderId]: currentExisting,
+        [orderId]: updatedAttachments,
       }));
+
+      // If the order already has billingDetails and we're not currently editing draft fields, persist immediately
+      if (order.billingDetails?.invoiceNumber && editingOrderId !== order.id) {
+        const primaryUrl = updatedAttachments[0]?.url || "";
+        const primaryName = updatedAttachments[0]?.name || "";
+        const allUrls = updatedAttachments.map(a => a.url);
+        const updatedOrder: OrderOffer = {
+          ...order,
+          billingDetails: {
+            ...order.billingDetails,
+            invoiceFileUrl: primaryUrl,
+            invoiceFileName: primaryName,
+            invoiceFileUrls: allUrls,
+            invoiceAttachments: updatedAttachments,
+          }
+        };
+        await onEditOrder(updatedOrder);
+      }
+    } catch (err: any) {
+      console.error("Direct invoice upload error:", err);
+      setOrderErrors((prev) => ({
+        ...prev,
+        [orderId]: err.message || "Failed to upload invoice document to Google Drive."
+      }));
+    } finally {
+      setIsUploadingInvoice((prev) => ({ ...prev, [orderId]: false }));
+      setUploadProgressText((prev) => ({ ...prev, [orderId]: "" }));
     }
-    setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
   };
 
   const handleDrop = (e: React.DragEvent, orderId: string, order: OrderOffer) => {
     e.preventDefault();
     setDragOverOrderId(null);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFilesAdd(e.dataTransfer.files, orderId, order);
+      handleDirectInvoiceFileUpload(e.dataTransfer.files, orderId, order);
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, orderId: string, order: OrderOffer) => {
     if (e.target.files && e.target.files.length > 0) {
-      handleFilesAdd(e.target.files, orderId, order);
+      handleDirectInvoiceFileUpload(e.target.files, orderId, order);
       e.target.value = "";
     }
   };
 
-  const removeSelectedNewFile = (orderId: string, index: number) => {
-    setSelectedFiles((prev) => ({
-      ...prev,
-      [orderId]: (prev[orderId] || []).filter((_, i) => i !== index),
-    }));
-  };
+  const handleAddManualInvoiceLink = async (orderId: string, order: OrderOffer) => {
+    const url = manualInvoiceLinkUrl[orderId]?.trim();
+    if (!url) return;
 
-  const removeExistingAttachment = (orderId: string, index: number, order: OrderOffer) => {
     const currentExisting = existingAttachments[orderId] !== undefined
       ? existingAttachments[orderId]
       : (order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0
@@ -727,10 +783,119 @@ export default function IndentView({
               ? [{ name: order.billingDetails.invoiceFileName || `Invoice_${order.billingDetails.invoiceNumber || "Doc"}.pdf`, url: order.billingDetails.invoiceFileUrl }]
               : []));
 
+    if (currentExisting.length >= 10) {
+      setOrderErrors((prev) => ({ ...prev, [orderId]: "Maximum limit of 10 invoice files reached." }));
+      return;
+    }
+
+    const docName = manualInvoiceLinkName[orderId]?.trim() || (invoiceNumbers[orderId] ? `Invoice_${invoiceNumbers[orderId]}_Link.pdf` : "Invoice_Document.pdf");
+    const newAttachment: InvoiceAttachment = {
+      id: `link-${Date.now()}`,
+      name: docName,
+      url,
+      uploadedAt: new Date().toISOString(),
+    };
+
+    const updated = [...currentExisting, newAttachment].slice(0, 10);
+    setExistingAttachments((prev) => ({ ...prev, [orderId]: updated }));
+    setManualInvoiceLinkUrl((prev) => ({ ...prev, [orderId]: "" }));
+    setManualInvoiceLinkName((prev) => ({ ...prev, [orderId]: "" }));
+    setShowManualInvoiceLink((prev) => ({ ...prev, [orderId]: false }));
+    setOrderErrors((prev) => ({ ...prev, [orderId]: null }));
+
+    if (order.billingDetails?.invoiceNumber && editingOrderId !== order.id) {
+      const primaryUrl = updated[0]?.url || "";
+      const primaryName = updated[0]?.name || "";
+      const allUrls = updated.map(a => a.url);
+      const updatedOrder: OrderOffer = {
+        ...order,
+        billingDetails: {
+          ...order.billingDetails,
+          invoiceFileUrl: primaryUrl,
+          invoiceFileName: primaryName,
+          invoiceFileUrls: allUrls,
+          invoiceAttachments: updated,
+        }
+      };
+      await onEditOrder(updatedOrder);
+    }
+  };
+
+  const removeExistingAttachment = async (orderId: string, index: number, order: OrderOffer) => {
+    const currentExisting = existingAttachments[orderId] !== undefined
+      ? existingAttachments[orderId]
+      : (order.billingDetails?.invoiceAttachments && order.billingDetails.invoiceAttachments.length > 0
+          ? order.billingDetails.invoiceAttachments
+          : (order.billingDetails?.invoiceFileUrl
+              ? [{ name: order.billingDetails.invoiceFileName || `Invoice_${order.billingDetails.invoiceNumber || "Doc"}.pdf`, url: order.billingDetails.invoiceFileUrl }]
+              : []));
+
+    const updated = currentExisting.filter((_, i) => i !== index);
     setExistingAttachments((prev) => ({
       ...prev,
-      [orderId]: currentExisting.filter((_, i) => i !== index),
+      [orderId]: updated,
     }));
+
+    if (order.billingDetails?.invoiceNumber && editingOrderId !== order.id) {
+      const primaryUrl = updated[0]?.url || "";
+      const primaryName = updated[0]?.name || "";
+      const allUrls = updated.map(a => a.url);
+      const updatedOrder: OrderOffer = {
+        ...order,
+        billingDetails: {
+          ...order.billingDetails,
+          invoiceFileUrl: primaryUrl,
+          invoiceFileName: primaryName,
+          invoiceFileUrls: allUrls,
+          invoiceAttachments: updated,
+        }
+      };
+      await onEditOrder(updatedOrder);
+    }
+  };
+
+  const handleDeleteInvoiceAttachmentDirectly = async (order: OrderOffer, attachmentIndex: number) => {
+    if (!window.confirm("Are you sure you want to delete this attached invoice file?")) {
+      return;
+    }
+    const currentAttachments = [...(order.billingDetails?.invoiceAttachments || [])];
+    currentAttachments.splice(attachmentIndex, 1);
+    const primaryUrl = currentAttachments[0]?.url || "";
+    const primaryName = currentAttachments[0]?.name || "";
+    const allUrls = currentAttachments.map(a => a.url);
+
+    const updatedBilling: BillingDetails = {
+      ...order.billingDetails!,
+      invoiceFileUrl: primaryUrl,
+      invoiceFileName: primaryName,
+      invoiceFileUrls: allUrls,
+      invoiceAttachments: currentAttachments,
+    };
+
+    const updatedOrder: OrderOffer = {
+      ...order,
+      billingDetails: updatedBilling,
+    };
+
+    await onEditOrder(updatedOrder);
+  };
+
+  const handleDeleteSingleInvoiceFileDirectly = async (order: OrderOffer) => {
+    if (!window.confirm("Are you sure you want to delete this attached invoice file?")) {
+      return;
+    }
+    const updatedBilling: BillingDetails = {
+      ...order.billingDetails!,
+      invoiceFileUrl: "",
+      invoiceFileName: "",
+      invoiceFileUrls: [],
+      invoiceAttachments: [],
+    };
+    const updatedOrder: OrderOffer = {
+      ...order,
+      billingDetails: updatedBilling,
+    };
+    await onEditOrder(updatedOrder);
   };
 
   // Submit mapping
@@ -763,30 +928,26 @@ export default function IndentView({
     setUploadProgress((prev) => ({ ...prev, [orderId]: true }));
     setUploadProgressText((prev) => ({ 
       ...prev, 
-      [orderId]: newFiles.length > 0 
-        ? (newFiles.length > 1 ? `Uploading 1 of ${newFiles.length} (${newFiles[0].name}) to Google Drive...` : `Uploading ${newFiles[0].name} to Google Drive...`)
-        : (sendEmail ? "Sending email notification & mapping invoice..." : "Saving mapped invoice to database...")
+      [orderId]: sendEmail ? "Sending email notification & mapping invoice..." : "Saving mapped invoice to database..."
     }));
     setOrderSuccess((prev) => ({ ...prev, [orderId]: false }));
 
     try {
       const newlyUploadedAttachments: InvoiceAttachment[] = [];
 
-      // Upload each new file to Google Drive
+      // If any lingering un-uploaded files exist, upload them
       for (let i = 0; i < newFiles.length; i++) {
         const file = newFiles[i];
         setUploadProgressText((prev) => ({
           ...prev,
-          [orderId]: newFiles.length > 1
-            ? `Uploading ${i + 1} of ${newFiles.length} (${file.name}) to Google Drive...`
-            : `Uploading ${file.name} to Google Drive...`
+          [orderId]: `Uploading ${file.name} to Google Drive...`
         }));
 
         const uploadResult = await uploadInvoiceToDrive(file, order.companyName, invNum, invDate);
         newlyUploadedAttachments.push({
           id: uploadResult.id,
           name: uploadResult.name || file.name,
-          url: uploadResult.webViewLink,
+          url: uploadResult.webViewLink || uploadResult.url,
           size: file.size,
           uploadedAt: new Date().toISOString(),
         });
@@ -2607,41 +2768,93 @@ export default function IndentView({
                                       Attached Invoice Files ({order.billingDetails.invoiceAttachments.length})
                                     </span>
                                   </div>
-                                  <div className="flex flex-wrap gap-1.5">
+                                  <div className="flex flex-col gap-1.5">
                                     {order.billingDetails.invoiceAttachments.map((att, attIdx) => (
-                                      <a
+                                      <div
                                         key={attIdx}
-                                        href="#"
-                                        onClick={(e) => {
-                                          e.preventDefault();
-                                          openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "document"}_${attIdx + 1}.pdf`);
-                                        }}
-                                        className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 border border-emerald-200 text-emerald-700 font-bold py-1 px-2.5 rounded-lg text-[9px] font-mono transition-all shrink-0 shadow-2xs"
-                                        title={`View Invoice: ${att.name}`}
+                                        className="flex items-center justify-between bg-white hover:bg-slate-50 border border-emerald-200 p-2 rounded-xl text-[10px] transition-all shadow-2xs gap-2"
                                       >
-                                        <FileText size={11} className="text-emerald-600 shrink-0" />
-                                        <span className="truncate max-w-[180px]">{att.name || `Invoice ${attIdx + 1}`}</span>
-                                        <span className="text-emerald-500 text-[8px]">↗</span>
-                                      </a>
+                                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                                          <FileText size={13} className="text-emerald-600 shrink-0" />
+                                          <div className="min-w-0 flex-1">
+                                            <span className="font-bold text-slate-800 truncate block text-[10px]">
+                                              {att.name || `Invoice ${attIdx + 1}`}
+                                            </span>
+                                            <a
+                                              href={att.url}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="text-[9px] text-emerald-600 hover:text-emerald-800 underline truncate max-w-[280px] inline-flex items-center gap-1 font-mono font-medium"
+                                              title={att.url}
+                                            >
+                                              <ExternalLink size={9} className="shrink-0" />
+                                              <span className="truncate">{att.url}</span>
+                                            </a>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          <button
+                                            type="button"
+                                            onClick={() => openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "document"}_${attIdx + 1}.pdf`)}
+                                            className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg text-[9px] font-mono transition-all shrink-0 cursor-pointer flex items-center gap-1 border border-emerald-200 shadow-2xs"
+                                            title={`View ${att.name}`}
+                                          >
+                                            <span>View</span>
+                                            <span className="text-[8px]">↗</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDeleteInvoiceAttachmentDirectly(order, attIdx)}
+                                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-lg text-xs font-bold cursor-pointer transition-all shadow-2xs"
+                                            title="Delete this invoice file"
+                                          >
+                                            <Trash2 size={12} />
+                                          </button>
+                                        </div>
+                                      </div>
                                     ))}
                                   </div>
                                 </div>
                               ) : (
-                                <div className="flex items-center justify-between">
-                                  <span className="text-[10px] text-slate-500 font-medium truncate flex items-center gap-1.5 max-w-xs">
-                                    <FileText size={11} className="text-emerald-600 shrink-0" />
-                                    <span className="truncate">{order.billingDetails?.invoiceFileName || "invoice_document.pdf"}</span>
-                                  </span>
-                                  <a
-                                    href="#"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      openOrDownloadDocument(order.billingDetails?.invoiceFileUrl, order.billingDetails?.invoiceFileName || "invoice_document.pdf");
-                                    }}
-                                    className="inline-flex items-center gap-1 bg-white hover:bg-slate-50 border border-emerald-200 text-emerald-700 font-bold py-1 px-2.5 rounded-lg text-[9px] font-mono transition-all shrink-0"
-                                  >
-                                    View Invoice ↗
-                                  </a>
+                                <div className="flex items-center justify-between bg-white border border-emerald-200 p-2 rounded-xl text-[10px]">
+                                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                                    <FileText size={13} className="text-emerald-600 shrink-0" />
+                                    <div className="min-w-0 flex-1">
+                                      <span className="font-bold text-slate-800 truncate block text-[10px]">
+                                        {order.billingDetails?.invoiceFileName || "invoice_document.pdf"}
+                                      </span>
+                                      {order.billingDetails?.invoiceFileUrl && (
+                                        <a
+                                          href={order.billingDetails.invoiceFileUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-[9px] text-emerald-600 hover:text-emerald-800 underline truncate max-w-[280px] inline-flex items-center gap-1 font-mono font-medium"
+                                          title={order.billingDetails.invoiceFileUrl}
+                                        >
+                                          <ExternalLink size={9} className="shrink-0" />
+                                          <span className="truncate">{order.billingDetails.invoiceFileUrl}</span>
+                                        </a>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => openOrDownloadDocument(order.billingDetails?.invoiceFileUrl, order.billingDetails?.invoiceFileName || "invoice_document.pdf")}
+                                      className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 font-bold rounded-lg text-[9px] font-mono transition-all shrink-0 cursor-pointer flex items-center gap-1 shadow-2xs"
+                                    >
+                                      <span>View</span>
+                                      <span className="text-[8px]">↗</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteSingleInvoiceFileDirectly(order)}
+                                      className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-lg text-xs font-bold cursor-pointer transition-all shadow-2xs"
+                                      title="Delete attached invoice file"
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -2694,89 +2907,135 @@ export default function IndentView({
                             />
                           </div>
 
-                          {/* Upload Field - Multi File Support up to 10 files */}
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between">
-                              <label className="text-[10px] font-bold text-slate-500 block uppercase font-mono tracking-tight">
-                                Invoice File(s) (Google Drive)
-                              </label>
-                              <span className="text-[9px] font-mono text-slate-400 font-semibold">
-                                {totalFilesCount}/10 files attached
-                              </span>
+                          {/* Upload Field - Direct Google Drive Upload up to 10 files */}
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between flex-wrap gap-1">
+                              <div className="flex items-center gap-2">
+                                <label className="text-[10px] font-bold text-slate-600 block uppercase font-mono tracking-tight">
+                                  Invoice File(s)
+                                </label>
+                                <span className="inline-flex items-center gap-1 text-[8.5px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                  <Zap size={9} className="text-emerald-600 fill-emerald-600" />
+                                  <span>Direct Drive Upload</span>
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowManualInvoiceLink((prev) => ({ ...prev, [order.id]: !prev[order.id] }))}
+                                  className="text-[9px] font-mono text-emerald-700 hover:text-emerald-900 font-bold underline cursor-pointer flex items-center gap-1"
+                                >
+                                  <LinkIcon size={10} />
+                                  {showManualInvoiceLink[order.id] ? "Hide Link Input" : "+ Add Drive Link"}
+                                </button>
+                                <span className="text-[9px] font-mono text-slate-400 font-semibold">
+                                  {totalFilesCount}/10 files
+                                </span>
+                              </div>
                             </div>
 
-                            {/* List of existing attachments */}
-                            {currentExistingAttachments.length > 0 && (
-                              <div className="space-y-1">
-                                <span className="text-[8.5px] font-mono text-slate-400 font-bold uppercase block">
-                                  Saved Files:
-                                </span>
-                                <div className="space-y-1">
-                                  {currentExistingAttachments.map((att, attIdx) => (
-                                    <div 
-                                      key={`existing-${attIdx}`}
-                                      className="flex items-center justify-between border border-slate-200 bg-slate-50 p-2 rounded-xl text-[10px]"
+                            {/* Manual Link Input Form */}
+                            {showManualInvoiceLink[order.id] && (
+                              <div className="bg-emerald-50/40 border border-emerald-200 p-2.5 rounded-xl space-y-2">
+                                <p className="text-[9px] font-bold text-emerald-800 uppercase font-mono">
+                                  Attach Google Drive Link Directly:
+                                </p>
+                                <div className="space-y-1.5">
+                                  <input
+                                    type="url"
+                                    placeholder="Paste Google Drive File Link (https://drive.google.com/...)"
+                                    value={manualInvoiceLinkUrl[order.id] || ""}
+                                    onChange={(e) => setManualInvoiceLinkUrl((prev) => ({ ...prev, [order.id]: e.target.value }))}
+                                    className="w-full text-xs text-slate-700 bg-white border border-emerald-300 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
+                                  />
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      placeholder="Document Name (e.g. Invoice_INV2026.pdf)"
+                                      value={manualInvoiceLinkName[order.id] || ""}
+                                      onChange={(e) => setManualInvoiceLinkName((prev) => ({ ...prev, [order.id]: e.target.value }))}
+                                      className="flex-1 text-xs text-slate-700 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-emerald-500"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddManualInvoiceLink(order.id, order)}
+                                      disabled={!manualInvoiceLinkUrl[order.id]?.trim()}
+                                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-lg text-[10px] font-mono transition-all cursor-pointer shadow-xs"
                                     >
-                                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                                        <FileText className="text-emerald-600 h-3.5 w-3.5 shrink-0" />
-                                        <span className="font-medium text-slate-700 truncate">
-                                          {att.name || `Invoice_${order.billingDetails?.invoiceNumber || "Doc"}_${attIdx + 1}.pdf`}
-                                        </span>
-                                      </div>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <button
-                                          type="button"
-                                          onClick={() => openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "Doc"}_${attIdx + 1}.pdf`)}
-                                          className="text-[9px] font-bold text-emerald-600 hover:text-emerald-700 underline font-mono cursor-pointer"
-                                        >
-                                          View ↗
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => removeExistingAttachment(order.id, attIdx, order)}
-                                          disabled={uploadProgress[order.id]}
-                                          className="text-slate-400 hover:text-rose-500 text-xs font-bold p-1 cursor-pointer"
-                                          title="Remove attachment"
-                                        >
-                                          ✕
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ))}
+                                      Attach Link
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
                             )}
 
-                            {/* List of newly selected files */}
-                            {currentNewFiles.length > 0 && (
+                            {/* Uploading indicator */}
+                            {isUploadingInvoice[order.id] && (
+                              <div className="flex items-center gap-2 p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-[10px] animate-pulse">
+                                <Loader2 size={13} className="animate-spin text-emerald-600 shrink-0" />
+                                <span className="font-semibold">{uploadProgressText[order.id] || "Uploading invoice document to Google Drive..."}</span>
+                              </div>
+                            )}
+
+                            {/* List of uploaded attachments */}
+                            {currentExistingAttachments.length > 0 && (
                               <div className="space-y-1">
-                                <span className="text-[8.5px] font-mono text-emerald-600 font-bold uppercase block">
-                                  New Files To Upload ({currentNewFiles.length}):
+                                <span className="text-[8.5px] font-mono text-slate-500 font-bold uppercase block">
+                                  Attached Invoices ({currentExistingAttachments.length}):
                                 </span>
-                                <div className="space-y-1">
-                                  {currentNewFiles.map((file, fileIdx) => (
+                                <div className="space-y-1.5">
+                                  {currentExistingAttachments.map((att, attIdx) => (
                                     <div 
-                                      key={`new-${fileIdx}`}
-                                      className="flex items-center justify-between border border-emerald-200 bg-emerald-50/20 p-2 rounded-xl text-[10px]"
+                                      key={`existing-${attIdx}`}
+                                      className="flex items-center justify-between border border-emerald-200 bg-white hover:bg-slate-50/60 p-2 rounded-xl text-[10px] gap-2 transition-all shadow-2xs"
                                     >
                                       <div className="flex items-center gap-2 min-w-0 flex-1">
-                                        <FileText className="text-emerald-600 h-3.5 w-3.5 shrink-0" />
-                                        <span className="font-medium text-slate-800 truncate">
-                                          {file.name}
-                                        </span>
-                                        <span className="text-[8px] text-slate-400 font-mono shrink-0">
-                                          ({(file.size / 1024).toFixed(1)} KB)
-                                        </span>
+                                        <FileText className="text-emerald-600 h-4 w-4 shrink-0" />
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="font-bold text-slate-800 truncate">
+                                              {att.name || `Invoice_${order.billingDetails?.invoiceNumber || "Doc"}_${attIdx + 1}.pdf`}
+                                            </span>
+                                            {att.size && (
+                                              <span className="text-[8px] text-slate-400 font-mono shrink-0">
+                                                ({(att.size / 1024).toFixed(1)} KB)
+                                              </span>
+                                            )}
+                                          </div>
+                                          <div className="flex items-center gap-1 mt-0.5">
+                                            <ExternalLink size={10} className="text-emerald-600 shrink-0" />
+                                            <a
+                                              href={att.url}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="text-[9px] text-emerald-600 hover:text-emerald-800 font-semibold underline truncate max-w-[280px] inline-block font-mono"
+                                              title={att.url}
+                                            >
+                                              {att.url.startsWith("http") ? att.url : `Invoice Link (${att.name})`}
+                                            </a>
+                                          </div>
+                                        </div>
                                       </div>
-                                      <button
-                                        type="button"
-                                        onClick={() => removeSelectedNewFile(order.id, fileIdx)}
-                                        disabled={uploadProgress[order.id]}
-                                        className="text-slate-400 hover:text-rose-500 text-xs font-bold p-1 cursor-pointer shrink-0"
-                                        title="Remove file"
-                                      >
-                                        ✕
-                                      </button>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => openOrDownloadDocument(att.url, att.name || `Invoice_${order.billingDetails?.invoiceNumber || "Doc"}_${attIdx + 1}.pdf`)}
+                                          className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-[9px] font-bold text-emerald-700 rounded-lg font-mono cursor-pointer flex items-center gap-1 shadow-2xs"
+                                          title="View / Download Invoice"
+                                        >
+                                          <span>View</span>
+                                          <span className="text-[8px]">↗</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => removeExistingAttachment(order.id, attIdx, order)}
+                                          disabled={uploadProgress[order.id] || isUploadingInvoice[order.id]}
+                                          className="p-1 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg text-xs font-bold cursor-pointer transition-colors"
+                                          title="Remove attachment"
+                                        >
+                                          <Trash2 size={13} />
+                                        </button>
+                                      </div>
                                     </div>
                                   ))}
                                 </div>
@@ -2788,7 +3047,7 @@ export default function IndentView({
                               <div
                                 onDragOver={(e) => handleDragOver(e, order.id)}
                                 className={`border border-dashed rounded-xl p-3.5 text-center cursor-pointer transition-all ${
-                                  isDragging ? "border-emerald-500 bg-emerald-50/10" : "border-slate-200 hover:border-slate-300 bg-slate-50/50"
+                                  isDragging ? "border-emerald-500 bg-emerald-50/10" : "border-slate-200 hover:border-emerald-300 bg-slate-50/50"
                                 }`}
                                 onClick={() => document.getElementById(`file-upload-${order.id}`)?.click()}
                               >
@@ -2799,14 +3058,14 @@ export default function IndentView({
                                   accept=".pdf"
                                   multiple
                                   onChange={(e) => handleFileChange(e, order.id, order)}
-                                  disabled={uploadProgress[order.id]}
+                                  disabled={uploadProgress[order.id] || isUploadingInvoice[order.id]}
                                 />
-                                <Upload className="mx-auto h-4 w-4 text-slate-400 mb-1" />
-                                <p className="text-[10px] font-bold text-slate-600">
+                                <Upload className="mx-auto h-4 w-4 text-emerald-600 mb-1" />
+                                <p className="text-[10px] font-bold text-slate-700">
                                   Drag & Drop or Click to Attach PDF Invoices
                                 </p>
                                 <p className="text-[8.5px] text-slate-400 mt-0.5">
-                                  PDF files only · Upload up to 10 invoice files ({10 - totalFilesCount} slots available)
+                                  Files automatically upload to Google Drive · {10 - totalFilesCount} slot(s) remaining
                                 </p>
                               </div>
                             )}

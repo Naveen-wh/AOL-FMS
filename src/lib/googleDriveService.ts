@@ -10,15 +10,300 @@ import { GoogleAuthProvider } from "firebase/auth";
 let cachedAccessToken: string | null = null;
 
 export interface DriveSettings {
+  // PO Upload Settings
   folderName: string;
   folderId: string;
+  appsScriptUrl?: string;
+
+  // Invoice Upload Settings
+  invoiceFolderName?: string;
+  invoiceFolderId?: string;
+  invoiceAppsScriptUrl?: string;
+
+  // Common / Legacy fields
   driveType?: "shared_drive" | "shared_folder" | "my_drive";
   adminAccessToken?: string;
   tokenExpiry?: number;
   allowAllTeams?: boolean;
   allowedTeamIds?: string[];
-  uploadMode?: "google_drive_oauth";
+  uploadMode?: "google_drive_oauth" | "apps_script";
 }
+
+/**
+ * Complete Google Apps Script template code for uploading Customer PO documents to Google Drive.
+ * Deployed as a Web App (Execute as: Me, Who has access: Anyone) so portal users do not need to authenticate every time.
+ */
+export const DEFAULT_PO_UPLOAD_APPS_SCRIPT_CODE = `/**
+ * GOOGLE APPS SCRIPT WEB APP FOR AUTO-UPLOADING CUSTOMER PO DOCUMENTS TO GOOGLE DRIVE
+ * (Zero OAuth login required by portal users)
+ * 
+ * Deployment Steps:
+ * 1. Open https://script.google.com and click "New project".
+ * 2. Replace all code in Code.gs with this exact script.
+ * 3. In the top toolbar, select function "setupAndAuthorize" and click "Run".
+ *    Authorize access to Google Drive when prompted by Google.
+ * 4. Click "Deploy" (top right) -> "New deployment".
+ *    - Click the gear icon -> Select "Web app"
+ *    - Description: "PO Document Upload Gateway"
+ *    - Execute as: "Me (your Google email)"
+ *    - Who has access: "Anyone" (Required for background portal uploads without popup)
+ * 5. Click "Deploy" and copy the Web App URL (starts with https://script.google.com/macros/s/.../exec).
+ * 6. Paste the Web App URL into the Sales Management Portal (Dashboard -> Admin Settings -> PO Upload Settings)!
+ */
+
+function doPost(e) {
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "No POST body content received."
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var data;
+    try {
+      data = JSON.parse(e.postData.contents);
+    } catch (parseErr) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Invalid JSON payload: " + parseErr.message
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var base64Data = data.fileData;
+    if (!base64Data) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Missing fileData (base64 string)."
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var fileName = data.fileName || ("PO_Document_" + (new Date()).getTime() + ".pdf");
+    var mimeType = data.mimeType || "application/pdf";
+    var folderId = data.folderId || "";
+    var folderName = data.folderName || "SMS_PO";
+    var clientName = data.clientName || "";
+
+    // 1. Decode base64 to byte array blob
+    var decoded = Utilities.base64Decode(base64Data);
+    var blob = Utilities.newBlob(decoded, mimeType, fileName);
+
+    // 2. Resolve target root folder
+    var parentFolder;
+    if (folderId && folderId.trim() !== "") {
+      try {
+        parentFolder = DriveApp.getFolderById(folderId.trim());
+      } catch (err) {
+        parentFolder = getOrCreateFolder(folderName);
+      }
+    } else {
+      parentFolder = getOrCreateFolder(folderName);
+    }
+
+    // 3. Resolve client subfolder if provided
+    var targetFolder = parentFolder;
+    if (clientName && clientName.trim() !== "") {
+      targetFolder = getOrCreateSubfolder(parentFolder, clientName.trim());
+    }
+
+    // 4. Create file in Google Drive
+    var file = targetFolder.createFile(blob);
+
+    // 5. Set sharing permission to View for Anyone with Link
+    try {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (shareErr) {
+      Logger.log("Sharing error (domain policy may restrict): " + shareErr);
+    }
+
+    var webViewLink = file.getUrl();
+    var fileId = file.getId();
+
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      id: fileId,
+      name: file.getName(),
+      webViewLink: webViewLink,
+      url: webViewLink,
+      size: file.getSize()
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      error: err.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  return ContentService.createTextOutput(JSON.stringify({
+    status: "ok",
+    service: "PO Upload Google Drive Gateway",
+    timestamp: new Date().toISOString()
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function getOrCreateFolder(folderName) {
+  var folders = DriveApp.getFoldersByName(folderName);
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+  return DriveApp.createFolder(folderName);
+}
+
+function getOrCreateSubfolder(parentFolder, subfolderName) {
+  var folders = parentFolder.getFoldersByName(subfolderName);
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+  return parentFolder.createFolder(subfolderName);
+}
+
+// Run this once inside Google Apps Script editor to authorize DriveApp
+function setupAndAuthorize() {
+  var root = DriveApp.getRootFolder();
+  Logger.log("DriveApp authorization successful: " + root.getName());
+}
+`;
+
+/**
+ * Complete Google Apps Script template code for uploading Invoice documents to Google Drive.
+ * Deployed as a separate Web App so Invoices can be organized in their own dedicated Google Drive location.
+ */
+export const DEFAULT_INVOICE_UPLOAD_APPS_SCRIPT_CODE = `/**
+ * GOOGLE APPS SCRIPT WEB APP FOR AUTO-UPLOADING INVOICE DOCUMENTS TO GOOGLE DRIVE
+ * (Zero OAuth login required by portal users)
+ * 
+ * Deployment Steps:
+ * 1. Open https://script.google.com and click "New project".
+ * 2. Replace all code in Code.gs with this exact script.
+ * 3. In the top toolbar, select function "setupAndAuthorize" and click "Run".
+ *    Authorize access to Google Drive when prompted by Google.
+ * 4. Click "Deploy" (top right) -> "New deployment".
+ *    - Click the gear icon -> Select "Web app"
+ *    - Description: "Invoice Document Upload Gateway"
+ *    - Execute as: "Me (your Google email)"
+ *    - Who has access: "Anyone" (Required for background portal uploads without popup)
+ * 5. Click "Deploy" and copy the Web App URL (starts with https://script.google.com/macros/s/.../exec).
+ * 6. Paste the Web App URL into the Sales Management Portal (Dashboard -> Admin Settings -> Invoice Upload Settings)!
+ */
+
+function doPost(e) {
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "No POST body content received."
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var data;
+    try {
+      data = JSON.parse(e.postData.contents);
+    } catch (parseErr) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Invalid JSON payload: " + parseErr.message
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var base64Data = data.fileData;
+    if (!base64Data) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Missing fileData (base64 string)."
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var fileName = data.fileName || ("INV_Document_" + (new Date()).getTime() + ".pdf");
+    var mimeType = data.mimeType || "application/pdf";
+    var folderId = data.folderId || "";
+    var folderName = data.folderName || "SMS_INVOICES";
+    var clientName = data.clientName || "";
+
+    // 1. Decode base64 to byte array blob
+    var decoded = Utilities.base64Decode(base64Data);
+    var blob = Utilities.newBlob(decoded, mimeType, fileName);
+
+    // 2. Resolve target root folder
+    var parentFolder;
+    if (folderId && folderId.trim() !== "") {
+      try {
+        parentFolder = DriveApp.getFolderById(folderId.trim());
+      } catch (err) {
+        parentFolder = getOrCreateFolder(folderName);
+      }
+    } else {
+      parentFolder = getOrCreateFolder(folderName);
+    }
+
+    // 3. Resolve client subfolder if provided
+    var targetFolder = parentFolder;
+    if (clientName && clientName.trim() !== "") {
+      targetFolder = getOrCreateSubfolder(parentFolder, clientName.trim());
+    }
+
+    // 4. Create file in Google Drive
+    var file = targetFolder.createFile(blob);
+
+    // 5. Set sharing permission to View for Anyone with Link
+    try {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (shareErr) {
+      Logger.log("Sharing error (domain policy may restrict): " + shareErr);
+    }
+
+    var webViewLink = file.getUrl();
+    var fileId = file.getId();
+
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      id: fileId,
+      name: file.getName(),
+      webViewLink: webViewLink,
+      url: webViewLink,
+      size: file.getSize()
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      error: err.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  return ContentService.createTextOutput(JSON.stringify({
+    status: "ok",
+    service: "Invoice Upload Google Drive Gateway",
+    timestamp: new Date().toISOString()
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function getOrCreateFolder(folderName) {
+  var folders = DriveApp.getFoldersByName(folderName);
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+  return DriveApp.createFolder(folderName);
+}
+
+function getOrCreateSubfolder(parentFolder, subfolderName) {
+  var folders = parentFolder.getFoldersByName(subfolderName);
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+  return parentFolder.createFolder(subfolderName);
+}
+
+// Run this once inside Google Apps Script editor to authorize DriveApp
+function setupAndAuthorize() {
+  var root = DriveApp.getRootFolder();
+  Logger.log("DriveApp authorization successful: " + root.getName());
+}
+`;
 
 /**
  * Extracts and sanitizes a Google Drive Folder ID or Shared Drive ID
@@ -195,6 +480,24 @@ export async function getSharedDriveSettings(): Promise<DriveSettings | null> {
 export async function saveSharedDriveSettings(settings: DriveSettings): Promise<void> {
   const docRef = doc(db, "settings", "google_drive");
   await setDoc(docRef, settings);
+}
+
+/**
+ * Saves Apps Script upload URL to both localStorage and Firestore settings
+ */
+export async function saveAppsScriptUploadUrl(url: string): Promise<void> {
+  const trimmed = (url || "").trim();
+  try {
+    localStorage.setItem("sms_po_apps_script_url", trimmed);
+  } catch (e) {
+    // ignore
+  }
+  try {
+    const docRef = doc(db, "settings", "google_drive");
+    await setDoc(docRef, { appsScriptUrl: trimmed, uploadMode: "apps_script" }, { merge: true });
+  } catch (error) {
+    console.error("Error saving appsScriptUrl to Firestore:", error);
+  }
 }
 
 export function isDriveApiDisabledError(err: any): boolean {
@@ -555,15 +858,43 @@ export function getFormattedDateString(dateInput?: string | Date): string {
 }
 
 /**
- * Uploads a file to Google Drive via direct Google Drive OAuth API v3,
- * organized inside the configured folder/Shared Drive and a client-specific subfolder.
- * Filename format: PO_{{Customer PO Number}}_{{Current Date}}_{{Original File Name}}.pdf
+ * Tests connection to a Google Apps Script Web App URL.
  */
-export async function uploadPOToDrive(
-  file: File, 
-  clientName?: string, 
-  poNumber?: string
-): Promise<{ id: string; name: string; webViewLink: string; isLocalFallback?: boolean; fallbackReason?: string }> {
+export async function testAppsScriptConnection(url: string): Promise<{ success: boolean; message: string }> {
+  try {
+    const trimmed = (url || "").trim();
+    if (!trimmed.startsWith("https://script.google.com/macros/s/")) {
+      return { success: false, message: "URL must begin with https://script.google.com/macros/s/.../exec" };
+    }
+    // Apps Script doGet test
+    const res = await fetch(trimmed, { method: "GET" });
+    if (!res.ok) {
+      return { success: false, message: `Apps Script returned HTTP status ${res.status}: ${res.statusText}` };
+    }
+    const text = await res.text();
+    try {
+      const data = JSON.parse(text);
+      return { success: true, message: data.service || "Connected to Google Apps Script Web App successfully!" };
+    } catch {
+      return { success: true, message: "Connected to Google Apps Script Web App endpoint." };
+    }
+  } catch (err: any) {
+    return { success: false, message: err.message || "Failed to reach Google Apps Script Web App." };
+  }
+}
+
+/**
+ * Uploads a file to Google Drive using a deployed Google Apps Script Web App URL.
+ * Requires NO client-side OAuth popups or tokens!
+ */
+export async function uploadPOViaAppsScript(
+  file: File,
+  appsScriptUrl: string,
+  clientName?: string,
+  poNumber?: string,
+  folderId?: string,
+  folderName?: string
+): Promise<{ id: string; name: string; webViewLink: string; url: string }> {
   const ext = file.name.includes(".") ? file.name.substring(file.name.lastIndexOf(".")) : ".pdf";
   const cleanPo = (poNumber && poNumber.trim() !== "") 
     ? poNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") 
@@ -573,8 +904,123 @@ export async function uploadPOToDrive(
   const cleanBaseName = rawBaseName.replace(/[^a-zA-Z0-9_\-]/g, "_");
   const finalFileName = `PO_${cleanPo}_${currentDateStr}_${cleanBaseName}${ext}`;
 
+  // Read file as Base64 string
+  const base64Data = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const base64 = result.includes(",") ? result.split(",")[1] : result;
+      resolve(base64);
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+
+  const payload = {
+    action: "uploadFile",
+    fileName: finalFileName,
+    fileData: base64Data,
+    mimeType: file.type || "application/pdf",
+    clientName: clientName || "",
+    poNumber: poNumber || "",
+    folderId: folderId || "",
+    folderName: folderName || "SMS_PO",
+  };
+
+  // Google Apps Script Web App handles POST cleanly with text/plain without CORS preflight block
+  const response = await fetch(appsScriptUrl.trim(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/plain;charset=utf-8",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Apps Script responded with status ${response.status}: ${response.statusText}`);
+  }
+
+  const responseText = await response.text();
+  let result: any;
   try {
-    // 1. Get access token
+    result = JSON.parse(responseText);
+  } catch (parseErr) {
+    throw new Error(`Invalid response from Apps Script: ${responseText.slice(0, 150)}`);
+  }
+
+  if (result.success === false || result.error) {
+    throw new Error(result.error || "Failed to upload file via Apps Script");
+  }
+
+  const link = result.webViewLink || result.url || result.downloadUrl || "";
+  return {
+    id: result.id || result.fileId || `gas-${Date.now()}`,
+    name: result.name || result.fileName || finalFileName,
+    webViewLink: link,
+    url: link,
+  };
+}
+
+/**
+ * Uploads a file to Google Drive.
+ * If an Apps Script deployed URL is configured, it auto-uploads via Google Apps Script (NO OAuth popup needed!).
+ * Otherwise, falls back to direct Google Drive OAuth API v3.
+ * Filename format: PO_{{Customer PO Number}}_{{Current Date}}_{{Original File Name}}.pdf
+ */
+export async function uploadPOToDrive(
+  file: File, 
+  clientName?: string, 
+  poNumber?: string,
+  customAppsScriptUrl?: string
+): Promise<{ id: string; name: string; webViewLink: string; isLocalFallback?: boolean; fallbackReason?: string; isAppsScript?: boolean }> {
+  const ext = file.name.includes(".") ? file.name.substring(file.name.lastIndexOf(".")) : ".pdf";
+  const cleanPo = (poNumber && poNumber.trim() !== "") 
+    ? poNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") 
+    : "NA";
+  const currentDateStr = getFormattedDateString();
+  const rawBaseName = file.name.includes(".") ? file.name.substring(0, file.name.lastIndexOf(".")) : file.name;
+  const cleanBaseName = rawBaseName.replace(/[^a-zA-Z0-9_\-]/g, "_");
+  const finalFileName = `PO_${cleanPo}_${currentDateStr}_${cleanBaseName}${ext}`;
+
+  // 1. Check if Apps Script Web App URL is available (either passed directly, in localStorage, or in DriveSettings)
+  let targetGasUrl = (customAppsScriptUrl || "").trim();
+  if (!targetGasUrl) {
+    try {
+      targetGasUrl = localStorage.getItem("sms_po_apps_script_url") || "";
+    } catch {
+      // localStorage may fail in some environments
+    }
+  }
+  if (!targetGasUrl) {
+    try {
+      const settings = await getSharedDriveSettings();
+      if (settings?.appsScriptUrl) {
+        targetGasUrl = settings.appsScriptUrl.trim();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // If Apps Script URL is present, upload via Apps Script (NO OAuth required!)
+  if (targetGasUrl) {
+    try {
+      const gasResult = await uploadPOViaAppsScript(file, targetGasUrl, clientName, poNumber);
+      return {
+        id: gasResult.id,
+        name: gasResult.name,
+        webViewLink: gasResult.webViewLink,
+        isAppsScript: true,
+      };
+    } catch (gasErr: any) {
+      console.warn("Apps Script upload failed, checking fallback:", gasErr);
+      throw new Error(`Google Apps Script upload failed: ${gasErr.message || gasErr}`);
+    }
+  }
+
+  // 2. Direct OAuth Flow (Fallback when Apps Script URL is not set)
+  try {
+    // Get access token
     let token = "";
     try {
       token = await ensureGoogleDriveAccess(false);
@@ -583,11 +1029,11 @@ export async function uploadPOToDrive(
       token = await ensureGoogleDriveAccess(true);
     }
 
-    // 2. Resolve the shared parent folder setting
+    // Resolve the shared parent folder setting
     const parentFolder = await resolveSharedParentFolder(token);
     let targetFolderId = parentFolder.folderId;
 
-    // 3. Find or create a subfolder for the client/company name
+    // Find or create a subfolder for the client/company name
     if (clientName && clientName.trim() !== "") {
       try {
         targetFolderId = await findOrCreateSubfolder(token, parentFolder.folderId, clientName.trim());
@@ -596,7 +1042,7 @@ export async function uploadPOToDrive(
       }
     }
 
-    // 4. Create multipart upload body
+    // Create multipart upload body
     const metadata = {
       name: finalFileName,
       parents: [targetFolderId],
@@ -609,7 +1055,7 @@ export async function uploadPOToDrive(
     );
     formData.append("file", file);
 
-    // 5. Perform upload with supportsAllDrives=true
+    // Perform upload with supportsAllDrives=true
     const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink";
     const uploadRes = await fetch(uploadUrl, {
       method: "POST",
@@ -654,16 +1100,18 @@ export async function uploadPOToDrive(
 }
 
 /**
- * Uploads an invoice file to Google Drive via direct Google Drive OAuth API v3,
- * organized inside the configured folder/Shared Drive and a client-specific subfolder.
- * Filename format: PO_{{Invoice Number}}_{{Invoice Date}}_{{Original File Name}}.pdf
+ * Uploads an invoice file to Google Drive using a deployed Google Apps Script Web App URL.
+ * Requires NO client-side OAuth popups or tokens!
  */
-export async function uploadInvoiceToDrive(
-  file: File, 
-  clientName?: string, 
+export async function uploadInvoiceViaAppsScript(
+  file: File,
+  appsScriptUrl: string,
+  clientName?: string,
   invoiceNumber?: string,
-  invoiceDate?: string
-): Promise<{ id: string; name: string; webViewLink: string; isLocalFallback?: boolean; fallbackReason?: string }> {
+  invoiceDate?: string,
+  folderId?: string,
+  folderName?: string
+): Promise<{ id: string; name: string; webViewLink: string; url: string }> {
   const ext = file.name.includes(".") ? file.name.substring(file.name.lastIndexOf(".")) : ".pdf";
   const cleanInv = (invoiceNumber && invoiceNumber.trim() !== "") 
     ? invoiceNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") 
@@ -671,86 +1119,157 @@ export async function uploadInvoiceToDrive(
   const invDateStr = getFormattedDateString(invoiceDate);
   const rawBaseName = file.name.includes(".") ? file.name.substring(0, file.name.lastIndexOf(".")) : file.name;
   const cleanBaseName = rawBaseName.replace(/[^a-zA-Z0-9_\-]/g, "_");
-  const finalFileName = `PO_${cleanInv}_${invDateStr}_${cleanBaseName}${ext}`;
+  const finalFileName = `INV_${cleanInv}_${invDateStr}_${cleanBaseName}${ext}`;
 
-  try {
-    // 1. Get access token
-    let token = "";
-    try {
-      token = await ensureGoogleDriveAccess(false);
-    } catch (tokenErr) {
-      // If token not available silently, prompt user
-      token = await ensureGoogleDriveAccess(true);
-    }
-
-    // 2. Resolve the shared parent folder setting
-    const parentFolder = await resolveSharedParentFolder(token);
-    let targetFolderId = parentFolder.folderId;
-
-    // 3. Find or create a subfolder for the client/company name
-    if (clientName && clientName.trim() !== "") {
-      try {
-        targetFolderId = await findOrCreateSubfolder(token, parentFolder.folderId, clientName.trim());
-      } catch (e: any) {
-        console.warn(`Could not organize in client subfolder "${clientName}", using parent folder:`, e.message || e);
-      }
-    }
-
-    // 4. Create multipart upload body
-    const metadata = {
-      name: finalFileName,
-      parents: [targetFolderId],
+  // Read file as Base64 string
+  const base64Data = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const base64 = result.includes(",") ? result.split(",")[1] : result;
+      resolve(base64);
     };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
 
-    const formData = new FormData();
-    formData.append(
-      "metadata",
-      new Blob([JSON.stringify(metadata)], { type: "application/json" })
-    );
-    formData.append("file", file);
+  const payload = {
+    action: "uploadFile",
+    fileType: "invoice",
+    fileName: finalFileName,
+    fileData: base64Data,
+    mimeType: file.type || "application/pdf",
+    clientName: clientName || "",
+    invoiceNumber: invoiceNumber || "",
+    invoiceDate: invDateStr,
+    folderId: folderId || "",
+    folderName: folderName || "SMS_INVOICES",
+  };
 
-    // 5. Perform upload with supportsAllDrives=true
-    const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink";
-    const uploadRes = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      body: formData,
-    });
+  // Google Apps Script Web App handles POST cleanly with text/plain without CORS preflight block
+  const response = await fetch(appsScriptUrl.trim(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/plain;charset=utf-8",
+    },
+    body: JSON.stringify(payload),
+  });
 
-    if (!uploadRes.ok) {
-      const errText = await uploadRes.text();
-      // If token expired (401), try one force refresh
-      if (uploadRes.status === 401) {
-        const freshToken = await ensureGoogleDriveAccess(true);
-        const retryRes = await fetch(uploadUrl, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${freshToken}` },
-          body: formData,
-        });
-        if (retryRes.ok) {
-          return await retryRes.json();
-        }
-      }
-      throw parseDriveApiError(errText, "Failed to upload invoice file to Google Drive");
-    }
-
-    return await uploadRes.json();
-  } catch (err: any) {
-    console.warn("Google Drive upload failed. Falling back to local Data URL attachment:", err);
-    const dataUrl = await fileToDataUrl(file);
-    const isApiDisabled = isDriveApiDisabledError(err);
-    return {
-      id: `local-${Date.now()}`,
-      name: finalFileName,
-      webViewLink: dataUrl,
-      isLocalFallback: true,
-      fallbackReason: isApiDisabled
-        ? "Google Drive API is disabled on your Google Cloud Project."
-        : (err.message || "Drive upload error"),
-    };
+  if (!response.ok) {
+    throw new Error(`Apps Script responded with status ${response.status}: ${response.statusText}`);
   }
+
+  const responseText = await response.text();
+  let result: any;
+  try {
+    result = JSON.parse(responseText);
+  } catch (parseErr) {
+    throw new Error(`Invalid response from Apps Script: ${responseText.slice(0, 150)}`);
+  }
+
+  if (result.success === false || result.error) {
+    throw new Error(result.error || "Failed to upload invoice file via Apps Script");
+  }
+
+  const link = result.webViewLink || result.url || result.downloadUrl || "";
+  return {
+    id: result.id || result.fileId || `gas-inv-${Date.now()}`,
+    name: result.name || result.fileName || finalFileName,
+    webViewLink: link,
+    url: link,
+  };
+}
+
+/**
+ * Uploads an invoice file to Google Drive.
+ * Uses the Google Apps Script Web App (configured by Admin in Dashboard Settings) for zero-auth upload.
+ * Filename format: INV_{{Invoice Number}}_{{Invoice Date}}_{{Original File Name}}.pdf
+ */
+export async function uploadInvoiceToDrive(
+  file: File, 
+  clientName?: string, 
+  invoiceNumber?: string,
+  invoiceDate?: string,
+  customAppsScriptUrl?: string
+): Promise<{ id: string; name: string; webViewLink: string; url: string; isLocalFallback?: boolean; fallbackReason?: string; isAppsScript?: boolean }> {
+  const ext = file.name.includes(".") ? file.name.substring(file.name.lastIndexOf(".")) : ".pdf";
+  const cleanInv = (invoiceNumber && invoiceNumber.trim() !== "") 
+    ? invoiceNumber.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") 
+    : "NA";
+  const invDateStr = getFormattedDateString(invoiceDate);
+  const rawBaseName = file.name.includes(".") ? file.name.substring(0, file.name.lastIndexOf(".")) : file.name;
+  const cleanBaseName = rawBaseName.replace(/[^a-zA-Z0-9_\-]/g, "_");
+  const finalFileName = `INV_${cleanInv}_${invDateStr}_${cleanBaseName}${ext}`;
+
+  // 1. Resolve Apps Script Web App URL from parameter, localStorage, or Firestore shared settings
+  let targetGasUrl = (customAppsScriptUrl || "").trim();
+  if (!targetGasUrl) {
+    try {
+      targetGasUrl = localStorage.getItem("sms_invoice_apps_script_url") || localStorage.getItem("sms_po_apps_script_url") || "";
+    } catch {
+      // ignore
+    }
+  }
+
+  let targetFolderId = "";
+  let targetFolderName = "SMS_INVOICES";
+  try {
+    const settings = await getSharedDriveSettings();
+    if (!targetGasUrl) {
+      if (settings?.invoiceAppsScriptUrl && settings.invoiceAppsScriptUrl.trim() !== "") {
+        targetGasUrl = settings.invoiceAppsScriptUrl.trim();
+      } else if (settings?.appsScriptUrl && settings.appsScriptUrl.trim() !== "") {
+        targetGasUrl = settings.appsScriptUrl.trim();
+      }
+    }
+    if (settings?.invoiceFolderId && settings.invoiceFolderId.trim() !== "") {
+      targetFolderId = settings.invoiceFolderId.trim();
+    } else if (settings?.folderId && settings.folderId.trim() !== "") {
+      targetFolderId = settings.folderId.trim();
+    }
+    if (settings?.invoiceFolderName && settings.invoiceFolderName.trim() !== "") {
+      targetFolderName = settings.invoiceFolderName.trim();
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2. If Apps Script URL is configured, execute direct zero-auth upload via Apps Script
+  if (targetGasUrl) {
+    try {
+      const gasResult = await uploadInvoiceViaAppsScript(
+        file,
+        targetGasUrl,
+        clientName,
+        invoiceNumber,
+        invoiceDate,
+        targetFolderId,
+        targetFolderName
+      );
+      return {
+        id: gasResult.id,
+        name: gasResult.name,
+        webViewLink: gasResult.webViewLink,
+        url: gasResult.url,
+        isAppsScript: true,
+      };
+    } catch (gasErr: any) {
+      console.warn("Google Apps Script invoice upload error:", gasErr);
+      throw new Error(`Google Drive Upload Error: ${gasErr.message || "Failed to upload invoice to Google Drive via Apps Script"}`);
+    }
+  }
+
+  // 3. Fallback to local Data URL attachment if Apps Script URL is not yet configured by Admin
+  console.warn("Google Apps Script URL is not configured for invoice upload. Falling back to local attachment.");
+  const dataUrl = await fileToDataUrl(file);
+  return {
+    id: `local-${Date.now()}`,
+    name: finalFileName,
+    webViewLink: dataUrl,
+    url: dataUrl,
+    isLocalFallback: true,
+    fallbackReason: "Google Apps Script Gateway URL is not yet configured in Dashboard Settings.",
+  };
 }
 
 /**

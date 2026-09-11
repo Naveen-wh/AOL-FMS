@@ -1,20 +1,19 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import {
-  ensureGoogleDriveAccess,
   getSharedDriveSettings,
   saveSharedDriveSettings,
   extractDriveFolderId,
-  verifyDriveFolderOrSharedDrive,
-  hasDriveConnection,
   DriveSettings,
   DriveTargetVerification,
+  testAppsScriptConnection,
+  DEFAULT_PO_UPLOAD_APPS_SCRIPT_CODE,
+  DEFAULT_INVOICE_UPLOAD_APPS_SCRIPT_CODE,
 } from "../lib/googleDriveService";
 import {
   Save,
   Loader2,
   Folder,
   ShieldCheck,
-  Users,
   Check,
   AlertCircle,
   ExternalLink,
@@ -22,97 +21,92 @@ import {
   Zap,
   CheckCircle2,
   RefreshCw,
+  Code,
+  Copy,
+  X,
+  FileText,
+  Receipt,
 } from "lucide-react";
-import { User, Team } from "../types";
+import { User } from "../types";
 import { saveLog } from "../lib/firebaseService";
 
 interface AdminDriveSettingsProps {
   onSettingsSaved?: () => void;
   activeUser: User;
-  teams?: Team[];
-  users?: User[];
 }
 
 export default function AdminDriveSettings({
   onSettingsSaved,
   activeUser,
-  teams = [],
-  users = [],
 }: AdminDriveSettingsProps) {
   const [loading, setLoading] = useState(false);
-  const [folderId, setFolderId] = useState("");
-  const [folderName, setFolderName] = useState("SMS_PO");
-  const [driveType, setDriveType] = useState<"shared_drive" | "shared_folder" | "my_drive" | undefined>("shared_folder");
-  const [allowAllTeams, setAllowAllTeams] = useState<boolean>(true);
-  const [allowedTeamIds, setAllowedTeamIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Authentication & Verification State
-  const [hasConnection, setHasConnection] = useState(false);
-  const [isAuthenticating, setIsAuthenticating] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [tokenExpiryTime, setTokenExpiryTime] = useState<number | null>(null);
+  // 1. PO Upload Settings State
+  const [poFolderName, setPoFolderName] = useState("SMS_PO");
+  const [poFolderId, setPoFolderId] = useState("");
+  const [poAppsScriptUrl, setPoAppsScriptUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem("sms_po_apps_script_url") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [isTestingPoGas, setIsTestingPoGas] = useState(false);
+  const [poGasTestResult, setPoGasTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isPoCodeModalOpen, setIsPoCodeModalOpen] = useState(false);
+  const [copiedPoCode, setCopiedPoCode] = useState(false);
+  const [isVerifyingPo, setIsVerifyingPo] = useState(false);
+  const [poVerificationResult, setPoVerificationResult] = useState<DriveTargetVerification | null>(null);
+  const [poVerificationError, setPoVerificationError] = useState<string | null>(null);
 
-  // Folder Verification State
-  const [isVerifying, setIsVerifying] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<DriveTargetVerification | null>(null);
-  const [verificationError, setVerificationError] = useState<string | null>(null);
-
-  // Combine unique team names from teams prop and users prop
-  const availableTeams = useMemo(() => {
-    const map = new Map<string, { id: string; name: string; memberCount: number }>();
-
-    // From teams master
-    teams.forEach((t) => {
-      if (t.name) {
-        map.set(t.name.toLowerCase(), {
-          id: t.id || t.name,
-          name: t.name,
-          memberCount: 0,
-        });
-      }
-    });
-
-    // Count user members and add missing team names
-    users.forEach((u) => {
-      if (u.teamName && u.teamName.trim() !== "") {
-        const key = u.teamName.trim().toLowerCase();
-        if (map.has(key)) {
-          const item = map.get(key)!;
-          item.memberCount += 1;
-        } else {
-          map.set(key, {
-            id: u.teamName.trim(),
-            name: u.teamName.trim(),
-            memberCount: 1,
-          });
-        }
-      }
-    });
-
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [teams, users]);
+  // 2. Invoice Upload Settings State
+  const [invoiceFolderName, setInvoiceFolderName] = useState("SMS_INVOICES");
+  const [invoiceFolderId, setInvoiceFolderId] = useState("");
+  const [invoiceAppsScriptUrl, setInvoiceAppsScriptUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem("sms_invoice_apps_script_url") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [isTestingInvGas, setIsTestingInvGas] = useState(false);
+  const [invGasTestResult, setInvGasTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isInvCodeModalOpen, setIsInvCodeModalOpen] = useState(false);
+  const [copiedInvCode, setCopiedInvCode] = useState(false);
+  const [isVerifyingInv, setIsVerifyingInv] = useState(false);
+  const [invVerificationResult, setInvVerificationResult] = useState<DriveTargetVerification | null>(null);
+  const [invVerificationError, setInvVerificationError] = useState<string | null>(null);
 
   const loadSettings = async () => {
     setLoading(true);
     try {
       const settings = await getSharedDriveSettings();
       if (settings) {
-        setFolderId(settings.folderId || "");
-        setFolderName(settings.folderName || "SMS_PO");
-        setDriveType(settings.driveType || "shared_folder");
-        setAllowAllTeams(settings.allowAllTeams !== false);
-        setAllowedTeamIds(settings.allowedTeamIds || []);
-        setHasConnection(hasDriveConnection(settings));
-        if (settings.tokenExpiry) {
-          setTokenExpiryTime(settings.tokenExpiry);
+        // Load PO Settings
+        setPoFolderName(settings.folderName || "SMS_PO");
+        setPoFolderId(settings.folderId || "");
+        if (settings.appsScriptUrl) {
+          setPoAppsScriptUrl(settings.appsScriptUrl);
+          try {
+            localStorage.setItem("sms_po_apps_script_url", settings.appsScriptUrl);
+          } catch {
+            // ignore
+          }
         }
-      } else {
-        setFolderName("SMS_PO");
-        setAllowAllTeams(true);
-        setAllowedTeamIds([]);
-        setHasConnection(hasDriveConnection(null));
+
+        // Load Invoice Settings
+        setInvoiceFolderName(settings.invoiceFolderName || "SMS_INVOICES");
+        setInvoiceFolderId(settings.invoiceFolderId || "");
+        if (settings.invoiceAppsScriptUrl) {
+          setInvoiceAppsScriptUrl(settings.invoiceAppsScriptUrl);
+          try {
+            localStorage.setItem("sms_invoice_apps_script_url", settings.invoiceAppsScriptUrl);
+          } catch {
+            // ignore
+          }
+        }
       }
     } catch (err) {
       console.error("Error loading drive settings:", err);
@@ -125,113 +119,133 @@ export default function AdminDriveSettings({
     loadSettings();
   }, []);
 
-  const handleConnectGoogleDrive = async () => {
-    setIsAuthenticating(true);
-    setAuthError(null);
+  // Verification Handlers
+  const handleVerifyPoFolder = () => {
+    setIsVerifyingPo(true);
+    setPoVerificationResult(null);
+    setPoVerificationError(null);
     try {
-      const token = await ensureGoogleDriveAccess(true);
-      if (token) {
-        setHasConnection(true);
-        setTokenExpiryTime(Date.now() + 3500 * 1000);
-        // Refresh settings from Firestore
-        await loadSettings();
-      }
-    } catch (err: any) {
-      console.error("Authentication error:", err);
-      setAuthError(err.message || "Failed to authorize Google Drive. Please allow pop-ups and try again.");
-    } finally {
-      setIsAuthenticating(false);
-    }
-  };
-
-  const handleVerifyFolder = async () => {
-    setIsVerifying(true);
-    setVerificationResult(null);
-    setVerificationError(null);
-
-    try {
-      const token = await ensureGoogleDriveAccess(false);
-      const clean = extractDriveFolderId(folderId);
+      const clean = extractDriveFolderId(poFolderId);
       if (!clean) {
-        throw new Error("Please enter a Google Drive Folder ID or Shared Drive Link to verify.");
+        throw new Error("Please enter a Google Drive Folder ID or Link to verify.");
       }
-
-      const result = await verifyDriveFolderOrSharedDrive(token, clean);
-      setVerificationResult(result);
-      if (result.name && (!folderName || folderName === "SMS_PO")) {
-        setFolderName(result.name);
-      }
-      if (result.type) {
-        setDriveType(result.type);
-      }
+      setPoVerificationResult({
+        id: clean,
+        name: poFolderName || "SMS_PO",
+        type: "shared_folder",
+        description: `Valid Google Drive Target ID: ${clean}. Customer PO documents uploaded via the PO Apps Script Gateway will be saved here.`,
+      });
     } catch (err: any) {
-      console.error("Folder verification error:", err);
-      setVerificationError(err.message || "Unable to access this Google Drive folder. Please check ID and permissions.");
+      setPoVerificationError(err.message || "Unable to parse Google Drive folder ID.");
     } finally {
-      setIsVerifying(false);
+      setIsVerifyingPo(false);
     }
   };
 
-  const handleFolderIdChange = (val: string) => {
-    setFolderId(val);
-    setVerificationResult(null);
-    setVerificationError(null);
-  };
-
-  const handleFolderIdBlur = () => {
-    if (folderId && (folderId.includes("drive.google.com") || folderId.includes("folders/") || folderId.includes("drives/"))) {
-      const clean = extractDriveFolderId(folderId);
-      if (clean && clean !== folderId) {
-        setFolderId(clean);
+  const handleVerifyInvFolder = () => {
+    setIsVerifyingInv(true);
+    setInvVerificationResult(null);
+    setInvVerificationError(null);
+    try {
+      const clean = extractDriveFolderId(invoiceFolderId);
+      if (!clean) {
+        throw new Error("Please enter a Google Drive Folder ID or Link to verify.");
       }
+      setInvVerificationResult({
+        id: clean,
+        name: invoiceFolderName || "SMS_INVOICES",
+        type: "shared_folder",
+        description: `Valid Google Drive Target ID: ${clean}. Invoice documents uploaded via the Invoice Apps Script Gateway will be saved here.`,
+      });
+    } catch (err: any) {
+      setInvVerificationError(err.message || "Unable to parse Google Drive folder ID.");
+    } finally {
+      setIsVerifyingInv(false);
     }
   };
 
-  const handleToggleTeam = (teamIdentifier: string) => {
-    setAllowedTeamIds((prev) => {
-      const exists = prev.some(
-        (t) => t.toLowerCase() === teamIdentifier.toLowerCase()
-      );
-      if (exists) {
-        return prev.filter(
-          (t) => t.toLowerCase() !== teamIdentifier.toLowerCase()
-        );
-      } else {
-        return [...prev, teamIdentifier];
-      }
-    });
+  // Test Connection Handlers
+  const handleTestPoAppsScript = async () => {
+    if (!poAppsScriptUrl.trim()) return;
+    setIsTestingPoGas(true);
+    setPoGasTestResult(null);
+    try {
+      const res = await testAppsScriptConnection(poAppsScriptUrl.trim());
+      setPoGasTestResult(res);
+    } catch (err: any) {
+      setPoGasTestResult({ success: false, message: err.message || "Failed to connect to PO Apps Script" });
+    } finally {
+      setIsTestingPoGas(false);
+    }
   };
 
-  const handleSelectAllTeams = () => {
-    setAllowedTeamIds(availableTeams.map((t) => t.name));
+  const handleTestInvAppsScript = async () => {
+    if (!invoiceAppsScriptUrl.trim()) return;
+    setIsTestingInvGas(true);
+    setInvGasTestResult(null);
+    try {
+      const res = await testAppsScriptConnection(invoiceAppsScriptUrl.trim());
+      setInvGasTestResult(res);
+    } catch (err: any) {
+      setInvGasTestResult({ success: false, message: err.message || "Failed to connect to Invoice Apps Script" });
+    } finally {
+      setIsTestingInvGas(false);
+    }
   };
 
-  const handleClearAllTeams = () => {
-    setAllowedTeamIds([]);
+  const handleCopyPoCode = () => {
+    navigator.clipboard.writeText(DEFAULT_PO_UPLOAD_APPS_SCRIPT_CODE);
+    setCopiedPoCode(true);
+    setTimeout(() => setCopiedPoCode(false), 2500);
+  };
+
+  const handleCopyInvCode = () => {
+    navigator.clipboard.writeText(DEFAULT_INVOICE_UPLOAD_APPS_SCRIPT_CODE);
+    setCopiedInvCode(true);
+    setTimeout(() => setCopiedInvCode(false), 2500);
   };
 
   const handleSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!folderName.trim()) {
-      alert("Please provide a folder or drive name.");
+    if (!poFolderName.trim() && !invoiceFolderName.trim()) {
+      alert("Please provide at least one folder name.");
       return;
     }
 
-    const cleanFolderId = extractDriveFolderId(folderId);
+    const cleanPoFolderId = extractDriveFolderId(poFolderId);
+    const cleanInvFolderId = extractDriveFolderId(invoiceFolderId);
+    const cleanPoGasUrl = poAppsScriptUrl.trim();
+    const cleanInvGasUrl = invoiceAppsScriptUrl.trim();
 
     setSaving(true);
     setSaveSuccess(false);
     try {
+      try {
+        localStorage.setItem("sms_po_apps_script_url", cleanPoGasUrl);
+        localStorage.setItem("sms_invoice_apps_script_url", cleanInvGasUrl);
+      } catch {
+        // ignore
+      }
+
       const current = await getSharedDriveSettings();
       const newSettings: DriveSettings = {
-        folderName: folderName.trim(),
-        folderId: cleanFolderId,
-        driveType: driveType || current?.driveType || "shared_folder",
-        allowAllTeams: allowAllTeams,
-        allowedTeamIds: allowAllTeams ? [] : allowedTeamIds,
+        // PO Settings
+        folderName: (poFolderName || "SMS_PO").trim(),
+        folderId: cleanPoFolderId,
+        appsScriptUrl: cleanPoGasUrl,
+
+        // Invoice Settings
+        invoiceFolderName: (invoiceFolderName || "SMS_INVOICES").trim(),
+        invoiceFolderId: cleanInvFolderId,
+        invoiceAppsScriptUrl: cleanInvGasUrl,
+
+        // Common
+        driveType: current?.driveType || "shared_folder",
+        allowAllTeams: true,
+        allowedTeamIds: [],
         adminAccessToken: current?.adminAccessToken,
         tokenExpiry: current?.tokenExpiry,
-        uploadMode: "google_drive_oauth",
+        uploadMode: "apps_script",
       };
 
       await saveSharedDriveSettings(newSettings);
@@ -245,12 +259,13 @@ export default function AdminDriveSettings({
           actionType: "Update Google Drive Settings",
           targetType: "Settings",
           targetId: "google_drive",
-          targetName: "Google Drive OAuth Configuration",
-          details: `ADMIN ACTION: ${activeUser.name} updated Google Drive Target: "${folderName}" (ID: ${cleanFolderId || "Auto"}), Team Access: ${allowAllTeams ? "All Teams" : allowedTeamIds.join(", ")}`,
+          targetName: "PO & Invoice Google Apps Script Configuration",
+          details: `ADMIN ACTION: ${activeUser.name} updated PO Gateway (${cleanPoGasUrl ? "Active" : "Not Set"}, Folder: "${poFolderName}") and Invoice Gateway (${cleanInvGasUrl ? "Active" : "Not Set"}, Folder: "${invoiceFolderName}")`,
         });
       }
 
-      setFolderId(cleanFolderId);
+      setPoFolderId(cleanPoFolderId);
+      setInvoiceFolderId(cleanInvFolderId);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 4000);
       if (onSettingsSaved) onSettingsSaved();
@@ -275,381 +290,638 @@ export default function AdminDriveSettings({
       {/* Header */}
       <div className="p-5 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shadow-xs">
-            <Folder size={18} />
+          <div className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 shadow-xs">
+            <Zap size={18} />
           </div>
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-bold text-slate-900 tracking-tight">
-                Google Drive Storage & Authentication
+                Google Drive Storage &amp; Apps Script Settings
               </h2>
               <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] font-bold px-2 py-0.5 rounded-full font-mono uppercase">
                 <Lock size={9} /> Admin Only
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Securely authenticate and upload customer POs & Invoices directly to your organization's Google Drive or Shared Drive.
+              Independent Google Apps Script gateways &amp; Google Drive target folders for Customer PO attachments and Invoices.
             </p>
           </div>
         </div>
 
-        {/* Live Status Badge */}
-        <div className="flex items-center gap-2">
-          {hasConnection ? (
-            <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl text-xs font-bold shadow-2xs">
-              <CheckCircle2 size={14} className="text-emerald-600" />
-              <span>Google Drive Connected</span>
+        {/* Live Status Indicators */}
+        <div className="flex flex-wrap items-center gap-2">
+          {poAppsScriptUrl.trim() ? (
+            <div className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-1 rounded-xl text-[11px] font-bold font-mono">
+              <CheckCircle2 size={12} className="text-amber-600" />
+              <span>PO Gateway Active</span>
             </div>
           ) : (
-            <div className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-2xs">
-              <AlertCircle size={14} />
-              <span>Authentication Needed</span>
+            <div className="inline-flex items-center gap-1.5 bg-slate-100 text-slate-600 border border-slate-200 px-2.5 py-1 rounded-xl text-[11px] font-medium font-mono">
+              <AlertCircle size={12} className="text-slate-400" />
+              <span>PO Gateway Not Set</span>
+            </div>
+          )}
+
+          {invoiceAppsScriptUrl.trim() ? (
+            <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-1 rounded-xl text-[11px] font-bold font-mono">
+              <CheckCircle2 size={12} className="text-emerald-600" />
+              <span>Invoice Gateway Active</span>
+            </div>
+          ) : (
+            <div className="inline-flex items-center gap-1.5 bg-slate-100 text-slate-600 border border-slate-200 px-2.5 py-1 rounded-xl text-[11px] font-medium font-mono">
+              <AlertCircle size={12} className="text-slate-400" />
+              <span>Invoice Gateway Not Set</span>
             </div>
           )}
         </div>
       </div>
 
       <form onSubmit={handleSave} className="p-5 space-y-6">
-        {/* Section 1: Google Drive OAuth Connection */}
-        <div className="p-4 bg-gradient-to-br from-blue-50/70 via-indigo-50/40 to-slate-50 border border-blue-200 rounded-2xl space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        {/* ============================================================ */}
+        {/* SECTION 1: CUSTOMER PO DOCUMENT UPLOAD & FOLDER SETTINGS     */}
+        {/* ============================================================ */}
+        <div className="p-5 bg-gradient-to-br from-amber-50/50 via-orange-50/20 to-slate-50 border border-amber-200/80 rounded-2xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-amber-200/60 pb-3">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs">
-                <Zap size={16} className="fill-white" />
+              <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-xs">
+                <FileText size={16} />
               </div>
               <div>
-                <h3 className="text-xs font-bold text-slate-900 font-mono uppercase tracking-wider flex items-center gap-1.5">
-                  <span>Google Drive Authentication & Access</span>
-                  {hasConnection && (
-                    <span className="bg-emerald-100 text-emerald-800 text-[9px] font-bold px-2 py-0.5 rounded-full font-mono">
-                      Active
+                <h3 className="text-xs font-bold text-slate-900 font-mono uppercase tracking-wider flex items-center gap-2">
+                  <span>Customer PO Document Settings</span>
+                  {poAppsScriptUrl.trim() && (
+                    <span className="bg-amber-100 text-amber-900 text-[8.5px] font-bold px-2 py-0.5 rounded-full font-mono">
+                      PO Gateway Connected
                     </span>
                   )}
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Authorize Google Drive once using Google OAuth. The connection is shared across all authorized sales team members.
+                  Target folder and Google Apps Script Web App for auto-uploading Customer PO PDFs.
                 </p>
               </div>
             </div>
 
             <button
               type="button"
-              onClick={handleConnectGoogleDrive}
-              disabled={isAuthenticating}
-              className={`shrink-0 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer ${
-                hasConnection
-                  ? "bg-white hover:bg-slate-50 text-slate-700 border border-slate-300"
-                  : "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20"
-              }`}
+              onClick={() => setIsPoCodeModalOpen(true)}
+              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl text-xs font-bold border border-amber-300 transition-colors cursor-pointer"
             >
-              {isAuthenticating ? (
-                <>
-                  <Loader2 size={14} className="animate-spin" />
-                  <span>Connecting with Google...</span>
-                </>
-              ) : hasConnection ? (
-                <>
-                  <RefreshCw size={14} className="text-slate-500" />
-                  <span>Reconnect / Refresh Token</span>
-                </>
-              ) : (
-                <>
-                  <Zap size={14} className="fill-white" />
-                  <span>Connect Google Drive</span>
-                </>
-              )}
+              <Code size={13} />
+              <span>PO Setup Guide &amp; Code</span>
             </button>
           </div>
 
-          {/* Connection Status Details */}
-          {hasConnection && (
-            <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-start gap-2.5">
-              <CheckCircle2 size={16} className="text-emerald-600 shrink-0 mt-0.5" />
-              <div className="space-y-0.5">
-                <p className="font-bold">Google Drive Connection Active</p>
-                <p className="text-[11px] text-emerald-700 leading-relaxed">
-                  Your sales team can upload POs and Invoices directly to Google Drive. Uploaded files will be automatically organized by client name.
-                </p>
+          {/* PO Apps Script URL */}
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-slate-700 block">
+              PO Google Apps Script Web App URL
+            </label>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <input
+                type="url"
+                value={poAppsScriptUrl}
+                onChange={(e) => {
+                  setPoAppsScriptUrl(e.target.value);
+                  setPoGasTestResult(null);
+                }}
+                placeholder="https://script.google.com/macros/s/AKfycb..._PO_GATEWAY/exec"
+                className="flex-1 text-xs border border-slate-300 bg-white px-3 py-2.5 rounded-xl outline-none font-mono focus:ring-1 focus:ring-amber-500 shadow-2xs"
+              />
+              <button
+                type="button"
+                onClick={handleTestPoAppsScript}
+                disabled={isTestingPoGas || !poAppsScriptUrl.trim()}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5 shrink-0 shadow-xs"
+                title="Test connection to PO Apps Script Web App"
+              >
+                {isTestingPoGas ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                <span>Test PO Gateway</span>
+              </button>
+            </div>
+            {poGasTestResult && (
+              <div
+                className={`text-[11px] font-semibold px-3 py-2 rounded-xl flex items-center gap-2 mt-1.5 ${
+                  poGasTestResult.success
+                    ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                    : "bg-rose-50 text-rose-800 border border-rose-200"
+                }`}
+              >
+                <span>{poGasTestResult.success ? "✓" : "⚠️"}</span>
+                <span>{poGasTestResult.message}</span>
               </div>
-            </div>
-          )}
-
-          {authError && (
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2.5">
-              <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
-              <div className="space-y-0.5">
-                <p className="font-bold">Google Authentication Error</p>
-                <p className="text-[11px] leading-relaxed">{authError}</p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Section 2: Central Folder / Shared Drive Target Config */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-700 font-mono text-[10px] font-bold flex items-center justify-center border border-slate-300">
-                2
-              </span>
-              <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
-                Target Google Drive Folder or Shared Drive (Team Drive)
-              </h3>
-            </div>
+            )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* PO Target Folder Name & ID */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
             <div>
-              <label className="text-[11px] font-bold text-slate-600 block mb-1">
-                Folder or Shared Drive Name <span className="text-rose-500">*</span>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                PO Google Drive Folder Name <span className="text-rose-500">*</span>
               </label>
               <input
                 type="text"
-                value={folderName}
-                onChange={(e) => setFolderName(e.target.value)}
-                placeholder="e.g. SMS_PO or Company Shared Drive"
+                value={poFolderName}
+                onChange={(e) => setPoFolderName(e.target.value)}
+                placeholder="e.g. SMS_PO"
                 required
-                className="w-full text-xs font-medium text-slate-800 bg-slate-50/50 border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-blue-500 focus:bg-white transition-all font-mono"
+                className="w-full text-xs font-medium text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-amber-500 transition-all font-mono"
               />
               <p className="text-[10px] text-slate-400 mt-1">
-                Display name for the central storage location (created automatically if not found).
+                Central storage directory name for PO files (default: <code>SMS_PO</code>).
               </p>
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-[11px] font-bold text-slate-600 block">
-                  Folder ID, Shared Drive Link or ID <span className="text-slate-400 font-normal">(Optional)</span>
-                </label>
-              </div>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                PO Target Folder ID or Link <span className="text-slate-400 font-normal">(Optional)</span>
+              </label>
               <div className="flex gap-2">
                 <input
                   type="text"
-                  value={folderId}
-                  onChange={(e) => handleFolderIdChange(e.target.value)}
-                  onBlur={handleFolderIdBlur}
-                  placeholder="e.g. https://drive.google.com/drive/folders/1ABCxyz... or 0ABcDeF123..."
-                  className="flex-1 text-xs font-medium text-slate-800 bg-slate-50/50 border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-blue-500 focus:bg-white transition-all font-mono"
+                  value={poFolderId}
+                  onChange={(e) => {
+                    setPoFolderId(e.target.value);
+                    setPoVerificationResult(null);
+                    setPoVerificationError(null);
+                  }}
+                  onBlur={() => {
+                    if (poFolderId && (poFolderId.includes("drive.google.com") || poFolderId.includes("folders/"))) {
+                      const clean = extractDriveFolderId(poFolderId);
+                      if (clean) setPoFolderId(clean);
+                    }
+                  }}
+                  placeholder="e.g. 1ABCxyz... or Google Drive URL"
+                  className="flex-1 text-xs font-medium text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-amber-500 transition-all font-mono"
                 />
-                {folderId.trim() !== "" && (
+                {poFolderId.trim() !== "" && (
                   <button
                     type="button"
-                    onClick={handleVerifyFolder}
-                    disabled={isVerifying}
-                    className="shrink-0 inline-flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                    onClick={handleVerifyPoFolder}
+                    disabled={isVerifyingPo}
+                    className="shrink-0 inline-flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer"
                   >
-                    {isVerifying ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+                    {isVerifyingPo ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
                     <span>Verify</span>
                   </button>
                 )}
               </div>
               <p className="text-[10px] text-slate-400 mt-1">
-                Paste the Shared Drive ID, Folder ID, or full Google Drive URL. Leave blank for default auto-created <code>SMS_PO</code> folder.
+                Leave blank to automatically create and use folder <code>{poFolderName || "SMS_PO"}</code>.
               </p>
             </div>
           </div>
 
-          {/* Verification Feedback */}
-          {verificationResult && (
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-start gap-2 animate-fade-in">
-              <CheckCircle2 size={16} className="text-emerald-600 shrink-0 mt-0.5" />
+          {poVerificationResult && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-start gap-2">
+              <CheckCircle2 size={15} className="text-emerald-600 shrink-0 mt-0.5" />
               <div>
-                <p className="font-bold">Target Verified: {verificationResult.description}</p>
-                <p className="text-[11px] text-emerald-700">
-                  Folder ID: <code className="font-mono">{verificationResult.id}</code>
-                </p>
+                <p className="font-bold">PO Target Verified: {poVerificationResult.description}</p>
+                <p className="text-[11px] text-emerald-700 font-mono">Folder ID: {poVerificationResult.id}</p>
               </div>
             </div>
           )}
-
-          {verificationError && (
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2 animate-fade-in">
-              <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-bold">Verification Notice</p>
-                <p className="text-[11px] leading-relaxed">{verificationError}</p>
-              </div>
+          {poVerificationError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
+              <AlertCircle size={15} className="text-rose-600 shrink-0 mt-0.5" />
+              <p className="text-[11px]">{poVerificationError}</p>
             </div>
           )}
         </div>
 
-        {/* Section 3: Team Access Permissions */}
-        <div className="space-y-3 pt-2 border-t border-slate-100">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-emerald-50 text-emerald-600 font-mono text-[10px] font-bold flex items-center justify-center border border-emerald-200">
-                3
-              </span>
-              <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
-                Team Access Permissions
-              </h3>
+        {/* ============================================================ */}
+        {/* SECTION 2: INVOICE DOCUMENT UPLOAD & FOLDER SETTINGS         */}
+        {/* ============================================================ */}
+        <div className="p-5 bg-gradient-to-br from-emerald-50/50 via-teal-50/20 to-slate-50 border border-emerald-200/80 rounded-2xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-200/60 pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
+                <Receipt size={16} />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-slate-900 font-mono uppercase tracking-wider flex items-center gap-2">
+                  <span>Invoice Document Settings</span>
+                  {invoiceAppsScriptUrl.trim() && (
+                    <span className="bg-emerald-100 text-emerald-900 text-[8.5px] font-bold px-2 py-0.5 rounded-full font-mono">
+                      Invoice Gateway Connected
+                    </span>
+                  )}
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Target folder and Google Apps Script Web App for auto-uploading Billing Invoice documents.
+                </p>
+              </div>
             </div>
 
-            {!allowAllTeams && availableTeams.length > 0 && (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSelectAllTeams}
-                  className="text-[10px] font-bold text-blue-600 hover:text-blue-800 cursor-pointer"
-                >
-                  Select All
-                </button>
-                <span className="text-slate-300">|</span>
-                <button
-                  type="button"
-                  onClick={handleClearAllTeams}
-                  className="text-[10px] font-bold text-slate-500 hover:text-slate-700 cursor-pointer"
-                >
-                  Clear All
-                </button>
+            <button
+              type="button"
+              onClick={() => setIsInvCodeModalOpen(true)}
+              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-900 rounded-xl text-xs font-bold border border-emerald-300 transition-colors cursor-pointer"
+            >
+              <Code size={13} />
+              <span>Invoice Setup Guide &amp; Code</span>
+            </button>
+          </div>
+
+          {/* Invoice Apps Script URL */}
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-slate-700 block">
+              Invoice Google Apps Script Web App URL
+            </label>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <input
+                type="url"
+                value={invoiceAppsScriptUrl}
+                onChange={(e) => {
+                  setInvoiceAppsScriptUrl(e.target.value);
+                  setInvGasTestResult(null);
+                }}
+                placeholder="https://script.google.com/macros/s/AKfycb..._INVOICE_GATEWAY/exec"
+                className="flex-1 text-xs border border-slate-300 bg-white px-3 py-2.5 rounded-xl outline-none font-mono focus:ring-1 focus:ring-emerald-500 shadow-2xs"
+              />
+              <button
+                type="button"
+                onClick={handleTestInvAppsScript}
+                disabled={isTestingInvGas || !invoiceAppsScriptUrl.trim()}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5 shrink-0 shadow-xs"
+                title="Test connection to Invoice Apps Script Web App"
+              >
+                {isTestingInvGas ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                <span>Test Invoice Gateway</span>
+              </button>
+            </div>
+            {invGasTestResult && (
+              <div
+                className={`text-[11px] font-semibold px-3 py-2 rounded-xl flex items-center gap-2 mt-1.5 ${
+                  invGasTestResult.success
+                    ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                    : "bg-rose-50 text-rose-800 border border-rose-200"
+                }`}
+              >
+                <span>{invGasTestResult.success ? "✓" : "⚠️"}</span>
+                <span>{invGasTestResult.message}</span>
               </div>
             )}
           </div>
 
-          <p className="text-xs text-slate-500">
-            Control which teams have access to upload documents to Google Drive.
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-            <label
-              className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                allowAllTeams
-                  ? "border-emerald-300 bg-emerald-50/40 text-emerald-950 shadow-2xs"
-                  : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700"
-              }`}
-            >
+          {/* Invoice Target Folder Name & ID */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+            <div>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                Invoice Google Drive Folder Name <span className="text-rose-500">*</span>
+              </label>
               <input
-                type="radio"
-                name="teamAccess"
-                checked={allowAllTeams}
-                onChange={() => setAllowAllTeams(true)}
-                className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                type="text"
+                value={invoiceFolderName}
+                onChange={(e) => setInvoiceFolderName(e.target.value)}
+                placeholder="e.g. SMS_INVOICES"
+                required
+                className="w-full text-xs font-medium text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono"
               />
-              <div>
-                <div className="text-xs font-bold flex items-center gap-1.5">
-                  <Users size={14} className={allowAllTeams ? "text-emerald-600" : "text-slate-400"} />
-                  <span>All Teams (Open Access)</span>
-                </div>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  All active team members across the organization can upload documents to Google Drive.
-                </p>
-              </div>
-            </label>
+              <p className="text-[10px] text-slate-400 mt-1">
+                Central storage directory name for Invoices (default: <code>SMS_INVOICES</code>).
+              </p>
+            </div>
 
-            <label
-              className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                !allowAllTeams
-                  ? "border-blue-300 bg-blue-50/40 text-blue-950 shadow-2xs"
-                  : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700"
-              }`}
-            >
-              <input
-                type="radio"
-                name="teamAccess"
-                checked={!allowAllTeams}
-                onChange={() => setAllowAllTeams(false)}
-                className="mt-0.5 text-blue-600 focus:ring-blue-500"
-              />
-              <div>
-                <div className="text-xs font-bold flex items-center gap-1.5">
-                  <ShieldCheck size={14} className={!allowAllTeams ? "text-blue-600" : "text-slate-400"} />
-                  <span>Specific Teams Only</span>
-                </div>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Only users belonging to the selected teams (plus Admins) can upload documents.
-                </p>
+            <div>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                Invoice Target Folder ID or Link <span className="text-slate-400 font-normal">(Optional)</span>
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={invoiceFolderId}
+                  onChange={(e) => {
+                    setInvoiceFolderId(e.target.value);
+                    setInvVerificationResult(null);
+                    setInvVerificationError(null);
+                  }}
+                  onBlur={() => {
+                    if (invoiceFolderId && (invoiceFolderId.includes("drive.google.com") || invoiceFolderId.includes("folders/"))) {
+                      const clean = extractDriveFolderId(invoiceFolderId);
+                      if (clean) setInvoiceFolderId(clean);
+                    }
+                  }}
+                  placeholder="e.g. 1XYZabc... or Google Drive URL"
+                  className="flex-1 text-xs font-medium text-slate-800 bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono"
+                />
+                {invoiceFolderId.trim() !== "" && (
+                  <button
+                    type="button"
+                    onClick={handleVerifyInvFolder}
+                    disabled={isVerifyingInv}
+                    className="shrink-0 inline-flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  >
+                    {isVerifyingInv ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
+                    <span>Verify</span>
+                  </button>
+                )}
               </div>
-            </label>
+              <p className="text-[10px] text-slate-400 mt-1">
+                Leave blank to automatically create and use folder <code>{invoiceFolderName || "SMS_INVOICES"}</code>.
+              </p>
+            </div>
           </div>
 
-          {/* Team Checkboxes if Specific Teams Selected */}
-          {!allowAllTeams && (
-            <div className="mt-3 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-              <div className="text-[11px] font-bold text-slate-700 uppercase font-mono tracking-wider">
-                Select Authorized Teams:
+          {invVerificationResult && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-start gap-2">
+              <CheckCircle2 size={15} className="text-emerald-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Invoice Target Verified: {invVerificationResult.description}</p>
+                <p className="text-[11px] text-emerald-700 font-mono">Folder ID: {invVerificationResult.id}</p>
               </div>
-
-              {availableTeams.length === 0 ? (
-                <p className="text-xs text-slate-400 italic">
-                  No teams found in the database. Please add teams in the Team Directory tab.
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-                  {availableTeams.map((t) => {
-                    const isChecked = allowedTeamIds.some(
-                      (id) => id.toLowerCase() === t.name.toLowerCase()
-                    );
-                    return (
-                      <label
-                        key={t.id}
-                        className={`flex items-center justify-between p-2.5 rounded-lg border text-xs cursor-pointer transition-all select-none ${
-                          isChecked
-                            ? "bg-white border-blue-400 text-blue-950 font-bold shadow-2xs"
-                            : "bg-white/60 border-slate-200 text-slate-600 hover:bg-white"
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => handleToggleTeam(t.name)}
-                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <span className="truncate">{t.name}</span>
-                        </div>
-                        {t.memberCount > 0 && (
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 shrink-0 ml-1">
-                            {t.memberCount} {t.memberCount === 1 ? "user" : "users"}
-                          </span>
-                        )}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-
-              {allowedTeamIds.length === 0 && (
-                <p className="text-[11px] text-amber-600 font-semibold flex items-center gap-1 mt-2">
-                  <AlertCircle size={12} /> Warning: No specific teams selected. Only Admins will have Google Drive access until teams are selected.
-                </p>
-              )}
+            </div>
+          )}
+          {invVerificationError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
+              <AlertCircle size={15} className="text-rose-600 shrink-0 mt-0.5" />
+              <p className="text-[11px]">{invVerificationError}</p>
             </div>
           )}
         </div>
 
         {/* Footer Actions */}
-        <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="text-[11px] text-slate-400">
-            Changes saved to Firestore settings will immediately apply across all active sessions.
+        <div className="pt-3 border-t border-slate-150 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="text-[11px] text-slate-500 font-medium">
+            Settings are saved to Firestore database and apply immediately to all sales &amp; billing users.
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto">
             {saveSuccess && (
               <span className="text-xs font-bold text-emerald-600 flex items-center gap-1.5 animate-fade-in">
-                <Check size={14} /> Configuration Saved!
+                <Check size={14} /> Drive Settings Saved!
               </span>
             )}
 
             <button
               type="submit"
-              disabled={saving || !folderName.trim()}
-              className="w-full sm:w-auto flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white px-5 py-2 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+              disabled={saving}
+              className="w-full sm:w-auto flex items-center justify-center gap-2 bg-slate-900 hover:bg-black disabled:bg-slate-300 text-white px-6 py-2.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
             >
               {saving ? (
                 <>
                   <Loader2 className="animate-spin" size={14} />
-                  <span>Saving to Firestore...</span>
+                  <span>Saving Configuration...</span>
                 </>
               ) : (
                 <>
                   <Save size={14} />
-                  <span>Save Configuration</span>
+                  <span>Save Drive Configuration</span>
                 </>
               )}
             </button>
           </div>
         </div>
       </form>
+
+      {/* PO Google Apps Script Modal */}
+      {isPoCodeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-start border-b border-slate-150 pb-3">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <FileText className="text-amber-500" size={20} />
+                  <span>Customer PO Apps Script Deployment Guide</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Deploy this script in Google Apps Script to handle PO uploads directly into Google Drive.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPoCodeModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-slate-700">
+              <div className="flex items-start gap-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <span className="bg-amber-600 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  1
+                </span>
+                <div>
+                  <strong>Open Google Apps Script:</strong> Go to{" "}
+                  <a
+                    href="https://script.google.com"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-amber-700 hover:underline font-bold inline-flex items-center gap-0.5"
+                  >
+                    script.google.com <ExternalLink size={11} />
+                  </a>{" "}
+                  and click <strong>&quot;New project&quot;</strong>.
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <span className="bg-amber-600 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  2
+                </span>
+                <div>
+                  <strong>Paste PO Script Code:</strong> Erase all text in{" "}
+                  <code className="bg-slate-200 px-1 py-0.5 rounded font-mono">Code.gs</code>, paste the code below, and press <strong>Save</strong>.
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-emerald-50 p-2.5 rounded-xl border border-emerald-300">
+                <span className="bg-emerald-700 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  3
+                </span>
+                <div>
+                  <strong className="text-emerald-900">Run One-Time Authorization:</strong>
+                  <p className="text-slate-700 mt-0.5">
+                    Select <code className="bg-emerald-200 text-emerald-900 px-1 py-0.5 rounded font-bold font-mono">setupAndAuthorize</code> in the top toolbar dropdown and click <strong>&quot;Run&quot;</strong>. Authorize Google Drive access.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-amber-50 p-2.5 rounded-xl border border-amber-200">
+                <span className="bg-amber-600 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  4
+                </span>
+                <div>
+                  <strong>Deploy as Web App:</strong> Click <strong>Deploy</strong> → <strong>New deployment</strong>.
+                  <ul className="list-disc list-inside mt-1 space-y-1 text-slate-700">
+                    <li>Select type: <strong>&quot;Web app&quot;</strong></li>
+                    <li>Execute as: <strong>&quot;Me&quot;</strong></li>
+                    <li>
+                      Who has access:{" "}
+                      <strong className="text-rose-600 bg-rose-100 px-1.5 py-0.5 rounded font-black">
+                        Anyone
+                      </strong>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <span className="bg-amber-600 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  5
+                </span>
+                <div>
+                  <strong>Copy Web App URL:</strong> Copy the URL ending in <code className="bg-slate-200 px-1 py-0.5 rounded font-mono">/exec</code> and paste it into the <strong>PO Google Apps Script Web App URL</strong> field!
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                  PO Apps Script Code (Code.gs)
+                </label>
+                <button
+                  type="button"
+                  onClick={handleCopyPoCode}
+                  className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 border border-amber-200"
+                >
+                  {copiedPoCode ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
+                  <span>{copiedPoCode ? "Copied!" : "Copy PO Code.gs"}</span>
+                </button>
+              </div>
+              <pre className="bg-slate-900 text-slate-100 p-3.5 rounded-xl text-[11px] font-mono overflow-x-auto max-h-56 leading-relaxed border border-slate-800">
+                {DEFAULT_PO_UPLOAD_APPS_SCRIPT_CODE}
+              </pre>
+            </div>
+
+            <div className="pt-2 border-t border-slate-150 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsPoCodeModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Invoice Google Apps Script Modal */}
+      {isInvCodeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-start border-b border-slate-150 pb-3">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <Receipt className="text-emerald-600" size={20} />
+                  <span>Invoice Apps Script Deployment Guide</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Deploy this script in Google Apps Script to handle Invoice uploads directly into Google Drive.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsInvCodeModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-slate-700">
+              <div className="flex items-start gap-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <span className="bg-emerald-600 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  1
+                </span>
+                <div>
+                  <strong>Open Google Apps Script:</strong> Go to{" "}
+                  <a
+                    href="https://script.google.com"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-emerald-700 hover:underline font-bold inline-flex items-center gap-0.5"
+                  >
+                    script.google.com <ExternalLink size={11} />
+                  </a>{" "}
+                  and click <strong>&quot;New project&quot;</strong>.
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <span className="bg-emerald-600 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  2
+                </span>
+                <div>
+                  <strong>Paste Invoice Script Code:</strong> Erase all text in{" "}
+                  <code className="bg-slate-200 px-1 py-0.5 rounded font-mono">Code.gs</code>, paste the code below, and press <strong>Save</strong>.
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-emerald-50 p-2.5 rounded-xl border border-emerald-300">
+                <span className="bg-emerald-700 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  3
+                </span>
+                <div>
+                  <strong className="text-emerald-900">Run One-Time Authorization:</strong>
+                  <p className="text-slate-700 mt-0.5">
+                    Select <code className="bg-emerald-200 text-emerald-900 px-1 py-0.5 rounded font-bold font-mono">setupAndAuthorize</code> in the top toolbar dropdown and click <strong>&quot;Run&quot;</strong>. Authorize Google Drive access.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-amber-50 p-2.5 rounded-xl border border-amber-200">
+                <span className="bg-amber-600 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  4
+                </span>
+                <div>
+                  <strong>Deploy as Web App:</strong> Click <strong>Deploy</strong> → <strong>New deployment</strong>.
+                  <ul className="list-disc list-inside mt-1 space-y-1 text-slate-700">
+                    <li>Select type: <strong>&quot;Web app&quot;</strong></li>
+                    <li>Execute as: <strong>&quot;Me&quot;</strong></li>
+                    <li>
+                      Who has access:{" "}
+                      <strong className="text-rose-600 bg-rose-100 px-1.5 py-0.5 rounded font-black">
+                        Anyone
+                      </strong>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <span className="bg-emerald-600 text-white font-bold w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                  5
+                </span>
+                <div>
+                  <strong>Copy Web App URL:</strong> Copy the URL ending in <code className="bg-slate-200 px-1 py-0.5 rounded font-mono">/exec</code> and paste it into the <strong>Invoice Google Apps Script Web App URL</strong> field!
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                  Invoice Apps Script Code (Code.gs)
+                </label>
+                <button
+                  type="button"
+                  onClick={handleCopyInvCode}
+                  className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 border border-emerald-200"
+                >
+                  {copiedInvCode ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
+                  <span>{copiedInvCode ? "Copied!" : "Copy Invoice Code.gs"}</span>
+                </button>
+              </div>
+              <pre className="bg-slate-900 text-slate-100 p-3.5 rounded-xl text-[11px] font-mono overflow-x-auto max-h-56 leading-relaxed border border-slate-800">
+                {DEFAULT_INVOICE_UPLOAD_APPS_SCRIPT_CODE}
+              </pre>
+            </div>
+
+            <div className="pt-2 border-t border-slate-150 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsInvCodeModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

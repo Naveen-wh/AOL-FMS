@@ -6,7 +6,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { User, OrderOffer, OrderItem, Product, Client, Team, AccessLevel, Role, PaymentBank, FreightTerm, DeliveryTerm, TransporterName, WarehouseManagedBy, DispatchLocation, EmailTemplate, EmailAutoSelectSettings, PaymentTerm, PaymentCreditPeriod, TaxRate, BillingDetails, ClosedWonDetails, PaymentReceiptRecord, PaymentDetails, EmailSentLog, EmailSentStatusSummary, EmailDeliveryStatus, PoAttachment } from "../types";
 import { canEditOrderOffer, canDeleteOrderOffer, canViewOrderOffer, getReportingTreeUsers, INITIAL_TAX_RATES } from "../data";
-import { uploadPOToDrive, getSharedDriveSettings, isUserTeamAllowedForDrive, DriveSettings, openOrDownloadDocument } from "../lib/googleDriveService";
+import { uploadPOToDrive, getSharedDriveSettings, isUserTeamAllowedForDrive, DriveSettings, openOrDownloadDocument, saveAppsScriptUploadUrl } from "../lib/googleDriveService";
+import { POAttachmentsSection } from "./POAttachmentsSection";
 import {
   getEmailAutoSelectSettings,
   saveEmailAutoSelectSettings,
@@ -709,6 +710,19 @@ export default function OrdersOffersView({
 
   // Shared Google Drive Folder Settings
   const [driveSettings, setDriveSettings] = useState<DriveSettings | null>(null);
+  const [appsScriptUrl, setAppsScriptUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem("sms_po_apps_script_url") || "";
+    } catch {
+      return "";
+    }
+  });
+
+  const handleSaveAppsScriptUrl = async (url: string) => {
+    const trimmed = (url || "").trim();
+    await saveAppsScriptUploadUrl(trimmed);
+    setAppsScriptUrl(trimmed);
+  };
 
   // Email auto select settings
   const [autoSelectSettings, setAutoSelectSettings] = useState<EmailAutoSelectSettings>({
@@ -721,6 +735,14 @@ export default function OrdersOffersView({
       const settings = await getSharedDriveSettings();
       if (settings) {
         setDriveSettings(settings);
+        if (settings.appsScriptUrl) {
+          setAppsScriptUrl(settings.appsScriptUrl);
+          try {
+            localStorage.setItem("sms_po_apps_script_url", settings.appsScriptUrl);
+          } catch {
+            // ignore
+          }
+        }
       }
 
       try {
@@ -3394,9 +3416,9 @@ export default function OrdersOffersView({
                 </div>
               </div>
 
-              {/* NEW FIELDS: Payment, Bank, Delivery, Terms */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-slate-100 pt-4">
-                {newStatus !== "Closed Won" && (
+              {/* OFFER-ONLY FIELDS: Payment (Offer), Bank, Delivery, Terms */}
+              {newStatus !== "Closed Won" && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-slate-100 pt-4">
                   <div>
                     <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Payment Terms (offer)</label>
                     <input
@@ -3407,41 +3429,41 @@ export default function OrdersOffersView({
                       className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-semibold"
                     />
                   </div>
-                )}
-                <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Payment Bank</label>
-                  <select
-                    value={newPaymentBankId}
-                    onChange={(e) => setNewPaymentBankId(e.target.value)}
-                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
-                  >
-                    <option value="">-- Select Bank --</option>
-                    {paymentBanks.map((bank) => (
-                      <option key={bank.id} value={bank.id}>{bank.bankName}</option>
-                    ))}
-                  </select>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Payment Bank</label>
+                    <select
+                      value={newPaymentBankId}
+                      onChange={(e) => setNewPaymentBankId(e.target.value)}
+                      className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
+                    >
+                      <option value="">-- Select Bank --</option>
+                      {paymentBanks.map((bank) => (
+                        <option key={bank.id} value={bank.id}>{bank.bankName}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Delivery Terms</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Ex-Works, DAP"
+                      value={newDelivery}
+                      onChange={(e) => setNewDelivery(e.target.value)}
+                      className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Other Terms</label>
+                    <input
+                      type="text"
+                      placeholder="Other relevant terms..."
+                      value={newOtherTerms}
+                      onChange={(e) => setNewOtherTerms(e.target.value)}
+                      className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Delivery Terms</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Ex-Works, DAP"
-                    value={newDelivery}
-                    onChange={(e) => setNewDelivery(e.target.value)}
-                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Other Terms</label>
-                  <input
-                    type="text"
-                    placeholder="Other relevant terms..."
-                    value={newOtherTerms}
-                    onChange={(e) => setNewOtherTerms(e.target.value)}
-                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800"
-                  />
-                </div>
-              </div>
+              )}
 
               {/* MULTI-PRODUCT SELECTION TABLE */}
               <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-3">
@@ -3877,118 +3899,21 @@ export default function OrdersOffersView({
                       </select>
                     </div>
                   </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-tight">
-                        Attach PO Document(s) <span className="text-slate-400 font-normal">({newPoAttachments.length}/5 files)</span>
-                      </label>
-                      {newPoAttachments.length > 0 && newPoAttachments.length < 5 && !isUploading && (
-                        <label
-                          htmlFor="new-po-file-upload-more"
-                          className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold cursor-pointer hover:underline flex items-center gap-1"
-                        >
-                          <Plus size={11} /> Add more (up to {5 - newPoAttachments.length})
-                        </label>
-                      )}
-                    </div>
-
-                    {/* Attached files list */}
-                    {newPoAttachments.length > 0 && (
-                      <div className="space-y-2 mb-2">
-                        {newPoAttachments.map((att, idx) => (
-                          <div key={idx} className="flex items-center justify-between bg-emerald-50/60 border border-emerald-200 p-2.5 rounded-xl shadow-2xs">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="p-1.5 bg-emerald-100 rounded-lg text-emerald-700 shrink-0">
-                                <FileText className="h-4 w-4" />
-                              </div>
-                              <div className="min-w-0 text-left">
-                                <p className="text-xs font-semibold text-slate-800 truncate" title={att.name}>
-                                  {att.name || `Purchase Order Doc ${idx + 1}`}
-                                </p>
-                                <a
-                                  href="#"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    openOrDownloadDocument(att.url, att.name || "po_document.pdf");
-                                  }}
-                                  className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold underline inline-block mt-0.5"
-                                >
-                                  View PO Document ↗
-                                </a>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleRemovePOAttachment(idx, false)}
-                              className="p-1 hover:bg-rose-100 rounded-lg text-slate-400 hover:text-rose-600 transition-colors cursor-pointer shrink-0 ml-2"
-                              title="Remove this PO document"
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Dropzone for up to 5 files */}
-                    {newPoAttachments.length < 5 && (
-                      <div>
-                        <div 
-                          className={`border-2 border-dashed rounded-xl p-4 text-center transition-all cursor-pointer ${
-                            isUploading 
-                              ? "border-indigo-400 bg-indigo-50/20" 
-                              : "border-slate-200 hover:border-indigo-400 bg-slate-50/50 hover:bg-slate-50"
-                          }`}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            if (isUploading) return;
-                            const files = e.dataTransfer.files;
-                            if (files && files.length > 0) {
-                              handlePOFilesUpload(files, false);
-                            }
-                          }}
-                        >
-                          <input
-                            type="file"
-                            id="new-po-file-upload-more"
-                            className="hidden"
-                            accept=".pdf"
-                            multiple
-                            disabled={isUploading}
-                            onChange={(e) => {
-                              const files = e.target.files;
-                              if (files && files.length > 0) {
-                                handlePOFilesUpload(files, false);
-                              }
-                              e.target.value = "";
-                            }}
-                          />
-                          {isUploading ? (
-                            <div className="flex flex-col items-center justify-center py-2">
-                              <Loader2 className="h-6 w-6 text-indigo-650 animate-spin mb-1" />
-                              <p className="text-xs font-semibold text-slate-750">{uploadProgressText || "Uploading Document..."}</p>
-                              <p className="text-[10px] text-slate-500 mt-0.5">Storing document directly in Google Drive</p>
-                            </div>
-                          ) : (
-                            <label htmlFor="new-po-file-upload-more" className="cursor-pointer block py-1">
-                              <Upload className="mx-auto h-6 w-6 text-slate-400 mb-1" />
-                              <p className="text-xs font-semibold text-slate-700">
-                                {newPoAttachments.length === 0 
-                                  ? "Click to attach PDF PO file(s) or drag & drop (up to 5 files at a time)"
-                                  : `Click to attach up to ${5 - newPoAttachments.length} more PDF file(s)`}
-                              </p>
-                              <p className="text-[10px] text-slate-500 mt-0.5">
-                                Automatically organized and saved to Google Drive
-                              </p>
-                            </label>
-                          )}
-                        </div>
-                        {uploadError && (
-                          <p className="text-[10px] text-rose-500 font-semibold mt-1">⚠️ {uploadError}</p>
-                        )}
-                      </div>
-                    )}
+                  <div className="pt-1">
+                    <POAttachmentsSection
+                      attachments={newPoAttachments}
+                      onAttachmentsChange={(updated) => {
+                        setNewPoAttachments(updated);
+                        setNewPoAttachmentUrl(updated[0]?.url || "");
+                        setNewPoFileName(updated[0]?.name || "");
+                      }}
+                      appsScriptUrl={appsScriptUrl}
+                      onSaveAppsScriptUrl={handleSaveAppsScriptUrl}
+                      clientName={newCompanyName || newClientName}
+                      poNumber={newPoNumber}
+                      accentColor="indigo"
+                      disabled={isSubmittingOrder}
+                    />
                   </div>
                 </div>
               )}
@@ -4291,9 +4216,9 @@ export default function OrdersOffersView({
                 </div>
               </div>
 
-              {/* NEW FIELDS: Payment, Bank, Delivery, Terms */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-slate-100 pt-4">
-                {editStatus !== "Closed Won" && (
+              {/* OFFER-ONLY FIELDS: Payment, Bank, Delivery, Terms */}
+              {editStatus !== "Closed Won" && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-slate-100 pt-4">
                   <div>
                     <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Payment Terms (offer)</label>
                     <input
@@ -4304,41 +4229,41 @@ export default function OrdersOffersView({
                       className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800 font-semibold"
                     />
                   </div>
-                )}
-                <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Payment Bank</label>
-                  <select
-                    value={editPaymentBankId}
-                    onChange={(e) => setEditPaymentBankId(e.target.value)}
-                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
-                  >
-                    <option value="">-- Select Bank --</option>
-                    {paymentBanks.map((bank) => (
-                      <option key={bank.id} value={bank.id}>{bank.bankName}</option>
-                    ))}
-                  </select>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Payment Bank</label>
+                    <select
+                      value={editPaymentBankId}
+                      onChange={(e) => setEditPaymentBankId(e.target.value)}
+                      className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
+                    >
+                      <option value="">-- Select Bank --</option>
+                      {paymentBanks.map((bank) => (
+                        <option key={bank.id} value={bank.id}>{bank.bankName}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Delivery Terms</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Ex-Works, DAP"
+                      value={editDelivery}
+                      onChange={(e) => setEditDelivery(e.target.value)}
+                      className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Other Terms</label>
+                    <input
+                      type="text"
+                      placeholder="Other relevant terms..."
+                      value={editOtherTerms}
+                      onChange={(e) => setEditOtherTerms(e.target.value)}
+                      className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Delivery Terms</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Ex-Works, DAP"
-                    value={editDelivery}
-                    onChange={(e) => setEditDelivery(e.target.value)}
-                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Other Terms</label>
-                  <input
-                    type="text"
-                    placeholder="Other relevant terms..."
-                    value={editOtherTerms}
-                    onChange={(e) => setEditOtherTerms(e.target.value)}
-                    className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none text-slate-800"
-                  />
-                </div>
-              </div>
+              )}
 
               {/* MULTI-PRODUCT SELECTION TABLE */}
               <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-3">
@@ -4774,118 +4699,21 @@ export default function OrdersOffersView({
                       </select>
                     </div>
                   </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-tight">
-                        Attach PO Document(s) <span className="text-slate-400 font-normal">({editPoAttachments.length}/5 files)</span>
-                      </label>
-                      {editPoAttachments.length > 0 && editPoAttachments.length < 5 && !isUploading && (
-                        <label
-                          htmlFor="edit-po-file-upload-more"
-                          className="text-[10px] text-amber-600 hover:text-amber-800 font-bold cursor-pointer hover:underline flex items-center gap-1"
-                        >
-                          <Plus size={11} /> Add more (up to {5 - editPoAttachments.length})
-                        </label>
-                      )}
-                    </div>
-
-                    {/* Attached files list */}
-                    {editPoAttachments.length > 0 && (
-                      <div className="space-y-2 mb-2">
-                        {editPoAttachments.map((att, idx) => (
-                          <div key={idx} className="flex items-center justify-between bg-emerald-50/60 border border-emerald-200 p-2.5 rounded-xl shadow-2xs">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="p-1.5 bg-emerald-100 rounded-lg text-emerald-700 shrink-0">
-                                <FileText className="h-4 w-4" />
-                              </div>
-                              <div className="min-w-0 text-left">
-                                <p className="text-xs font-semibold text-slate-800 truncate" title={att.name}>
-                                  {att.name || `Purchase Order Doc ${idx + 1}`}
-                                </p>
-                                <a
-                                  href="#"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    openOrDownloadDocument(att.url, att.name || "po_document.pdf");
-                                  }}
-                                  className="text-[10px] text-amber-600 hover:text-amber-800 font-bold underline inline-block mt-0.5"
-                                >
-                                  View PO Document ↗
-                                </a>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleRemovePOAttachment(idx, true)}
-                              className="p-1 hover:bg-rose-100 rounded-lg text-slate-400 hover:text-rose-600 transition-colors cursor-pointer shrink-0 ml-2"
-                              title="Remove this PO document"
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Dropzone for up to 5 files */}
-                    {editPoAttachments.length < 5 && (
-                      <div>
-                        <div 
-                          className={`border-2 border-dashed rounded-xl p-4 text-center transition-all cursor-pointer ${
-                            isUploading 
-                              ? "border-amber-400 bg-amber-50/20" 
-                              : "border-slate-200 hover:border-amber-400 bg-slate-50/50 hover:bg-slate-50"
-                          }`}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            if (isUploading) return;
-                            const files = e.dataTransfer.files;
-                            if (files && files.length > 0) {
-                              handlePOFilesUpload(files, true);
-                            }
-                          }}
-                        >
-                          <input
-                            type="file"
-                            id="edit-po-file-upload-more"
-                            className="hidden"
-                            accept=".pdf"
-                            multiple
-                            disabled={isUploading}
-                            onChange={(e) => {
-                              const files = e.target.files;
-                              if (files && files.length > 0) {
-                                handlePOFilesUpload(files, true);
-                              }
-                              e.target.value = "";
-                            }}
-                          />
-                          {isUploading ? (
-                            <div className="flex flex-col items-center justify-center py-2">
-                              <Loader2 className="h-6 w-6 text-amber-600 animate-spin mb-1" />
-                              <p className="text-xs font-semibold text-slate-750">{uploadProgressText || "Uploading Document..."}</p>
-                              <p className="text-[10px] text-slate-500 mt-0.5">Storing document directly in Google Drive</p>
-                            </div>
-                          ) : (
-                            <label htmlFor="edit-po-file-upload-more" className="cursor-pointer block py-1">
-                              <Upload className="mx-auto h-6 w-6 text-slate-400 mb-1" />
-                              <p className="text-xs font-semibold text-slate-700">
-                                {editPoAttachments.length === 0 
-                                  ? "Click to attach PDF PO file(s) or drag & drop (up to 5 files at a time)"
-                                  : `Click to attach up to ${5 - editPoAttachments.length} more PDF file(s)`}
-                              </p>
-                              <p className="text-[10px] text-slate-500 mt-0.5">
-                                Automatically organized and saved to Google Drive
-                              </p>
-                            </label>
-                          )}
-                        </div>
-                        {uploadError && (
-                          <p className="text-[10px] text-rose-500 font-semibold mt-1">⚠️ {uploadError}</p>
-                        )}
-                      </div>
-                    )}
+                  <div className="pt-1">
+                    <POAttachmentsSection
+                      attachments={editPoAttachments}
+                      onAttachmentsChange={(updated) => {
+                        setEditPoAttachments(updated);
+                        setEditPoAttachmentUrl(updated[0]?.url || "");
+                        setEditPoFileName(updated[0]?.name || "");
+                      }}
+                      appsScriptUrl={appsScriptUrl}
+                      onSaveAppsScriptUrl={handleSaveAppsScriptUrl}
+                      clientName={editCompanyName || editClientName}
+                      poNumber={editPoNumber}
+                      accentColor="amber"
+                      disabled={isSubmittingOrder}
+                    />
                   </div>
                 </div>
               )}
@@ -5234,20 +5062,36 @@ export default function OrdersOffersView({
                       </div>
                     </>
                   ) : (
-                    <div className="space-y-0.5 col-span-2">
-                      <span className="text-[9px] font-mono text-slate-400 uppercase block">Payment Terms (Offer)</span>
-                      <span className="text-[11px] font-bold text-emerald-700 block whitespace-normal">
-                        {selectedOrderDetails.paymentTermsOffer || "N/A"}
-                      </span>
-                    </div>
-                  )}
+                    <>
+                      <div className="space-y-0.5 col-span-2">
+                        <span className="text-[9px] font-mono text-slate-400 uppercase block">Payment Terms (Offer)</span>
+                        <span className="text-[11px] font-bold text-emerald-700 block whitespace-normal">
+                          {selectedOrderDetails.paymentTermsOffer || "N/A"}
+                        </span>
+                      </div>
 
-                  <div className="space-y-0.5">
-                    <span className="text-[9px] font-mono text-slate-400 uppercase block">Delivery Terms</span>
-                    <span className="text-[11px] font-bold text-slate-700">
-                      {selectedOrderDetails.delivery || "N/A"}
-                    </span>
-                  </div>
+                      <div className="space-y-0.5">
+                        <span className="text-[9px] font-mono text-slate-400 uppercase block">Payment Bank</span>
+                        <span className="text-[11px] font-bold text-slate-700">
+                          {paymentBanks.find((b) => b.id === selectedOrderDetails.paymentBankId)?.bankName || "N/A"}
+                        </span>
+                      </div>
+
+                      <div className="space-y-0.5">
+                        <span className="text-[9px] font-mono text-slate-400 uppercase block">Delivery Terms</span>
+                        <span className="text-[11px] font-bold text-slate-700">
+                          {selectedOrderDetails.delivery || "N/A"}
+                        </span>
+                      </div>
+
+                      <div className="space-y-0.5">
+                        <span className="text-[9px] font-mono text-slate-400 uppercase block">Other Terms</span>
+                        <span className="text-[10.5px] text-slate-600 block truncate" title={selectedOrderDetails.otherTerms}>
+                          {selectedOrderDetails.otherTerms || "N/A"}
+                        </span>
+                      </div>
+                    </>
+                  )}
 
                   <div className="space-y-0.5 pt-2 border-t border-slate-100 col-span-2 md:col-span-1">
                     <span className="text-[9px] font-mono text-slate-400 uppercase block">Billing Address & GSTIN</span>
@@ -5261,14 +5105,7 @@ export default function OrdersOffersView({
                     )}
                   </div>
 
-                  <div className="space-y-0.5 pt-2 border-t border-slate-100">
-                    <span className="text-[9px] font-mono text-slate-400 uppercase block">Other Terms</span>
-                    <span className="text-[10.5px] text-slate-600 block truncate" title={selectedOrderDetails.otherTerms}>
-                      {selectedOrderDetails.otherTerms || "N/A"}
-                    </span>
-                  </div>
-
-                  <div className="space-y-0.5 pt-2 border-t border-slate-100 col-span-2 md:col-span-2">
+                  <div className={`space-y-0.5 pt-2 border-t border-slate-100 col-span-2 ${selectedOrderDetails.status === "Closed Won" ? "md:col-span-3" : "md:col-span-3"}`}>
                     <span className="text-[9px] font-mono text-slate-400 uppercase block">Ownership & Creator</span>
                     <div className="text-[10.5px] text-slate-600 font-semibold space-y-0.5">
                       <div>Creator: {users.find(u => u.id === selectedOrderDetails.createdByUserId)?.name || selectedOrderDetails.createdByUserId}</div>
@@ -5402,29 +5239,65 @@ export default function OrdersOffersView({
                       <div>
                         <span className="text-[9px] font-mono text-slate-400 uppercase block">PO Attachment File(s)</span>
                         {selectedOrderDetails.closedWonDetails.poAttachments && selectedOrderDetails.closedWonDetails.poAttachments.length > 0 ? (
-                          <div className="flex flex-wrap gap-2 mt-1">
+                          <div className="flex flex-col gap-1.5 mt-1.5">
                             {selectedOrderDetails.closedWonDetails.poAttachments.map((att, idx) => (
-                              <button
+                              <div
                                 key={idx}
-                                type="button"
-                                onClick={() => openOrDownloadDocument(att.url, att.name || `PO_${selectedOrderDetails.closedWonDetails!.customerPoNumber}_${idx + 1}.pdf`)}
-                                className="inline-flex items-center gap-1.5 text-[10.5px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg border border-emerald-150 transition-all cursor-pointer shadow-2xs"
-                                title={att.name}
+                                className="flex items-center justify-between gap-2 bg-emerald-50/80 border border-emerald-200 px-3 py-1.5 rounded-xl shadow-2xs"
                               >
-                                <FileText size={12} />
-                                <span className="max-w-[170px] truncate">{att.name || `PO Doc ${idx + 1}`} ↗</span>
-                              </button>
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <FileText size={14} className="text-emerald-700 shrink-0" />
+                                  <a
+                                    href={att.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[11px] font-bold text-emerald-800 hover:text-emerald-950 underline truncate"
+                                    title={att.url}
+                                    onClick={(e) => {
+                                      if (!att.url.startsWith("http")) {
+                                        e.preventDefault();
+                                        openOrDownloadDocument(att.url, att.name || `PO_${selectedOrderDetails.closedWonDetails!.customerPoNumber}_${idx + 1}.pdf`);
+                                      }
+                                    }}
+                                  >
+                                    {att.name || `PO Document ${idx + 1}`}
+                                  </a>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => openOrDownloadDocument(att.url, att.name || `PO_${selectedOrderDetails.closedWonDetails!.customerPoNumber}_${idx + 1}.pdf`)}
+                                  className="text-[10px] font-bold text-emerald-700 hover:text-emerald-900 bg-emerald-150 hover:bg-emerald-200 px-2 py-1 rounded-md transition-colors cursor-pointer shrink-0"
+                                >
+                                  View ↗
+                                </button>
+                              </div>
                             ))}
                           </div>
                         ) : selectedOrderDetails.closedWonDetails.poAttachmentUrl ? (
-                          <button
-                            type="button"
-                            onClick={() => openOrDownloadDocument(selectedOrderDetails.closedWonDetails!.poAttachmentUrl!, `PO_${selectedOrderDetails.closedWonDetails!.customerPoNumber}.pdf`)}
-                            className="mt-1 inline-flex items-center gap-1.5 text-[10.5px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg border border-emerald-150 transition-all cursor-pointer"
-                          >
-                            <FileText size={12} />
-                            <span>View PO PDF ↗</span>
-                          </button>
+                          <div className="mt-1 flex items-center justify-between gap-2 bg-emerald-50/80 border border-emerald-200 px-3 py-1.5 rounded-xl shadow-2xs">
+                            <a
+                              href={selectedOrderDetails.closedWonDetails.poAttachmentUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] font-bold text-emerald-800 hover:text-emerald-950 underline truncate inline-flex items-center gap-1.5"
+                              onClick={(e) => {
+                                if (!selectedOrderDetails.closedWonDetails!.poAttachmentUrl!.startsWith("http")) {
+                                  e.preventDefault();
+                                  openOrDownloadDocument(selectedOrderDetails.closedWonDetails!.poAttachmentUrl!, `PO_${selectedOrderDetails.closedWonDetails!.customerPoNumber}.pdf`);
+                                }
+                              }}
+                            >
+                              <FileText size={14} className="text-emerald-700 shrink-0" />
+                              <span>View PO PDF ↗</span>
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => openOrDownloadDocument(selectedOrderDetails.closedWonDetails!.poAttachmentUrl!, `PO_${selectedOrderDetails.closedWonDetails!.customerPoNumber}.pdf`)}
+                              className="text-[10px] font-bold text-emerald-700 hover:text-emerald-900 bg-emerald-150 hover:bg-emerald-200 px-2 py-1 rounded-md transition-colors cursor-pointer shrink-0"
+                            >
+                              View ↗
+                            </button>
+                          </div>
                         ) : (
                           <span className="text-slate-400 text-[10px] italic">No attached PO PDF</span>
                         )}

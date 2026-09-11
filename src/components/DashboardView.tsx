@@ -1522,8 +1522,6 @@ export default function DashboardView({
       {activeUser.role === Role.Admin && (
         <AdminDriveSettings
           activeUser={activeUser}
-          teams={teams}
-          users={users}
         />
       )}
     </div>
