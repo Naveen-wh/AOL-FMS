@@ -68,7 +68,7 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
     id: "lead_order",
     name: "📋 Deals, Leads & Orders Form / Event",
     description: "Core sales lead and order details (client, value, items, and commercial terms)",
-    forms: ["any", "create_order", "edit_order"],
+    forms: ["any", "create_order", "edit_order", "payment_reminder"],
     variables: [
       { key: "{{clientName}}", label: "Client Contact Person", description: "Client contact person's name", sampleValue: "Saikat Chakraborty" },
       { key: "{{companyName}}", label: "Company Name", description: "Client company name", sampleValue: "Hindustan Coca-Cola Beverages" },
@@ -125,22 +125,54 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
     id: "invoice_issuance",
     name: "🧾 Invoice Issuance Form / Event",
     description: "Billing details and generated invoice links",
-    forms: ["any", "invoice_issuance", "edit_order"],
+    forms: ["any", "invoice_issuance", "edit_order", "payment_reminder"],
     variables: [
       { key: "{{invoiceNumber}}", label: "Invoice Number", description: "Tax / Commercial Invoice Number", sampleValue: "INV-2026-0412" },
       { key: "{{invoiceFileLink}}", label: "Invoice Drive Link", description: "URL / Share link to invoice PDF file in Drive", sampleValue: "https://drive.google.com/file/d/sample/view" },
     ],
   },
   {
+    id: "payment_reminder_details",
+    name: "💰 Payment Reminder & Debtor Collection",
+    description: "Variables available for single-party and consolidated payment reminders (invoice #, PO #, Due Date & overdue, Invoice Amount, Pending Amount, etc.)",
+    forms: ["any", "payment_reminder", "payment_reminder_consolidated", "invoice_issuance"],
+    variables: [
+      { key: "{{invoiceNumber}}", label: "Invoice Number (Invoice #)", description: "Tax / Commercial Invoice Number", sampleValue: "INV-2026-0412" },
+      { key: "{{customerPoNumber}}", label: "Customer PO Number (PO #)", description: "Customer Purchase Order Number", sampleValue: "PO-2026-8891" },
+      { key: "{{poNumber}}", label: "PO Number (Alias)", description: "Alias for Customer PO Number", sampleValue: "PO-2026-8891" },
+      { key: "{{dueDate}}", label: "Payment Due Date", description: "Scheduled payment due date (e.g. 15-Sep-2026)", sampleValue: "15-Sep-2026" },
+      { key: "{{dueDateStatus}}", label: "Due Date & Overdue Status", description: "Overdue status text (e.g. Overdue by 5 days, Due Today, Due in 3 days)", sampleValue: "Overdue by 5 days" },
+      { key: "{{overdue}}", label: "Overdue Status (Alias)", description: "Alias for Due Date & Overdue Status", sampleValue: "Overdue by 5 days" },
+      { key: "{{invoiceAmount}}", label: "Invoice Amount (₹)", description: "Total amount of the invoice", sampleValue: "₹1,18,000" },
+      { key: "{{amountReceived}}", label: "Payment Received (₹)", description: "Total payments collected to date", sampleValue: "₹50,000" },
+      { key: "{{pendingAmount}}", label: "Pending Amount (₹)", description: "Remaining balance pending on invoice", sampleValue: "₹68,000" },
+      { key: "{{paymentStatus}}", label: "Payment Status", description: "Payment status: Fully paid, Partial paid, or Unpaid", sampleValue: "Partial paid" },
+      { key: "{{totalPendingAmount}}", label: "Total Pending Amount (₹)", description: "Consolidated sum of all pending amounts for this party", sampleValue: "₹2,45,000" },
+      { key: "{{invoiceCount}}", label: "Total Pending Invoices", description: "Count of pending invoices for this party", sampleValue: "2" },
+      { key: "{{dispatchDate}}", label: "Actual Dispatch Date", description: "Actual or scheduled dispatch date", sampleValue: "20-Aug-2026" },
+      { key: "{{actualDispatchDate}}", label: "Actual Dispatch Date (Alias)", description: "Alias for Actual Dispatch Date", sampleValue: "20-Aug-2026" },
+      { key: "{{paymentCreditPeriod}}", label: "Payment Credit Period", description: "Credit period in number of days (e.g. 30 Days)", sampleValue: "30 Days" },
+      { key: "{{payment}}", label: "Payment Terms", description: "Agreed payment terms (e.g. 30 Days Credit)", sampleValue: "30 Days Credit" },
+      { key: "{{invoiceTable}}", label: "Invoice Table ({{invoiceTable}})", description: "Formatted HTML table containing invoice number, PO #, dispatch date, due date & overdue status, invoice amount, payment received, Dr/Cr, and pending amount for all unpaid invoices", sampleValue: "<table border='1'>...</table>" },
+      { key: "{{bankDetailsTable}}", label: "HTML Bank Details Table", description: "Formatted HTML table containing company bank name, account number, IFSC, branch, etc.", sampleValue: "<table>...</table>" },
+      { key: "{{companyName}}", label: "Party / Company Name", description: "Client company name", sampleValue: "Demo Company Pvt Ltd" },
+      { key: "{{clientName}}", label: "Client Contact Person", description: "Client contact person's name", sampleValue: "Demo Contact Person" },
+      { key: "{{email}}", label: "Client Email", description: "Primary client billing email address", sampleValue: "demo@company.com" },
+      { key: "{{phone}}", label: "Client Phone", description: "Primary client phone number", sampleValue: "+91 9123456789" },
+      { key: "{{todayDate}}", label: "Today's Date", description: "Current date of sending the email reminder", sampleValue: "2026-09-01" },
+    ],
+  },
+  {
     id: "payment_collection",
     name: "💰 Payment & Collection Form / Event",
     description: "Payment tracking, balances, and due date reminders",
-    forms: ["any", "payment_reminder", "invoice_issuance", "create_order", "edit_order"],
+    forms: ["any", "payment_reminder", "payment_reminder_consolidated", "invoice_issuance", "create_order", "edit_order"],
     variables: [
       { key: "{{amountReceived}}", label: "Amount Received ($)", description: "Total payments collected to date", sampleValue: "$150,000" },
       { key: "{{pendingAmount}}", label: "Pending Amount ($)", description: "Outstanding unpaid balance", sampleValue: "$75,000" },
       { key: "{{paymentStatus}}", label: "Payment Status", description: "Status (Unpaid, Partial paid, Fully paid)", sampleValue: "Partial paid" },
       { key: "{{dueDate}}", label: "Payment Due Date", description: "Scheduled payment due date", sampleValue: "2026-08-15" },
+      { key: "{{invoiceTable}}", label: "Invoice Wise Payment Table", description: "Consolidated HTML table containing all pending invoices (invoice #, PO #, dispatch date, due date & overdue status, invoice amount, payment received, Dr/Cr and pending amount)", sampleValue: "<table border='1'>...</table>" },
       { key: "{{bankDetailsTable}}", label: "HTML Bank Details Table", description: "A beautifully formatted HTML table containing details of the selected Payment Bank (Bank Name, Account No, IFSC, etc.)", sampleValue: "<table>...</table>" },
     ],
   },
@@ -148,7 +180,7 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
     id: "consolidated_payment_reminder",
     name: "📊 Consolidated Payment Reminder (Party Wise)",
     description: "Consolidated outstanding payment details across all pending invoices for a single party",
-    forms: ["any", "payment_reminder_consolidated"],
+    forms: ["any", "payment_reminder_consolidated", "payment_reminder"],
     variables: [
       { key: "{{companyName}}", label: "Party / Company Name", description: "Consolidated client company name", sampleValue: "Hindustan Coca-Cola Beverages" },
       { key: "{{clientName}}", label: "Client Contact Person", description: "Primary contact person name", sampleValue: "Saikat Chakraborty" },
@@ -156,7 +188,7 @@ export const TEMPLATE_VARIABLE_GROUPS: TemplateVariableGroup[] = [
       { key: "{{phone}}", label: "Client Phone", description: "Primary phone number for party", sampleValue: "+91 9876543210" },
       { key: "{{totalPendingAmount}}", label: "Total Pending Amount", description: "Consolidated sum of all pending amounts for this party", sampleValue: "₹3,45,000" },
       { key: "{{invoiceCount}}", label: "Total Pending Invoices", description: "Count of pending invoices for this party", sampleValue: "4" },
-      { key: "{{invoiceTable}}", label: "Invoice Wise Payment Table", description: "Formatted HTML table containing invoice number, PO, due date, invoice amount & pending amount for all unpaid invoices", sampleValue: "<table border='1'>...</table>" },
+      { key: "{{invoiceTable}}", label: "Invoice Wise Payment Table", description: "Formatted HTML table containing invoice number, PO, dispatch date, due date, invoice amount & pending amount for all unpaid invoices", sampleValue: "<table border='1'>...</table>" },
       { key: "{{todayDate}}", label: "Today's Date", description: "Current date of sending the email", sampleValue: "2026-08-05" },
     ],
   },
@@ -213,6 +245,11 @@ export interface ReplaceVariablesContext {
   pendingAmount?: string | number;
   paymentStatus?: string;
   dueDate?: string;
+  dueDateStatus?: string;
+  overdue?: string;
+  invoiceAmount?: string | number;
+  poNumber?: string;
+  actualDispatchDate?: string;
   
   // Consolidated payment fields
   totalPendingAmount?: string | number;
@@ -324,37 +361,60 @@ export function getSampleTemplateContext(assignedForm?: string): ReplaceVariable
     invoiceFileLink: "https://drive.google.com/file/d/sample-invoice/view",
     amountReceived: 50000,
     pendingAmount: 68000,
+    invoiceAmount: 118000,
     paymentStatus: "Partial Paid",
     dueDate: "2026-09-15",
+    dueDateStatus: "Overdue by 5 days",
+    overdue: "Overdue by 5 days",
+    poNumber: "PO-2026-8891",
+    actualDispatchDate: "2026-08-20",
     totalPendingAmount: 245000,
     invoiceCount: 2,
     invoiceTable: `
-      <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 13px; border: 1px solid #cbd5e1; margin-top: 10px;">
-        <thead style="background-color: #f8fafc; color: #334155;">
-          <tr>
-            <th style="border: 1px solid #cbd5e1; text-align: left; padding: 8px;">Invoice #</th>
-            <th style="border: 1px solid #cbd5e1; text-align: left; padding: 8px;">PO #</th>
-            <th style="border: 1px solid #cbd5e1; text-align: center; padding: 8px;">Due Date</th>
-            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Inv Amount (₹)</th>
-            <th style="border: 1px solid #cbd5e1; text-align: right; padding: 8px;">Pending (₹)</th>
+      <table border="0" cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif; font-size:12px; border:1px solid #047857; background-color:#ffffff; margin:16px 0;">
+        <thead>
+          <tr style="background-color:#047857; color:#ffffff; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px; font-size:11px;">
+            <th style="padding:10px 8px; border:1px solid #059669; text-align:left;">INVOICE #</th>
+            <th style="padding:10px 8px; border:1px solid #059669; text-align:left;">CUSTOMER PO #</th>
+            <th style="padding:10px 8px; border:1px solid #059669; text-align:center;">DISPATCH DATE</th>
+            <th style="padding:10px 8px; border:1px solid #059669; text-align:center;">DUE DATE & STATUS</th>
+            <th style="padding:10px 8px; border:1px solid #059669; text-align:right;">INVOICE AMT (₹)</th>
+            <th style="padding:10px 8px; border:1px solid #059669; text-align:right;">RECEIVED (₹)</th>
+            <th style="padding:10px 8px; border:1px solid #059669; text-align:right;">DR/CR (₹)</th>
+            <th style="padding:10px 8px; border:1px solid #059669; text-align:right;">PENDING (₹)</th>
           </tr>
         </thead>
         <tbody>
-          <tr>
-            <td style="border: 1px solid #cbd5e1; padding: 8px; font-weight: bold;">INV-2026-0301</td>
-            <td style="border: 1px solid #cbd5e1; padding: 8px;">PO-8812</td>
-            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center; color: #dc2626; font-weight: bold;">2026-08-01 (Overdue)</td>
-            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">1,27,000</td>
-            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; font-weight: bold; color: #dc2626;">1,27,000</td>
+          <tr style="background-color:#ffffff;">
+            <td style="padding:8px; border:1px solid #e2e8f0; font-family:monospace; font-weight:bold; color:#047857;">INV-2026-0301</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; font-family:monospace;">PO-8812</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:center; color:#64748b;">15-Jul-2026</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:center;"><span style="color:#b91c1c; font-weight:bold;">01-Aug-2026 (Overdue)</span></td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:right; font-weight:600;">1,50,000</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:right; color:#047857;">23,000</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:right; color:#64748b;">0</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#b91c1c;">1,27,000</td>
           </tr>
-          <tr>
-            <td style="border: 1px solid #cbd5e1; padding: 8px; font-weight: bold;">INV-2026-0412</td>
-            <td style="border: 1px solid #cbd5e1; padding: 8px;">PO-8891</td>
-            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center;">2026-09-15</td>
-            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">1,18,000</td>
-            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; font-weight: bold;">1,18,000</td>
+          <tr style="background-color:#f8fafc;">
+            <td style="padding:8px; border:1px solid #e2e8f0; font-family:monospace; font-weight:bold; color:#047857;">INV-2026-0412</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; font-family:monospace;">PO-8891</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:center; color:#64748b;">30-Jul-2026</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:center;"><span style="color:#b45309; font-weight:bold;">15-Sep-2026 (Due Soon)</span></td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:right; font-weight:600;">1,18,000</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:right; color:#047857;">0</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:right; color:#64748b;">0</td>
+            <td style="padding:8px; border:1px solid #e2e8f0; text-align:right; font-weight:bold; color:#b45309;">1,18,000</td>
           </tr>
         </tbody>
+        <tfoot>
+          <tr style="background-color:#ecfdf5; font-weight:bold; border-top:2px solid #047857;">
+            <td colspan="4" style="padding:10px 8px; border:1px solid #cbd5e1; text-align:right; text-transform:uppercase; color:#065f46;">CONSOLIDATED OUTSTANDING TOTAL:</td>
+            <td style="padding:10px 8px; border:1px solid #cbd5e1; text-align:right; color:#0f172a;">₹2,68,000</td>
+            <td style="padding:10px 8px; border:1px solid #cbd5e1; text-align:right; color:#047857;">₹23,000</td>
+            <td style="padding:10px 8px; border:1px solid #cbd5e1; text-align:right; color:#64748b;">₹0</td>
+            <td style="padding:10px 8px; border:1px solid #cbd5e1; text-align:right; color:#b91c1c; font-size:13px;">₹2,45,000</td>
+          </tr>
+        </tfoot>
       </table>
     `,
     todayDate: "2026-09-01",
@@ -392,6 +452,12 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
   const totalValFormatted = grandTotalValFormatted;
   const amountRecFormatted = typeof ctx.amountReceived === "number" ? `₹${ctx.amountReceived.toLocaleString('en-IN')}` : (ctx.amountReceived || "");
   const pendingAmtFormatted = typeof ctx.pendingAmount === "number" ? `₹${ctx.pendingAmount.toLocaleString('en-IN')}` : (ctx.pendingAmount || "");
+  const invAmtFormatted = typeof ctx.invoiceAmount === "number"
+    ? `₹${ctx.invoiceAmount.toLocaleString('en-IN')}`
+    : (ctx.invoiceAmount || totalValFormatted);
+  const dueStatusVal = ctx.dueDateStatus || ctx.overdue || "";
+  const poNumberVal = ctx.poNumber || ctx.customerPoNumber || "";
+  const actualDispatchDateVal = ctx.actualDispatchDate || ctx.dispatchDate || "";
 
   const salesPhone = ctx.assignedToPhone || ctx.assignedSalesPersonPhone || ctx.salesPersonPhone || "";
   const whMgrEmail = ctx.warehouseManagedByEmail || ctx.warehouseManagerEmail || ctx.warehouseEmail || "";
@@ -445,11 +511,12 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{notes\}\}|\{notes\}/gi, ctx.notes || "")
 
     // Invoice
-    .replace(/\{\{invoiceNumber\}\}|\{invoiceNumber\}/gi, ctx.invoiceNumber || "")
+    .replace(/\{\{invoiceNumber\}\}|\{invoiceNumber\}|\{\{invoiceNo\}\}|\{invoiceNo\}|\{\{invoice\}\}|\{invoice\}/gi, ctx.invoiceNumber || "")
     .replace(/\{\{invoiceFileLink\}\}|\{invoiceFileLink\}/gi, ctx.invoiceFileLink || "")
+    .replace(/\{\{invoiceAmount\}\}|\{invoiceAmount\}|\{\{invoice_amount\}\}|\{invoice_amount\}|\{\{invoiceAmt\}\}|\{invoiceAmt\}/gi, invAmtFormatted)
 
     // Dispatch & Closed Won & Warehouse Details
-    .replace(/\{\{customerPoNumber\}\}|\{customerPoNumber\}/gi, ctx.customerPoNumber || "")
+    .replace(/\{\{customerPoNumber\}\}|\{customerPoNumber\}|\{\{poNumber\}\}|\{poNumber\}|\{\{customerPo\}\}|\{customerPo\}|\{\{po\}\}|\{po\}/gi, poNumberVal)
     .replace(/\{\{poDate\}\}|\{poDate\}/gi, ctx.poDate || "")
     .replace(/\{\{freightTerm\}\}|\{freightTerm\}/gi, ctx.freightTerm || "")
     .replace(/\{\{freightChargedInBill\}\}|\{freightChargedInBill\}/gi, String(ctx.freightChargedInBill || ""))
@@ -459,7 +526,7 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{deliveryTerm\}\}|\{deliveryTerm\}/gi, ctx.deliveryTerm || "")
     .replace(/\{\{destinationAddress\}\}|\{destinationAddress\}/gi, ctx.destinationAddress || "")
     .replace(/\{\{gstin\}\}|\{gstin\}/gi, ctx.gstin || "")
-    .replace(/\{\{dispatchDate\}\}|\{dispatchDate\}/gi, ctx.dispatchDate || "")
+    .replace(/\{\{dispatchDate\}\}|\{dispatchDate\}|\{\{actualDispatchDate\}\}|\{actualDispatchDate\}|\{\{actual_dispatch_date\}\}|\{actual_dispatch_date\}/gi, actualDispatchDateVal)
     .replace(/\{\{dispatchLocation\}\}|\{dispatchLocation\}/gi, ctx.dispatchLocation || "")
     .replace(/\{\{warehouseManagedBy\}\}|\{warehouseManagedBy\}/gi, ctx.warehouseManagedBy || "")
     .replace(/\{\{warehouseManager\}\}|\{warehouseManager\}/gi, whManager)
@@ -477,12 +544,14 @@ export function replaceTemplateVars(text: string, ctx: ReplaceVariablesContext):
     .replace(/\{\{pendingAmount\}\}|\{pendingAmount\}/gi, pendingAmtFormatted)
     .replace(/\{\{paymentStatus\}\}|\{paymentStatus\}/gi, ctx.paymentStatus || "")
     .replace(/\{\{dueDate\}\}|\{dueDate\}/gi, ctx.dueDate || "")
+    .replace(/\{\{dueDateStatus\}\}|\{dueDateStatus\}|\{\{dueStatus\}\}|\{dueStatus\}|\{\{overdue\}\}|\{overdue\}|\{\{statusLabel\}\}|\{statusLabel\}/gi, dueStatusVal)
 
     // Consolidated payment reminder
-    .replace(/\{\{totalPendingAmount\}\}|\{totalPendingAmount\}/gi, typeof ctx.totalPendingAmount === "number" ? `₹${ctx.totalPendingAmount.toLocaleString('en-IN')}` : (ctx.totalPendingAmount || ""))
-    .replace(/\{\{invoiceCount\}\}|\{invoiceCount\}/gi, String(ctx.invoiceCount || ""))
-    .replace(/\{\{invoiceTable\}\}|\{invoiceTable\}/gi, ctx.invoiceTable || "")
-    .replace(/\{\{todayDate\}\}|\{todayDate\}/gi, ctx.todayDate || new Date().toISOString().split("T")[0]);
+    .replace(/\{\{totalPendingAmount\}\}|\{totalPendingAmount\}|\{\{total_pending_amount\}\}|\{total_pending_amount\}/gi, typeof ctx.totalPendingAmount === "number" ? `₹${ctx.totalPendingAmount.toLocaleString('en-IN')}` : (ctx.totalPendingAmount || ""))
+    .replace(/\{\{invoiceCount\}\}|\{invoiceCount\}|\{\{invoice_count\}\}|\{invoice_count\}/gi, String(ctx.invoiceCount || ""))
+    .replace(/\{\{invoiceTable\}\}|\{invoiceTable\}|\{\{invoice_table\}\}|\{invoice_table\}/gi, ctx.invoiceTable || "")
+    .replace(/\{\{bankDetailsTable\}\}|\{bankDetailsTable\}|\{\{bank_details_table\}\}|\{bank_details_table\}/gi, ctx.bankDetailsTable || "")
+    .replace(/\{\{todayDate\}\}|\{todayDate\}|\{\{today_date\}\}|\{today_date\}/gi, ctx.todayDate || new Date().toISOString().split("T")[0]);
 }
 
 /**

@@ -3692,7 +3692,19 @@ export default function OrdersOffersView({
                       <select
                         required
                         value={newPayment}
-                        onChange={(e) => setNewPayment(e.target.value)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setNewPayment(val);
+                          const lower = val.toLowerCase();
+                          if (lower.includes("immediate") || lower.includes("advance") || lower === "cod") {
+                            const zeroOpt = paymentCreditPeriods.find((p) => p.name.includes("0") || p.name.toLowerCase().includes("immediate") || p.name.toLowerCase().includes("advance"));
+                            if (zeroOpt) {
+                              setNewPaymentCreditPeriod(zeroOpt.name);
+                            } else if (paymentCreditPeriods.length > 0) {
+                              setNewPaymentCreditPeriod("0 Days");
+                            }
+                          }
+                        }}
                         className="w-full text-xs border border-slate-200 bg-white px-3 py-2 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none font-semibold text-slate-800"
                       >
                         <option value="">-- Select Payment Term --</option>
@@ -4492,7 +4504,19 @@ export default function OrdersOffersView({
                       <select
                         required
                         value={editPayment}
-                        onChange={(e) => setEditPayment(e.target.value)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditPayment(val);
+                          const lower = val.toLowerCase();
+                          if (lower.includes("immediate") || lower.includes("advance") || lower === "cod") {
+                            const zeroOpt = paymentCreditPeriods.find((p) => p.name.includes("0") || p.name.toLowerCase().includes("immediate") || p.name.toLowerCase().includes("advance"));
+                            if (zeroOpt) {
+                              setEditPaymentCreditPeriod(zeroOpt.name);
+                            } else if (paymentCreditPeriods.length > 0) {
+                              setEditPaymentCreditPeriod("0 Days");
+                            }
+                          }
+                        }}
                         className="w-full text-xs border border-slate-200 bg-white px-3 py-2 rounded-lg focus:ring-1 focus:ring-amber-500 outline-none font-semibold text-slate-800"
                       >
                         <option value="">-- Select Payment Term --</option>

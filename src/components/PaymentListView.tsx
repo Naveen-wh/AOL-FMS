@@ -65,7 +65,10 @@ import {
   FileUp,
   Calculator,
   PlusCircle,
-  MinusCircle
+  MinusCircle,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown
 } from "lucide-react";
 
 /**
@@ -86,6 +89,22 @@ export function formatEmailPreviewHtml(bodyStr: string): string {
       return part.replace(/\n/g, "<br/>");
     }
   }).join("");
+}
+
+/**
+ * Helper to generate a clean HTML table with payment bank details
+ */
+export function generateBankDetailsTableHTML(bank?: PaymentBank): string {
+  if (!bank) return "";
+  return (
+    `<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif; font-size:12px; border:1px solid #cbd5e1; background-color:#f8fafc; margin:12px 0;">` +
+      `<tr><td style="padding:6px 10px; font-weight:bold; width:35%; border:1px solid #cbd5e1; color:#334155;">Bank Name:</td><td style="padding:6px 10px; border:1px solid #cbd5e1; color:#0f172a; font-weight:bold;">${bank.bankName}</td></tr>` +
+      `<tr><td style="padding:6px 10px; font-weight:bold; border:1px solid #cbd5e1; color:#334155;">Account Name:</td><td style="padding:6px 10px; border:1px solid #cbd5e1; color:#0f172a;">${bank.accountHolderName || "Aroma Organics Limited"}</td></tr>` +
+      `<tr><td style="padding:6px 10px; font-weight:bold; border:1px solid #cbd5e1; color:#334155;">Account Number:</td><td style="padding:6px 10px; border:1px solid #cbd5e1; font-family:monospace; font-weight:bold; color:#0f172a;">${bank.accountNumber}</td></tr>` +
+      `<tr><td style="padding:6px 10px; font-weight:bold; border:1px solid #cbd5e1; color:#334155;">IFSC Code:</td><td style="padding:6px 10px; border:1px solid #cbd5e1; font-family:monospace; font-weight:bold; color:#0f172a;">${bank.ifscCode}</td></tr>` +
+      (bank.branch ? `<tr><td style="padding:6px 10px; font-weight:bold; border:1px solid #cbd5e1; color:#334155;">Branch:</td><td style="padding:6px 10px; border:1px solid #cbd5e1; color:#0f172a;">${bank.branch}</td></tr>` : "") +
+    `</table>`
+  );
 }
 
 /**
@@ -172,16 +191,7 @@ export function generateConsolidatedInvoiceTableHTML(
     const receivedAmt = pDet ? pDet.amountReceived : 0;
     const pendingAmt = pDet ? pDet.pendingAmount : Math.max(0, (totalAmt + drCrAmt) - receivedAmt);
     const actualDispatchDate = getOrderActualDispatchDate(o);
-    const dueInfo = o.isBadDebtor && o.badDebtorRecord
-      ? {
-          dueDateFormatted: formatDate(o.badDebtorRecord.dueDate),
-          dueDateObj: o.badDebtorRecord.dueDate ? new Date(o.badDebtorRecord.dueDate) : null,
-          daysRemaining: -(o.badDebtorRecord.overdueDays || 0),
-          isOverdue: (o.badDebtorRecord.overdueDays || 0) > 0,
-          statusLabel: (o.badDebtorRecord.overdueDays || 0) > 0 ? `Overdue by ${o.badDebtorRecord.overdueDays} days` : "Due Today/Soon",
-          paymentDaysCount: 0,
-        }
-      : calculateDueDate(actualDispatchDate, o.payment);
+    const dueInfo = getOrderDueDateInfo(o);
     const invNum = o.billingDetails?.invoiceNumber || "N/A";
     const poNum = o.closedWonDetails?.customerPoNumber || "N/A";
     const dispDate = actualDispatchDate ? formatDate(actualDispatchDate) : "N/A";
@@ -289,59 +299,125 @@ export function getOrderActualDispatchDate(order: OrderOffer): string | undefine
 }
 
 /**
- * Calculates Due Date based on Dispatch Date + Payment Days
+ * Extract credit days from "Payment Credit Period ( No. Of Days )" and "Payment Term"
+ * 
+ * Rules:
+ * 1. If Payment Term is "Immediate" or "Advance" (e.g. "Immediate", "Advance", "100% Advance") -> 0 credit days
+ * 2. If Payment Credit Period is "Immediate" or "Advance" or "0" or "0 Days" -> 0 credit days
+ * 3. Extract numeric days from Payment Credit Period (e.g. "30 Days" -> 30, "45" -> 45, "60 Days" -> 60)
+ * 4. Fallback if credit period is missing: Extract numeric days from Payment Term, or default to 0
  */
-export function calculateDueDate(dispatchDateStr?: string, paymentTermsStr?: string) {
-  if (!dispatchDateStr) {
-    return {
-      dueDateFormatted: "Pending Dispatch",
-      dueDateObj: null,
-      daysRemaining: null,
-      isOverdue: false,
-      statusLabel: "Pending Dispatch",
-      paymentDaysCount: 0,
-    };
+export function extractCreditDays(paymentCreditPeriodStr?: string, paymentTermsStr?: string): number {
+  const pTermLower = (paymentTermsStr || "").toLowerCase().trim();
+  const pCreditLower = (paymentCreditPeriodStr || "").toLowerCase().trim();
+
+  // If Payment Term option is Immediate or Advance -> Credit period is strictly 0
+  if (
+    pTermLower.includes("immediate") ||
+    pTermLower.includes("advance") ||
+    pTermLower === "cod"
+  ) {
+    return 0;
   }
 
-  const dispatchDate = new Date(dispatchDateStr);
-  if (isNaN(dispatchDate.getTime())) {
-    return {
-      dueDateFormatted: "Invalid Date",
-      dueDateObj: null,
-      daysRemaining: null,
-      isOverdue: false,
-      statusLabel: "Invalid Date",
-      paymentDaysCount: 0,
-    };
+  // If Payment Credit Period is Immediate, Advance, or 0 -> Credit period is 0
+  if (
+    pCreditLower.includes("immediate") ||
+    pCreditLower.includes("advance") ||
+    pCreditLower === "0" ||
+    pCreditLower === "0 days" ||
+    pCreditLower === "0 day" ||
+    pCreditLower === "none"
+  ) {
+    return 0;
   }
 
-  // Extract numeric days from payment terms string
-  let days = 30; // default 30 days if not specified
-  if (paymentTermsStr) {
-    const match = paymentTermsStr.match(/\d+/);
+  // Extract digits from Payment Credit Period (e.g. "30 Days" -> 30, "45 Days" -> 45, "60" -> 60)
+  if (paymentCreditPeriodStr) {
+    const match = paymentCreditPeriodStr.match(/\d+/);
     if (match) {
-      days = parseInt(match[0], 10);
-    } else {
-      const lower = paymentTermsStr.toLowerCase();
-      if (lower.includes("immediate") || lower.includes("advance") || lower.includes("cod")) {
-        days = 0;
-      }
+      return parseInt(match[0], 10);
     }
   }
 
-  const dueDate = new Date(dispatchDate);
-  dueDate.setDate(dueDate.getDate() + days);
+  // Fallback: If Payment Credit Period is not set, extract digits from Payment Term (e.g. "Net 30", "30 Days")
+  if (paymentTermsStr) {
+    const match = paymentTermsStr.match(/\d+/);
+    if (match) {
+      return parseInt(match[0], 10);
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Calculates Due Date based on:
+ * Actual dispatch date + "Payment Credit Period ( No. Of Days )"
+ */
+export function calculateDueDate(
+  dispatchDateStr?: string,
+  paymentCreditPeriodStr?: string,
+  paymentTermsStr?: string
+) {
+  const days = extractCreditDays(paymentCreditPeriodStr, paymentTermsStr);
+
+  if (!dispatchDateStr || !dispatchDateStr.trim()) {
+    return {
+      dueDateFormatted: "Pending Dispatch",
+      dueDateObj: null,
+      dueDateISO: "",
+      daysRemaining: null,
+      isOverdue: false,
+      statusLabel: "Pending Dispatch",
+      paymentDaysCount: days,
+    };
+  }
+
+  const cleanDateStr = dispatchDateStr.trim();
+  let baseDate: Date;
+
+  // Parse YYYY-MM-DD cleanly in local time to avoid timezone rollback
+  const ymdMatch = cleanDateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (ymdMatch) {
+    baseDate = new Date(
+      parseInt(ymdMatch[1], 10),
+      parseInt(ymdMatch[2], 10) - 1,
+      parseInt(ymdMatch[3], 10)
+    );
+  } else {
+    baseDate = new Date(cleanDateStr);
+  }
+
+  if (isNaN(baseDate.getTime())) {
+    return {
+      dueDateFormatted: "Invalid Date",
+      dueDateObj: null,
+      dueDateISO: "",
+      daysRemaining: null,
+      isOverdue: false,
+      statusLabel: "Invalid Date",
+      paymentDaysCount: days,
+    };
+  }
+
+  // Actual dispatch date + Payment Credit Period (No. of days)
+  const dueDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + days);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const dueCheck = new Date(dueDate);
+  const dueCheck = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
   dueCheck.setHours(0, 0, 0, 0);
 
   const diffTime = dueCheck.getTime() - today.getTime();
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
 
   const dueDateFormatted = formatDate(dueDate);
+  const yearStr = dueDate.getFullYear();
+  const monthStr = String(dueDate.getMonth() + 1).padStart(2, "0");
+  const dayStr = String(dueDate.getDate()).padStart(2, "0");
+  const dueDateISO = `${yearStr}-${monthStr}-${dayStr}`;
 
   let statusLabel = "";
   let isOverdue = false;
@@ -358,11 +434,34 @@ export function calculateDueDate(dispatchDateStr?: string, paymentTermsStr?: str
   return {
     dueDateFormatted,
     dueDateObj: dueDate,
+    dueDateISO,
     daysRemaining: diffDays,
     isOverdue,
     statusLabel,
     paymentDaysCount: days,
   };
+}
+
+/**
+ * Helper to get due date info for an order (Bad Debt or Normal Dispatch + Credit Period)
+ */
+export function getOrderDueDateInfo(order: OrderOffer) {
+  if (order.isBadDebtor && order.badDebtorRecord) {
+    const bd = order.badDebtorRecord;
+    const overdueDaysCount = parseInt(String(bd.overdueDays || 0), 10);
+    return {
+      dueDateFormatted: formatDate(bd.dueDate),
+      dueDateObj: bd.dueDate ? new Date(bd.dueDate) : null,
+      dueDateISO: bd.dueDate || "",
+      daysRemaining: -overdueDaysCount,
+      isOverdue: overdueDaysCount > 0,
+      statusLabel: overdueDaysCount > 0 ? `${overdueDaysCount} Days Overdue (Bad Debt)` : "Due Today/Soon",
+      paymentDaysCount: 0,
+    };
+  }
+
+  const actualDispatchDate = getOrderActualDispatchDate(order);
+  return calculateDueDate(actualDispatchDate, order.paymentCreditPeriod, order.payment);
 }
 
 interface PaymentListViewProps {
@@ -480,6 +579,274 @@ const PartyContactInfoCell: React.FC<{
   );
 };
 
+/**
+ * Helper to match an order or item's date with a selected date range [startDate, endDate]
+ */
+export function matchesDateRange(dateStr: string | null | undefined, start: string, end: string): boolean {
+  if (!start && !end) return true;
+  if (!dateStr) return false;
+  let cleanDate = dateStr.split("T")[0].trim();
+  if (cleanDate.includes("/") && cleanDate.split("/").length === 3) {
+    const parts = cleanDate.split("/");
+    if (parts[2].length === 4) {
+      cleanDate = `${parts[2]}-${parts[1].padStart(2, "0")}-${parts[0].padStart(2, "0")}`;
+    }
+  }
+  if (start && cleanDate < start) return false;
+  if (end && cleanDate > end) return false;
+  return true;
+}
+
+/**
+ * Helper to generate preset dates (Today, Last 7 Days, This Month, Last 30 Days)
+ */
+export function getPresetDates(preset: "today" | "7d" | "this_month" | "30d"): { start: string; end: string } {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const formatDateStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  const todayStr = formatDateStr(now);
+  if (preset === "today") {
+    return { start: todayStr, end: todayStr };
+  }
+  if (preset === "7d") {
+    const past = new Date(now);
+    past.setDate(past.getDate() - 6);
+    return { start: formatDateStr(past), end: todayStr };
+  }
+  if (preset === "30d") {
+    const past = new Date(now);
+    past.setDate(past.getDate() - 29);
+    return { start: formatDateStr(past), end: todayStr };
+  }
+  if (preset === "this_month") {
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    return { start: formatDateStr(firstDay), end: formatDateStr(lastDay) };
+  }
+  return { start: "", end: "" };
+}
+
+/**
+ * Generic sorting utility for table rows
+ */
+export function sortItems<T = any>(
+  items: T[],
+  sortKey: string,
+  sortDirection: "asc" | "desc",
+  extractor: (item: any, key: string) => any
+): T[] {
+  if (!sortKey) return items;
+  return [...items].sort((a, b) => {
+    const valA = extractor(a, sortKey);
+    const valB = extractor(b, sortKey);
+
+    const isNilA = valA === null || valA === undefined || valA === "";
+    const isNilB = valB === null || valB === undefined || valB === "";
+
+    if (isNilA && isNilB) return 0;
+    if (isNilA) return 1;
+    if (isNilB) return -1;
+
+    let comparison = 0;
+    if (typeof valA === "number" && typeof valB === "number") {
+      comparison = valA - valB;
+    } else if (valA instanceof Date && valB instanceof Date) {
+      comparison = valA.getTime() - valB.getTime();
+    } else if (typeof valA === "boolean" && typeof valB === "boolean") {
+      comparison = valA === valB ? 0 : valA ? 1 : -1;
+    } else {
+      const strA = String(valA).trim().toLowerCase();
+      const strB = String(valB).trim().toLowerCase();
+      comparison = strA.localeCompare(strB, undefined, { numeric: true, sensitivity: "base" });
+    }
+
+    return sortDirection === "asc" ? comparison : -comparison;
+  });
+}
+
+/**
+ * Reusable sortable table column header component
+ */
+const SortableHeader: React.FC<{
+  label: React.ReactNode;
+  sortKey: string;
+  currentSort: { key: string; direction: "asc" | "desc" };
+  onSort: (key: string) => void;
+  align?: "left" | "center" | "right";
+  paddingClass?: string;
+  className?: string;
+  id?: string;
+}> = ({
+  label,
+  sortKey,
+  currentSort,
+  onSort,
+  align = "left",
+  paddingClass = "p-4",
+  className = "",
+  id,
+}) => {
+  const isActive = currentSort.key === sortKey;
+  return (
+    <th
+      id={id}
+      onClick={() => onSort(sortKey)}
+      className={`${paddingClass} cursor-pointer select-none group transition-colors hover:bg-slate-100/90 ${
+        align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left"
+      } ${isActive ? "bg-slate-100/80" : ""} ${className}`}
+      title={`Sort by ${typeof label === "string" ? label : sortKey} (${
+        isActive ? (currentSort.direction === "asc" ? "Click for Descending" : "Click for Ascending") : "Click to Sort"
+      })`}
+    >
+      <div
+        className={`inline-flex items-center gap-1.5 ${
+          align === "right" ? "justify-end w-full" : align === "center" ? "justify-center w-full" : ""
+        }`}
+      >
+        <span className={isActive ? "text-slate-900 font-extrabold" : "group-hover:text-slate-800"}>
+          {label}
+        </span>
+        <span className="shrink-0 text-slate-400">
+          {isActive ? (
+            currentSort.direction === "asc" ? (
+              <ArrowUp size={12} className="text-emerald-600 stroke-[2.5]" />
+            ) : (
+              <ArrowDown size={12} className="text-emerald-600 stroke-[2.5]" />
+            )
+          ) : (
+            <ArrowUpDown size={11} className="opacity-30 group-hover:opacity-100 transition-opacity" />
+          )}
+        </span>
+      </div>
+    </th>
+  );
+};
+
+/**
+ * Reusable Date Range Filter Bar for Payment subtabs
+ */
+const DateRangeFilterBar: React.FC<{
+  dateType: string;
+  onDateTypeChange: (val: string) => void;
+  dateTypeOptions: { label: string; value: string }[];
+  startDate: string;
+  onStartDateChange: (val: string) => void;
+  endDate: string;
+  onEndDateChange: (val: string) => void;
+  onClear: () => void;
+}> = ({
+  dateType,
+  onDateTypeChange,
+  dateTypeOptions,
+  startDate,
+  onStartDateChange,
+  endDate,
+  onEndDateChange,
+  onClear,
+}) => {
+  const isFilterActive = !!(startDate || endDate);
+
+  const applyPreset = (preset: "today" | "7d" | "this_month" | "30d") => {
+    const { start, end } = getPresetDates(preset);
+    onStartDateChange(start);
+    onEndDateChange(end);
+  };
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2.5 pt-3 border-t border-slate-100 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Date Type Selector */}
+        <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl">
+          <Calendar size={13} className="text-slate-500 shrink-0" />
+          <span className="text-[10px] font-mono uppercase font-bold text-slate-500">Date Filter:</span>
+          <select
+            value={dateType}
+            onChange={(e) => onDateTypeChange(e.target.value)}
+            className="bg-transparent text-xs text-slate-800 font-bold font-mono outline-none cursor-pointer"
+          >
+            {dateTypeOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Date Pickers */}
+        <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-xl">
+          <span className="text-[10px] font-mono uppercase font-bold text-slate-400">From:</span>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => onStartDateChange(e.target.value)}
+            className="bg-transparent text-xs text-slate-800 font-mono outline-none cursor-pointer"
+          />
+          <span className="text-slate-300 font-bold">→</span>
+          <span className="text-[10px] font-mono uppercase font-bold text-slate-400">To:</span>
+          <input
+            type="date"
+            value={endDate}
+            onChange={(e) => onEndDateChange(e.target.value)}
+            className="bg-transparent text-xs text-slate-800 font-mono outline-none cursor-pointer"
+          />
+        </div>
+
+        {/* Quick Presets */}
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => applyPreset("today")}
+            className="px-2 py-1 rounded-lg text-[10px] font-mono font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 hover:text-slate-900 transition-colors cursor-pointer"
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            onClick={() => applyPreset("7d")}
+            className="px-2 py-1 rounded-lg text-[10px] font-mono font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 hover:text-slate-900 transition-colors cursor-pointer"
+          >
+            Last 7 Days
+          </button>
+          <button
+            type="button"
+            onClick={() => applyPreset("this_month")}
+            className="px-2 py-1 rounded-lg text-[10px] font-mono font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 hover:text-slate-900 transition-colors cursor-pointer"
+          >
+            This Month
+          </button>
+          <button
+            type="button"
+            onClick={() => applyPreset("30d")}
+            className="px-2 py-1 rounded-lg text-[10px] font-mono font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 hover:text-slate-900 transition-colors cursor-pointer"
+          >
+            Last 30 Days
+          </button>
+        </div>
+      </div>
+
+      {/* Filter Active Badge & Clear Button */}
+      {isFilterActive && (
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 text-[10px] font-mono font-bold px-2.5 py-1 rounded-lg border border-emerald-200">
+            <CheckCircle2 size={11} className="text-emerald-600" />
+            <span>Range: {startDate || "Start"} to {endDate || "Now"}</span>
+          </span>
+          <button
+            type="button"
+            onClick={onClear}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 transition-colors cursor-pointer border border-rose-200"
+            title="Reset Date Range Filter"
+          >
+            <X size={12} />
+            <span>Clear Filter</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export default function PaymentListView({
   activeUserId,
   users,
@@ -558,6 +925,71 @@ export default function PaymentListView({
   const [searchTerm, setSearchTerm] = useState("");
   const [fullyPaidSearchTerm, setFullyPaidSearchTerm] = useState("");
   const [confirmEditOrder, setConfirmEditOrder] = useState<OrderOffer | null>(null);
+
+  // Date Range Filter States
+  // Debtors Date Filter
+  const [debtorsDateType, setDebtorsDateType] = useState<"dispatch" | "due" | "invoice">("dispatch");
+  const [debtorsStartDate, setDebtorsStartDate] = useState<string>("");
+  const [debtorsEndDate, setDebtorsEndDate] = useState<string>("");
+
+  // Fully Paid Date Filter
+  const [fullyPaidDateType, setFullyPaidDateType] = useState<"payment" | "dispatch" | "invoice" | "due">("payment");
+  const [fullyPaidStartDate, setFullyPaidStartDate] = useState<string>("");
+  const [fullyPaidEndDate, setFullyPaidEndDate] = useState<string>("");
+
+  // Column Sorting States for all tables across all sub-tabs
+  const [debtorsSort, setDebtorsSort] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "totalPendingAmount",
+    direction: "desc",
+  });
+  const [debtorsInvoicesSort, setDebtorsInvoicesSort] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "dueDate",
+    direction: "asc",
+  });
+  const [badDebtorsSort, setBadDebtorsSort] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "overdueDays",
+    direction: "desc",
+  });
+  const [drCrSort, setDrCrSort] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "entryDate",
+    direction: "desc",
+  });
+  const [reminderSort, setReminderSort] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "dueStatus",
+    direction: "desc",
+  });
+  const [reminderConsolidatedSort, setReminderConsolidatedSort] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "totalPendingAmount",
+    direction: "desc",
+  });
+  const [reminderConsolidatedInvoicesSort, setReminderConsolidatedInvoicesSort] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "dueDate",
+    direction: "asc",
+  });
+  const [fullyPaidSort, setFullyPaidSort] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "paymentDate",
+    direction: "desc",
+  });
+
+  const handleToggleSort = (
+    key: string,
+    setSort: React.Dispatch<React.SetStateAction<{ key: string; direction: "asc" | "desc" }>>,
+    descDefaultKeys: string[] = []
+  ) => {
+    setSort((prev) => {
+      if (prev.key === key) {
+        return {
+          key,
+          direction: prev.direction === "asc" ? "desc" : "asc",
+        };
+      }
+      const isDesc = descDefaultKeys.includes(key);
+      return {
+        key,
+        direction: isDesc ? "desc" : "asc",
+      };
+    });
+  };
 
   // Payment Details Modal state
   const [editingPaymentOrder, setEditingPaymentOrder] = useState<OrderOffer | null>(null);
@@ -1027,8 +1459,7 @@ export default function PaymentListView({
 
   // Helper to check if an order's payment due status is today or overdue (1 or more days)
   const isOrderDueTodayOrOverdue = (order: OrderOffer) => {
-    const actualDispatchDate = getOrderActualDispatchDate(order);
-    const dueInfo = calculateDueDate(actualDispatchDate, order.payment);
+    const dueInfo = getOrderDueDateInfo(order);
     // daysRemaining is <= 0 when due today (0) or overdue (< 0, i.e. 1+ days overdue)
     return dueInfo.daysRemaining !== null && dueInfo.daysRemaining <= 0;
   };
@@ -1071,15 +1502,7 @@ export default function PaymentListView({
       const receivedAmt = pDetails ? pDetails.amountReceived : 0;
       const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, (totalAmt + drCrAmt) - receivedAmt);
       const actualDispatchDate = getOrderActualDispatchDate(order);
-      const dueInfo = order.isBadDebtor && order.badDebtorRecord
-        ? {
-            dueDateFormatted: formatDate(order.badDebtorRecord.dueDate),
-            dueDateObj: new Date(order.badDebtorRecord.dueDate),
-            daysRemaining: -order.badDebtorRecord.overdueDays,
-            isOverdue: true,
-            statusLabel: `${order.badDebtorRecord.overdueDays} Days Overdue (Bad Debt)`
-          }
-        : calculateDueDate(actualDispatchDate, order.payment);
+      const dueInfo = getOrderDueDateInfo(order);
 
       const parsedEmails = (order.email || "")
         .split(/[,;\n\r/]+/)
@@ -1142,10 +1565,27 @@ export default function PaymentListView({
     return Array.from(map.values()).sort((a, b) => b.totalPendingAmount - a.totalPendingAmount);
   };
 
-  // Debtors party-wise consolidation (all unpaid invoices)
+  // Date-filtered Debtors base
+  const filteredDebtorsBase = useMemo(() => {
+    if (!debtorsStartDate && !debtorsEndDate) return debtorsBase;
+    return debtorsBase.filter((order) => {
+      let dateVal = "";
+      if (debtorsDateType === "dispatch") {
+        dateVal = getOrderActualDispatchDate(order) || "";
+      } else if (debtorsDateType === "due") {
+        const due = getOrderDueDateInfo(order);
+        dateVal = due.dueDateISO || "";
+      } else if (debtorsDateType === "invoice") {
+        dateVal = order.billingDetails?.invoiceDate || "";
+      }
+      return matchesDateRange(dateVal, debtorsStartDate, debtorsEndDate);
+    });
+  }, [debtorsBase, debtorsDateType, debtorsStartDate, debtorsEndDate]);
+
+  // Debtors party-wise consolidation (filtered by date range if active)
   const consolidatedDebtorParties = useMemo(
-    () => buildPartyMap(debtorsBase),
-    [debtorsBase, paymentDetailsList, debitCreditNotes]
+    () => buildPartyMap(filteredDebtorsBase),
+    [filteredDebtorsBase, paymentDetailsList, debitCreditNotes]
   );
 
   // Helper: Convert Bad Debtors to OrderOffer compatible format for Reminder subtabs
@@ -1290,8 +1730,59 @@ export default function PaymentListView({
   }, [emailTemplates, selectedTemplateId]);
 
   // Handlers for Consolidated Payment Reminder Email Modal
+  const buildPartyEmailContext = (party: typeof consolidatedReminderParties[0]) => {
+    const invTableHtml = generateConsolidatedInvoiceTableHTML(party.orders, paymentDetailsList, debitCreditNotes);
+    const todayFormatted = formatDate(new Date().toISOString());
+
+    const firstOrder = party.orders && party.orders.length > 0 ? party.orders[0] : null;
+    const firstDueInfo = firstOrder ? getOrderDueDateInfo(firstOrder) : null;
+    const firstDispatchDate = firstOrder ? getOrderActualDispatchDate(firstOrder) : null;
+    const bank = (firstOrder?.paymentBankId ? paymentBanks.find((b) => b.id === firstOrder.paymentBankId) : null) || paymentBanks[0];
+    const bankTableHtml = generateBankDetailsTableHTML(bank);
+
+    const hierarchy = firstOrder
+      ? resolveUserHierarchyInfo(activeUser.id, firstOrder.assignedToUserId, users)
+      : { creatorName: activeUser.name, creatorEmail: activeUser.email, currentUserEmail: activeUser.email };
+
+    return {
+      recordId: firstOrder?.id || "",
+      companyName: party.companyName,
+      clientName: party.clientName,
+      email: party.email,
+      phone: party.phone,
+      totalPendingAmount: party.totalPendingAmount,
+      pendingAmount: party.totalPendingAmount,
+      invoiceAmount: firstOrder ? getOrderTotalInvoiceAmount(firstOrder) : party.totalOrderValue,
+      totalValue: party.totalOrderValue,
+      grandTotalOrderAmount: party.totalOrderValue,
+      amountReceived: party.totalReceivedAmount,
+      invoiceCount: party.invoiceCount,
+      invoiceTable: invTableHtml,
+      bankDetailsTable: bankTableHtml,
+      dueDate: firstDueInfo?.dueDateFormatted || party.oldestDueDateFormatted || "",
+      dueDateStatus: firstDueInfo?.statusLabel || (party.isAnyOverdue ? `${party.maxDaysOverdue} Days Overdue` : "Due Today"),
+      overdue: firstDueInfo?.statusLabel || (party.isAnyOverdue ? `${party.maxDaysOverdue} Days Overdue` : "Due Today"),
+      invoiceNumber: firstOrder?.billingDetails?.invoiceNumber || "",
+      customerPoNumber: firstOrder?.closedWonDetails?.customerPoNumber || "",
+      poNumber: firstOrder?.closedWonDetails?.customerPoNumber || "",
+      dispatchDate: firstDispatchDate ? formatDate(firstDispatchDate) : "",
+      actualDispatchDate: firstDispatchDate ? formatDate(firstDispatchDate) : "",
+      paymentCreditPeriod: firstOrder?.paymentCreditPeriod || "",
+      payment: firstOrder?.payment || "",
+      paymentStatus: party.totalPendingAmount === 0 ? "Fully paid" : party.totalReceivedAmount > 0 ? "Partial paid" : "Unpaid",
+      todayDate: todayFormatted,
+      ...hierarchy,
+    };
+  };
+
+  const replaceVarsForParty = (text: string, party: typeof consolidatedReminderParties[0]) => {
+    if (!text) return "";
+    return replaceTemplateVars(text, buildPartyEmailContext(party));
+  };
+
   const openConsolidatedEmailModal = (party: typeof consolidatedReminderParties[0]) => {
     const matchedTmpl =
+      (selectedTemplateId ? emailTemplates.find((t) => t.id === selectedTemplateId) : null) ||
       emailTemplates.find((t) => t.assignedForm === "payment_reminder_consolidated") ||
       emailTemplates.find((t) => t.assignedForm === "payment_reminder") ||
       emailTemplates.find((t) => t.isDefault) ||
@@ -1301,28 +1792,14 @@ export default function PaymentListView({
     setConsolidatedTemplateId(tmplId);
     setConsolidatedEmailParty(party);
 
-    const invTableHtml = generateConsolidatedInvoiceTableHTML(party.orders, paymentDetailsList);
-    const todayFormatted = formatDate(new Date().toISOString());
-
+    const ctx = buildPartyEmailContext(party);
     const replaceVars = (text: string) => {
       if (!text) return "";
-      return replaceTemplateVars(text, {
-        companyName: party.companyName,
-        clientName: party.clientName,
-        email: party.email,
-        phone: party.phone,
-        totalPendingAmount: party.totalPendingAmount,
-        invoiceCount: party.invoiceCount,
-        invoiceTable: invTableHtml,
-        todayDate: todayFormatted,
-        creatorName: activeUser.name,
-        creatorEmail: activeUser.email,
-        currentUserEmail: activeUser.email,
-      });
+      return replaceTemplateVars(text, ctx);
     };
 
     let defaultSub = `Consolidated Payment Reminder Notice - ${party.companyName} (Outstanding: ₹${formatIndianNumber(party.totalPendingAmount)})`;
-    let defaultBody = `Dear ${party.clientName || party.companyName},\n\nWe hope this email finds you well.\n\nThis is a consolidated payment reminder regarding pending invoices for ${party.companyName}.\n\nBelow is the invoice-wise details of your pending balance:\n\n${invTableHtml}\n\nConsolidated Total Pending Amount: ₹${formatIndianNumber(party.totalPendingAmount)}\n\nKindly review and process the pending payment at your earliest convenience. If payment has already been remitted, please share the UTR / transaction receipt details.\n\nThank you for your cooperation!`;
+    let defaultBody = `Dear ${party.clientName || party.companyName},\n\nWe hope this email finds you well.\n\nThis is a consolidated payment reminder regarding pending invoices for ${party.companyName}.\n\nBelow is the invoice-wise details of your pending balance:\n\n{{invoiceTable}}\n\nConsolidated Total Pending Amount: ₹${formatIndianNumber(party.totalPendingAmount)}\n\nKindly review and process the pending payment at your earliest convenience. If payment has already been remitted, please share the UTR / transaction receipt details.\n\nThank you for your cooperation!`;
 
     if (matchedTmpl) {
       defaultSub = matchedTmpl.subject ? replaceVars(matchedTmpl.subject) : defaultSub;
@@ -1344,24 +1821,10 @@ export default function PaymentListView({
     const matchedTmpl = emailTemplates.find((t) => t.id === tmplId);
     if (!matchedTmpl) return;
 
-    const invTableHtml = generateConsolidatedInvoiceTableHTML(consolidatedEmailParty.orders, paymentDetailsList);
-    const todayFormatted = formatDate(new Date().toISOString());
-
+    const ctx = buildPartyEmailContext(consolidatedEmailParty);
     const replaceVars = (text: string) => {
       if (!text) return "";
-      return replaceTemplateVars(text, {
-        companyName: consolidatedEmailParty.companyName,
-        clientName: consolidatedEmailParty.clientName,
-        email: consolidatedEmailParty.email,
-        phone: consolidatedEmailParty.phone,
-        totalPendingAmount: consolidatedEmailParty.totalPendingAmount,
-        invoiceCount: consolidatedEmailParty.invoiceCount,
-        invoiceTable: invTableHtml,
-        todayDate: todayFormatted,
-        creatorName: activeUser.name,
-        creatorEmail: activeUser.email,
-        currentUserEmail: activeUser.email,
-      });
+      return replaceTemplateVars(text, ctx);
     };
 
     if (matchedTmpl.to) setConsolidatedTo(replaceVars(matchedTmpl.to));
@@ -1369,6 +1832,57 @@ export default function PaymentListView({
     if (matchedTmpl.bcc) setConsolidatedBcc(replaceVars(matchedTmpl.bcc));
     if (matchedTmpl.subject) setConsolidatedSubject(replaceVars(matchedTmpl.subject));
     if (matchedTmpl.body) setConsolidatedBody(replaceVars(matchedTmpl.body));
+  };
+
+  /**
+   * Opens the rich payment reminder email preview/send modal for a specific order.
+   * Matches this order to its party in the Payment Reminder Consolidated dataset
+   * so {{invoiceTable}} includes all pending invoices and consolidated totals for this party.
+   */
+  const openPaymentReminderForOrder = (order: OrderOffer) => {
+    const company = (order.companyName || "").trim();
+    const client = (order.clientName || "").trim();
+    const key = (company || client || "Unspecified Party").toLowerCase();
+
+    // Check matching party from the Payment Reminder Consolidated sub-tab dataset
+    const matchedParty = consolidatedReminderParties.find(
+      (p) =>
+        p.partyKey === key ||
+        (company && p.companyName.toLowerCase() === company.toLowerCase()) ||
+        (client && p.clientName.toLowerCase() === client.toLowerCase())
+    );
+
+    if (matchedParty) {
+      openConsolidatedEmailModal(matchedParty);
+      return;
+    }
+
+    // Fallback if not found in consolidated map
+    const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
+    const totalAmt = getOrderTotalInvoiceAmount(order);
+    const drCrAmt = getOrderDrCrEffectedAmount(order, debitCreditNotes);
+    const receivedAmt = pDetails ? pDetails.amountReceived : 0;
+    const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt + drCrAmt - receivedAmt);
+    const dueInfo = getOrderDueDateInfo(order);
+
+    const singleParty = {
+      partyKey: key,
+      companyName: company || client || "Unspecified Party",
+      clientName: client || company || "Contact Person",
+      email: order.email || "",
+      phone: order.phone || "",
+      orders: [order],
+      totalOrderValue: totalAmt,
+      totalReceivedAmount: receivedAmt,
+      totalDrCrAmount: drCrAmt,
+      totalPendingAmount: pendingAmt,
+      invoiceCount: 1,
+      oldestDueDateFormatted: dueInfo.dueDateFormatted,
+      isAnyOverdue: dueInfo.isOverdue,
+      maxDaysOverdue: dueInfo.isOverdue ? Math.abs(dueInfo.daysRemaining || 0) : 0,
+    };
+
+    openConsolidatedEmailModal(singleParty);
   };
 
   const handleSendConsolidatedEmail = async () => {
@@ -1385,13 +1899,20 @@ export default function PaymentListView({
       const ccClean = consolidatedCc ? cleanEmailList(consolidatedCc) : undefined;
       const bccClean = consolidatedBcc ? cleanEmailList(consolidatedBcc) : undefined;
 
-      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(consolidatedBody);
+      const finalSubject = consolidatedEmailParty
+        ? replaceVarsForParty(consolidatedSubject, consolidatedEmailParty)
+        : consolidatedSubject;
+      const finalBody = consolidatedEmailParty
+        ? replaceVarsForParty(consolidatedBody, consolidatedEmailParty)
+        : consolidatedBody;
+
+      const { html: formattedHtml, text: formattedText } = formatEmailBodyForSending(finalBody);
 
       const emailResult = await dispatchSystemEmail({
         to: toClean,
         cc: ccClean,
         bcc: bccClean,
-        subject: consolidatedSubject,
+        subject: finalSubject,
         text: formattedHtml,
         html: formattedHtml,
         htmlBody: formattedHtml,
@@ -1514,22 +2035,47 @@ export default function PaymentListView({
     );
   });
 
+  // Date-filtered Fully Paid base
+  const filteredFullyPaidBase = useMemo(() => {
+    if (!fullyPaidStartDate && !fullyPaidEndDate) return fullyPaidBase;
+    return fullyPaidBase.filter((order) => {
+      let dateVal = "";
+      if (fullyPaidDateType === "payment") {
+        const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
+        dateVal = pDetails?.paymentReceivedDate || "";
+        if (!dateVal && pDetails?.receipts && pDetails.receipts.length > 0) {
+          dateVal = pDetails.receipts[0].paymentReceivedDate || "";
+        }
+      } else if (fullyPaidDateType === "dispatch") {
+        dateVal = getOrderActualDispatchDate(order) || "";
+      } else if (fullyPaidDateType === "invoice") {
+        dateVal = order.billingDetails?.invoiceDate || "";
+      } else if (fullyPaidDateType === "due") {
+        const due = getOrderDueDateInfo(order);
+        dateVal = due.dueDateISO || "";
+      }
+      return matchesDateRange(dateVal, fullyPaidStartDate, fullyPaidEndDate);
+    });
+  }, [fullyPaidBase, fullyPaidDateType, fullyPaidStartDate, fullyPaidEndDate, paymentDetailsList]);
+
   // Filter for Fully Paid (Only Fully Paid)
-  const fullyPaidOrders = fullyPaidBase.filter((order) => {
-    if (!fullyPaidSearchTerm.trim()) return true;
-    const term = fullyPaidSearchTerm.toLowerCase();
-    const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
-    const assignedName = getAssignedUserName(order.assignedToUserId).toLowerCase();
-    return (
-      order.clientName?.toLowerCase().includes(term) ||
-      order.companyName?.toLowerCase().includes(term) ||
-      assignedName.includes(term) ||
-      order.billingDetails?.invoiceNumber?.toLowerCase().includes(term) ||
-      order.closedWonDetails?.customerPoNumber?.toLowerCase().includes(term) ||
-      pDetails?.utrId?.toLowerCase().includes(term) ||
-      pDetails?.paymentStatus?.toLowerCase().includes(term)
-    );
-  });
+  const fullyPaidOrders = useMemo(() => {
+    return filteredFullyPaidBase.filter((order) => {
+      if (!fullyPaidSearchTerm.trim()) return true;
+      const term = fullyPaidSearchTerm.toLowerCase();
+      const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
+      const assignedName = getAssignedUserName(order.assignedToUserId).toLowerCase();
+      return (
+        order.clientName?.toLowerCase().includes(term) ||
+        order.companyName?.toLowerCase().includes(term) ||
+        assignedName.includes(term) ||
+        order.billingDetails?.invoiceNumber?.toLowerCase().includes(term) ||
+        order.closedWonDetails?.customerPoNumber?.toLowerCase().includes(term) ||
+        pDetails?.utrId?.toLowerCase().includes(term) ||
+        pDetails?.paymentStatus?.toLowerCase().includes(term)
+      );
+    });
+  }, [filteredFullyPaidBase, fullyPaidSearchTerm, paymentDetailsList, users]);
 
   // Filter for Consolidated Payment Reminders (Only Due Today or Overdue by 1+ days)
   const filteredConsolidatedParties = useMemo(() => {
@@ -1552,7 +2098,313 @@ export default function PaymentListView({
 
       return matchParty || matchInvoice;
     });
-  }, [consolidatedReminderParties, consolidatedSearchTerm]);
+  }, [consolidatedReminderParties, consolidatedSearchTerm, users]);
+
+  // ==========================================
+  // SORTED MEMOS ACROSS ALL SUB-TABS & TABLES
+  // ==========================================
+
+  // 1. Debtors: Main Consolidated Parties sorted
+  const sortedConsolidatedDebtors = useMemo(() => {
+    return sortItems(
+      filteredConsolidatedDebtors,
+      debtorsSort.key,
+      debtorsSort.direction,
+      (party, key) => {
+        switch (key) {
+          case "index":
+            return party.partyKey;
+          case "companyName":
+            return party.companyName || party.clientName || "";
+          case "contactInfo":
+            return party.email || party.phone || "";
+          case "salesPerson":
+            return getPartySalesPersons(party.orders);
+          case "invoiceCount":
+            return party.invoiceCount;
+          case "totalOrderValue":
+            return party.totalOrderValue;
+          case "totalReceivedAmount":
+            return party.totalReceivedAmount;
+          case "totalPendingAmount":
+            return party.totalPendingAmount;
+          case "dueStatus":
+            return party.isAnyOverdue ? party.maxDaysOverdue : -1;
+          default:
+            return "";
+        }
+      }
+    );
+  }, [filteredConsolidatedDebtors, debtorsSort, users]);
+
+  // 1b. Debtors: Invoices breakdown sorting helper
+  const sortDebtorsInvoices = (ordersList: OrderOffer[]) => {
+    return sortItems(ordersList, debtorsInvoicesSort.key, debtorsInvoicesSort.direction, (order, key) => {
+      const pDet = getPaymentDetailsForOrder(order, paymentDetailsList);
+      const tot = getOrderTotalInvoiceAmount(order);
+      const rec = pDet ? pDet.amountReceived : 0;
+      const drCr = getOrderDrCrEffectedAmount(order, debitCreditNotes);
+      const pend = pDet ? pDet.pendingAmount : Math.max(0, tot + drCr - rec);
+      const actualDispatchDate = getOrderActualDispatchDate(order);
+      const due = getOrderDueDateInfo(order);
+
+      switch (key) {
+        case "invoiceNumber":
+          return order.billingDetails?.invoiceNumber || "";
+        case "customerPo":
+          return order.closedWonDetails?.customerPoNumber || "";
+        case "salesPerson":
+          return getAssignedUserName(order.assignedToUserId);
+        case "actualDispatchDate":
+          return actualDispatchDate || "";
+        case "dueDate":
+          return due.dueDateISO || "";
+        case "invoiceAmount":
+          return tot;
+        case "amountReceived":
+          return rec;
+        case "pendingAmount":
+          return pend;
+        default:
+          return "";
+      }
+    });
+  };
+
+  // 2. Bad Debtors Table sorted
+  const sortedBadDebtors = useMemo(() => {
+    return sortItems(filteredBadDebtors, badDebtorsSort.key, badDebtorsSort.direction, (bd, key) => {
+      switch (key) {
+        case "companyName":
+          return bd.companyName || bd.clientName || "";
+        case "salesPerson":
+          return getAssignedUserName(bd.assignedToUserId);
+        case "invoiceNumber":
+          return bd.invoiceNumber || bd.customerPo || "";
+        case "invoiceAmount":
+          return bd.invoiceAmount || 0;
+        case "amountReceived":
+          return getBadDebtorTotalReceived(bd);
+        case "pendingAmount":
+          return getBadDebtorPendingAmount(bd);
+        case "invoiceDate":
+          return bd.invoiceDate || "";
+        case "paymentTerms":
+          return bd.paymentTerms || "";
+        case "dueDate":
+          return bd.dueDate || "";
+        case "overdueDays":
+          return parseInt(String(bd.overdueDays || 0), 10);
+        case "status":
+          return bd.status || bd.comments || "";
+        default:
+          return "";
+      }
+    });
+  }, [filteredBadDebtors, badDebtorsSort, users]);
+
+  // 3. Dr/Cr Notes filtered and sorted
+  const filteredDrCrNotes = useMemo(() => {
+    const isNoteCredit = (n: DebitCreditNote) =>
+      n.noteType === "Credit Note" || n.type === "credit_note" || (n as any).type === "Credit Note";
+
+    return debitCreditNotes.filter((note) => {
+      if (drCrTypeFilter === "debit_note" && isNoteCredit(note)) return false;
+      if (drCrTypeFilter === "credit_note" && !isNoteCredit(note)) return false;
+      if (drCrTypeFilter === "Debit Note" && isNoteCredit(note)) return false;
+      if (drCrTypeFilter === "Credit Note" && !isNoteCredit(note)) return false;
+      if (!drCrSearchTerm.trim()) return true;
+      const term = drCrSearchTerm.toLowerCase().trim();
+      return (
+        (note.noteNumber || "").toLowerCase().includes(term) ||
+        (note.invoiceNumber || "").toLowerCase().includes(term) ||
+        (note.companyName || "").toLowerCase().includes(term) ||
+        (note.clientName || "").toLowerCase().includes(term) ||
+        (note.reason || "").toLowerCase().includes(term)
+      );
+    });
+  }, [debitCreditNotes, drCrTypeFilter, drCrSearchTerm]);
+
+  const sortedDrCrNotes = useMemo(() => {
+    return sortItems(filteredDrCrNotes, drCrSort.key, drCrSort.direction, (note, key) => {
+      const isCredit =
+        note.noteType === "Credit Note" || note.type === "credit_note" || (note as any).type === "Credit Note";
+      switch (key) {
+        case "index":
+          return note.id;
+        case "entryDate":
+          return note.entryDate || "";
+        case "tallyDate":
+          return note.tallyDate || "";
+        case "type":
+          return isCredit ? "Credit Note" : "Debit Note";
+        case "noteNumber":
+          return note.noteNumber || "";
+        case "invoiceParty":
+          return note.invoiceNumber || note.companyName || note.clientName || "";
+        case "amount":
+          return note.amount || 0;
+        case "effectedAmount":
+          return note.effectedAmount || 0;
+        case "reason":
+          return note.reason || "";
+        default:
+          return "";
+      }
+    });
+  }, [filteredDrCrNotes, drCrSort]);
+
+  // 4. Payment Reminder (Single Orders) sorted
+  const sortedReminderOrders = useMemo(() => {
+    return sortItems(reminderOrders, reminderSort.key, reminderSort.direction, (order, key) => {
+      const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
+      const totalAmt = getOrderTotalInvoiceAmount(order);
+      const receivedAmt = pDetails ? pDetails.amountReceived : 0;
+      const drCrAmt = getOrderDrCrEffectedAmount(order, debitCreditNotes);
+      const pendingAmt = pDetails ? pDetails.pendingAmount : Math.max(0, totalAmt + drCrAmt - receivedAmt);
+      const dispatchDateStr = getOrderActualDispatchDate(order);
+      const dueInfo = getOrderDueDateInfo(order);
+
+      switch (key) {
+        case "clientCompany":
+          return order.companyName || order.clientName || "";
+        case "salesPerson":
+          return getAssignedUserName(order.assignedToUserId);
+        case "invoicePo":
+          return order.billingDetails?.invoiceNumber || order.closedWonDetails?.customerPoNumber || "";
+        case "orderAmount":
+          return totalAmt;
+        case "amountReceived":
+          return receivedAmt;
+        case "drCrAmount":
+          return drCrAmt;
+        case "pendingAmount":
+          return pendingAmt;
+        case "actualDispatchDate":
+          return dispatchDateStr || "";
+        case "paymentTerms":
+          return order.paymentCreditPeriod || order.paymentTermsOffer || "";
+        case "dueDate":
+          return dueInfo.dueDateISO || "";
+        case "dueStatus":
+          return dueInfo.daysRemaining !== null ? dueInfo.daysRemaining : 99999;
+        case "emailStatus":
+          return order.paymentReminderEmailStatus?.timestamp || "";
+        default:
+          return "";
+      }
+    });
+  }, [reminderOrders, reminderSort, paymentDetailsList, debitCreditNotes, users]);
+
+  // 5. Consolidated Payment Reminders Main Table sorted
+  const sortedConsolidatedReminderParties = useMemo(() => {
+    return sortItems(
+      filteredConsolidatedParties,
+      reminderConsolidatedSort.key,
+      reminderConsolidatedSort.direction,
+      (party, key) => {
+        switch (key) {
+          case "index":
+            return party.partyKey;
+          case "companyName":
+            return party.companyName || party.clientName || "";
+          case "contactInfo":
+            return party.email || party.phone || "";
+          case "salesPerson":
+            return getPartySalesPersons(party.orders);
+          case "invoiceCount":
+            return party.invoiceCount;
+          case "totalOrderValue":
+            return party.totalOrderValue;
+          case "totalReceivedAmount":
+            return party.totalReceivedAmount;
+          case "totalDrCrAmount":
+            return party.totalDrCrAmount;
+          case "totalPendingAmount":
+            return party.totalPendingAmount;
+          case "dueStatus":
+            return party.isAnyOverdue ? party.maxDaysOverdue : -1;
+          default:
+            return "";
+        }
+      }
+    );
+  }, [filteredConsolidatedParties, reminderConsolidatedSort, users]);
+
+  // 5b. Consolidated Payment Reminders Invoices Breakdown sorted
+  const sortReminderConsolidatedInvoices = (ordersList: OrderOffer[]) => {
+    return sortItems(
+      ordersList,
+      reminderConsolidatedInvoicesSort.key,
+      reminderConsolidatedInvoicesSort.direction,
+      (order, key) => {
+        const pDet = getPaymentDetailsForOrder(order, paymentDetailsList);
+        const tot = getOrderTotalInvoiceAmount(order);
+        const rec = pDet ? pDet.amountReceived : 0;
+        const drCr = getOrderDrCrEffectedAmount(order, debitCreditNotes);
+        const pend = pDet ? pDet.pendingAmount : Math.max(0, tot + drCr - rec);
+        const actualDispatchDate = getOrderActualDispatchDate(order);
+        const due = getOrderDueDateInfo(order);
+
+        switch (key) {
+          case "invoiceNumber":
+            return order.billingDetails?.invoiceNumber || "";
+          case "customerPo":
+            return order.closedWonDetails?.customerPoNumber || "";
+          case "salesPerson":
+            return getAssignedUserName(order.assignedToUserId);
+          case "actualDispatchDate":
+            return actualDispatchDate || "";
+          case "dueDate":
+            return due.dueDateISO || "";
+          case "invoiceAmount":
+            return tot;
+          case "amountReceived":
+            return rec;
+          case "drCrAmount":
+            return drCr;
+          case "pendingAmount":
+            return pend;
+          default:
+            return "";
+        }
+      }
+    );
+  };
+
+  // 6. Fully Paid Table sorted
+  const sortedFullyPaidOrders = useMemo(() => {
+    return sortItems(fullyPaidOrders, fullyPaidSort.key, fullyPaidSort.direction, (order, key) => {
+      const paymentRec = getPaymentDetailsForOrder(order, paymentDetailsList);
+      const totalAmt = getOrderTotalInvoiceAmount(order);
+      const receivedAmt = paymentRec ? paymentRec.amountReceived : totalAmt;
+      const utr = paymentRec?.utrId || "";
+      const pDate = paymentRec?.paymentReceivedDate || "";
+
+      switch (key) {
+        case "clientCompany":
+          return order.companyName || order.clientName || "";
+        case "salesPerson":
+          return getAssignedUserName(order.assignedToUserId);
+        case "invoicePo":
+          return order.billingDetails?.invoiceNumber || order.closedWonDetails?.customerPoNumber || "";
+        case "orderAmount":
+          return totalAmt;
+        case "paymentReceived":
+          return receivedAmt;
+        case "paymentStatus":
+          return paymentRec?.paymentStatus || "Fully paid";
+        case "utr":
+          return utr;
+        case "paymentDate":
+          return pDate;
+        case "invoiceFile":
+          return order.billingDetails?.invoiceFileName || "";
+        default:
+          return "";
+      }
+    });
+  }, [fullyPaidOrders, fullyPaidSort, paymentDetailsList, users]);
 
   // Consolidated Email Template Auto-Selection Effect
   useEffect(() => {
@@ -2041,19 +2893,7 @@ export default function PaymentListView({
       for (let i = 0; i < selectedList.length; i++) {
         const order = selectedList[i];
         const actualDispatchDate = getOrderActualDispatchDate(order);
-        const dueInfo = order.isBadDebtor && order.badDebtorRecord
-          ? {
-              dueDateFormatted: formatDate(order.badDebtorRecord.dueDate),
-              dueDateObj: order.badDebtorRecord.dueDate ? new Date(order.badDebtorRecord.dueDate) : null,
-              daysRemaining: -(order.badDebtorRecord.overdueDays || 0),
-              isOverdue: (order.badDebtorRecord.overdueDays || 0) > 0,
-              statusLabel: (order.badDebtorRecord.overdueDays || 0) > 0 ? `Overdue by ${order.badDebtorRecord.overdueDays} days` : "Due Today/Soon",
-              paymentDaysCount: 0,
-            }
-          : calculateDueDate(
-              actualDispatchDate,
-              order.payment
-            );
+        const dueInfo = getOrderDueDateInfo(order);
 
         const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
         const totalAmt = getOrderTotalInvoiceAmount(order);
@@ -2069,29 +2909,74 @@ export default function PaymentListView({
         let subject = template?.subject || `Payment Reminder: Invoice #${order.billingDetails?.invoiceNumber}`;
         let body = template?.body || `Dear ${order.clientName},\n\nThis is a friendly reminder that invoice #${order.billingDetails?.invoiceNumber} for total amount ₹${formatIndianNumber(totalAmt)} (Received: ₹${formatIndianNumber(amtReceived)}, Pending: ₹${formatIndianNumber(pendingAmt)}) is due on ${dueInfo.dueDateFormatted}.\n\nThank you for your business!`;
 
+        const company = (order.companyName || "").trim();
+        const client = (order.clientName || "").trim();
+        const key = (company || client || "Unspecified Party").toLowerCase();
+
+        // Look up this party's consolidated record from the Payment Reminder Consolidated sub-tab dataset
+        const matchedConsolidatedParty = consolidatedReminderParties.find(
+          (p) =>
+            p.partyKey === key ||
+            (company && p.companyName.toLowerCase() === company.toLowerCase()) ||
+            (client && p.clientName.toLowerCase() === client.toLowerCase())
+        );
+
+        // Use party orders if available so {{invoiceTable}} includes all pending invoices for this party
+        const partyOrdersForTable =
+          matchedConsolidatedParty && matchedConsolidatedParty.orders.length > 0
+            ? matchedConsolidatedParty.orders
+            : [order];
+
+        const partyPendingAmount = matchedConsolidatedParty
+          ? matchedConsolidatedParty.totalPendingAmount
+          : pendingAmt;
+        const partyInvoiceCount = matchedConsolidatedParty
+          ? matchedConsolidatedParty.invoiceCount
+          : 1;
+
+        const invTableHtml = generateConsolidatedInvoiceTableHTML(
+          partyOrdersForTable,
+          paymentDetailsList,
+          debitCreditNotes
+        );
+
+        const bank = (order.paymentBankId ? paymentBanks.find((b) => b.id === order.paymentBankId) : null) || paymentBanks[0];
+        const bankTableHtml = generateBankDetailsTableHTML(bank);
+
         const hierarchy = resolveUserHierarchyInfo(activeUser.id, order.assignedToUserId, users);
 
         const replaceAllVars = (str: string) => {
           return replaceTemplateVars(str, {
             recordId: order.id,
-            clientName: order.clientName,
-            companyName: order.companyName,
-            email: order.email || "",
-            phone: order.phone || "",
+            clientName: matchedConsolidatedParty?.clientName || order.clientName,
+            companyName: matchedConsolidatedParty?.companyName || order.companyName,
+            email: order.email || matchedConsolidatedParty?.email || "",
+            phone: order.phone || matchedConsolidatedParty?.phone || "",
             billingAddress: order.billingAddress || "",
             status: order.status,
             totalValue: totalAmt,
+            grandTotalOrderAmount: totalAmt,
+            invoiceAmount: totalAmt,
             amountReceived: amtReceived,
             pendingAmount: pendingAmt,
+            totalPendingAmount: partyPendingAmount,
+            invoiceCount: partyInvoiceCount,
             paymentStatus: pStatus,
             dueDate: dueInfo.dueDateFormatted,
+            dueDateStatus: dueInfo.statusLabel,
+            overdue: dueInfo.statusLabel,
             invoiceNumber: order.billingDetails?.invoiceNumber || "",
             invoiceFileLink: order.billingDetails?.invoiceFileUrl || "",
             customerPoNumber: order.closedWonDetails?.customerPoNumber || "",
+            poNumber: order.closedWonDetails?.customerPoNumber || "",
             payment: order.payment || "",
             paymentTermsOffer: order.paymentTermsOffer || "",
             paymentCreditPeriod: order.paymentCreditPeriod || "",
             dispatchDate: actualDispatchDate ? formatDate(actualDispatchDate) : "",
+            actualDispatchDate: actualDispatchDate ? formatDate(actualDispatchDate) : "",
+            invoiceTable: invTableHtml,
+            bankDetailsTable: bankTableHtml,
+            todayDate: formatDate(new Date().toISOString()),
             ...hierarchy,
           });
         };
@@ -2840,42 +3725,63 @@ export default function PaymentListView({
           </div>
 
           {/* Filters Bar */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 border border-slate-200/85 rounded-xl shadow-xs">
-            <div className="relative flex-1 w-full">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search party name, client contact, email, phone, PO number, or invoice number..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
-              />
-            </div>
-            <div className="flex items-center gap-3 shrink-0 w-full sm:w-auto justify-between sm:justify-start">
-              <button
-                type="button"
-                onClick={() => setShowBulkImportModal(true)}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-xl shadow-xs transition-all cursor-pointer"
-              >
-                <FileSpreadsheet size={15} />
-                <span>Bulk Import Receipts</span>
-              </button>
-              <div className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
-                Showing <b>{filteredConsolidatedDebtors.length}</b> debtor parties
+          <div className="bg-white p-4 border border-slate-200/85 rounded-xl shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="relative flex-1 w-full">
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search party name, client contact, email, phone, PO number, or invoice number..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
+                />
+              </div>
+              <div className="flex items-center gap-3 shrink-0 w-full sm:w-auto justify-between sm:justify-start">
+                <button
+                  type="button"
+                  onClick={() => setShowBulkImportModal(true)}
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold font-mono rounded-xl shadow-xs transition-all cursor-pointer"
+                >
+                  <FileSpreadsheet size={15} />
+                  <span>Bulk Import Receipts</span>
+                </button>
+                <div className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
+                  Showing <b>{sortedConsolidatedDebtors.length}</b> debtor parties
+                </div>
               </div>
             </div>
+
+            {/* Date Range Filter */}
+            <DateRangeFilterBar
+              dateType={debtorsDateType}
+              onDateTypeChange={(val) => setDebtorsDateType(val as any)}
+              dateTypeOptions={[
+                { label: "Actual Dispatch Date", value: "dispatch" },
+                { label: "Payment Due Date", value: "due" },
+                { label: "Invoice Date", value: "invoice" },
+              ]}
+              startDate={debtorsStartDate}
+              onStartDateChange={setDebtorsStartDate}
+              endDate={debtorsEndDate}
+              onEndDateChange={setDebtorsEndDate}
+              onClear={() => {
+                setDebtorsStartDate("");
+                setDebtorsEndDate("");
+              }}
+            />
           </div>
 
           {/* Debtors Table */}
-          {filteredConsolidatedDebtors.length === 0 ? (
+          {sortedConsolidatedDebtors.length === 0 ? (
             <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center shadow-2xs">
               <div className="inline-flex p-4 rounded-full bg-emerald-50 text-emerald-600 mb-3">
                 <Layers size={32} />
               </div>
               <h3 className="text-sm font-bold text-slate-800">No Pending Debtor Parties</h3>
               <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                {searchTerm
-                  ? "No debtor parties matched your search keywords."
+                {searchTerm || debtorsStartDate || debtorsEndDate
+                  ? "No debtor parties matched your search keywords or date range filter."
                   : "All client payments are 100% cleared or no mapped invoices with outstanding balances were found."}
               </p>
             </div>
@@ -2886,20 +3792,81 @@ export default function PaymentListView({
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200/85 text-[10px] font-mono uppercase text-slate-500 font-bold tracking-wider">
                       <th className="py-3 px-3 w-10 text-center"></th>
-                      <th className="py-3 px-3 w-8 text-center">#</th>
-                      <th className="py-3 px-4">Party / Client Company</th>
-                      <th className="py-3 px-4">Contact Info</th>
-                      <th className="py-3 px-4">Sales Person</th>
-                      <th className="py-3 px-3 text-center">Pending Invoices</th>
-                      <th className="py-3 px-4 text-right">Total Invoice Value</th>
-                      <th className="py-3 px-4 text-right">Payment Received</th>
-                      <th className="py-3 px-4 text-right">Total Pending Outstanding</th>
-                      <th className="py-3 px-3 text-center">Due Status</th>
+                      <SortableHeader
+                        label="#"
+                        sortKey="index"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort)}
+                        paddingClass="py-3 px-3"
+                        align="center"
+                        className="w-8"
+                      />
+                      <SortableHeader
+                        label="Party / Client Company"
+                        sortKey="companyName"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort)}
+                        paddingClass="py-3 px-4"
+                      />
+                      <SortableHeader
+                        label="Contact Info"
+                        sortKey="contactInfo"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort)}
+                        paddingClass="py-3 px-4"
+                      />
+                      <SortableHeader
+                        label="Sales Person"
+                        sortKey="salesPerson"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort)}
+                        paddingClass="py-3 px-4"
+                      />
+                      <SortableHeader
+                        label="Pending Invoices"
+                        sortKey="invoiceCount"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort, ["invoiceCount"])}
+                        paddingClass="py-3 px-3"
+                        align="center"
+                      />
+                      <SortableHeader
+                        label="Total Invoice Value"
+                        sortKey="totalOrderValue"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort, ["totalOrderValue"])}
+                        paddingClass="py-3 px-4"
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Payment Received"
+                        sortKey="totalReceivedAmount"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort, ["totalReceivedAmount"])}
+                        paddingClass="py-3 px-4"
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Total Pending Outstanding"
+                        sortKey="totalPendingAmount"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort, ["totalPendingAmount"])}
+                        paddingClass="py-3 px-4"
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Due Status"
+                        sortKey="dueStatus"
+                        currentSort={debtorsSort}
+                        onSort={(k) => handleToggleSort(k, setDebtorsSort, ["dueStatus"])}
+                        paddingClass="py-3 px-3"
+                        align="center"
+                      />
                       <th className="py-3 px-4 text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
-                    {filteredConsolidatedDebtors.map((party, idx) => {
+                    {sortedConsolidatedDebtors.map((party, idx) => {
                       const isExpanded = !!expandedDebtorPartyKeys[party.partyKey];
                       return (
                         <React.Fragment key={party.partyKey}>
@@ -3016,37 +3983,79 @@ export default function PaymentListView({
                                   {/* Invoices Table */}
                                   <div className="overflow-x-auto scrollbar-thin border border-slate-200 rounded-lg">
                                     <table className="w-full text-left text-xs min-w-[900px]">
-                                      <thead>
+                                       <thead>
                                         <tr className="bg-emerald-50/60 text-slate-700 font-mono font-bold text-[10px] uppercase border-b border-emerald-100">
-                                          <th className="p-2.5">Invoice #</th>
-                                          <th className="p-2.5">PO #</th>
-                                          <th className="p-2.5">Sales Person</th>
-                                          <th className="p-2.5">Actual Dispatch Date</th>
-                                          <th className="p-2.5">Due Date & Status</th>
-                                          <th className="p-2.5 text-right">Invoice Amount</th>
-                                          <th className="p-2.5 text-right">Payment Received</th>
-                                          <th className="p-2.5 text-right">Pending Amount</th>
+                                          <SortableHeader
+                                            label="Invoice #"
+                                            sortKey="invoiceNumber"
+                                            currentSort={debtorsInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setDebtorsInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="PO #"
+                                            sortKey="customerPo"
+                                            currentSort={debtorsInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setDebtorsInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="Sales Person"
+                                            sortKey="salesPerson"
+                                            currentSort={debtorsInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setDebtorsInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="Actual Dispatch Date"
+                                            sortKey="actualDispatchDate"
+                                            currentSort={debtorsInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setDebtorsInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="Due Date & Status"
+                                            sortKey="dueDate"
+                                            currentSort={debtorsInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setDebtorsInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="Invoice Amount"
+                                            sortKey="invoiceAmount"
+                                            currentSort={debtorsInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setDebtorsInvoicesSort, ["invoiceAmount"])}
+                                            paddingClass="p-2.5"
+                                            align="right"
+                                          />
+                                          <SortableHeader
+                                            label="Payment Received"
+                                            sortKey="amountReceived"
+                                            currentSort={debtorsInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setDebtorsInvoicesSort, ["amountReceived"])}
+                                            paddingClass="p-2.5"
+                                            align="right"
+                                          />
+                                          <SortableHeader
+                                            label="Pending Amount"
+                                            sortKey="pendingAmount"
+                                            currentSort={debtorsInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setDebtorsInvoicesSort, ["pendingAmount"])}
+                                            paddingClass="p-2.5"
+                                            align="right"
+                                          />
                                           <th className="p-2.5 text-center">Invoice File</th>
                                           <th className="p-2.5 text-center">Actions</th>
                                         </tr>
                                       </thead>
                                       <tbody className="divide-y divide-slate-100 text-slate-700">
-                                        {party.orders.map((o) => {
+                                        {sortDebtorsInvoices(party.orders).map((o) => {
                                           const pDet = getPaymentDetailsForOrder(o, paymentDetailsList);
                                           const tot = getOrderTotalInvoiceAmount(o);
                                           const rec = pDet ? pDet.amountReceived : 0;
                                           const pend = pDet ? pDet.pendingAmount : Math.max(0, tot - rec);
                                           const actualDispatchDate = getOrderActualDispatchDate(o);
-                                          const due = o.isBadDebtor && o.badDebtorRecord
-                                            ? {
-                                                dueDateFormatted: formatDate(o.badDebtorRecord.dueDate),
-                                                dueDateObj: o.badDebtorRecord.dueDate ? new Date(o.badDebtorRecord.dueDate) : null,
-                                                daysRemaining: -(o.badDebtorRecord.overdueDays || 0),
-                                                isOverdue: (o.badDebtorRecord.overdueDays || 0) > 0,
-                                                statusLabel: (o.badDebtorRecord.overdueDays || 0) > 0 ? `Overdue by ${o.badDebtorRecord.overdueDays} days` : "Due Today/Soon",
-                                                paymentDaysCount: 0,
-                                              }
-                                            : calculateDueDate(actualDispatchDate, o.payment);
+                                          const due = getOrderDueDateInfo(o);
 
                                           return (
                                             <tr key={o.id} className="hover:bg-slate-50">
@@ -3300,7 +4309,7 @@ export default function PaymentListView({
           </div>
 
           {/* Bad Debtors Table */}
-          {filteredBadDebtors.length === 0 ? (
+          {sortedBadDebtors.length === 0 ? (
             <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center shadow-2xs">
               <div className="inline-flex p-4 rounded-full bg-rose-50 text-rose-600 mb-3">
                 <AlertTriangle size={32} />
@@ -3319,22 +4328,81 @@ export default function PaymentListView({
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 font-mono font-bold text-slate-500 uppercase tracking-wider text-[10px]">
                       <th className="p-4 w-12 text-center"></th>
-                      <th className="p-4">Client / Company</th>
-                      <th className="p-4">Sales Person</th>
-                      <th className="p-4">Invoice # & PO</th>
-                      <th className="p-4 text-right">Order Amount</th>
-                      <th className="p-4 text-right">Amount Received</th>
-                      <th className="p-4 text-right">Pending Amount</th>
-                      <th className="p-4">Invoice Date</th>
-                      <th className="p-4">Payment Terms / Days</th>
-                      <th className="p-4">Due Date</th>
-                      <th className="p-4 text-center">Overdue Days</th>
-                      <th className="p-4">Status & Remarks</th>
+                      <SortableHeader
+                        label="Client / Company"
+                        sortKey="companyName"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort)}
+                      />
+                      <SortableHeader
+                        label="Sales Person"
+                        sortKey="salesPerson"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort)}
+                      />
+                      <SortableHeader
+                        label="Invoice # & PO"
+                        sortKey="invoiceNumber"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort)}
+                      />
+                      <SortableHeader
+                        label="Order Amount"
+                        sortKey="invoiceAmount"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort, ["invoiceAmount"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Amount Received"
+                        sortKey="amountReceived"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort, ["amountReceived"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Pending Amount"
+                        sortKey="pendingAmount"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort, ["pendingAmount"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Invoice Date"
+                        sortKey="invoiceDate"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort)}
+                      />
+                      <SortableHeader
+                        label="Payment Terms / Days"
+                        sortKey="paymentTerms"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort)}
+                      />
+                      <SortableHeader
+                        label="Due Date"
+                        sortKey="dueDate"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort)}
+                      />
+                      <SortableHeader
+                        label="Overdue Days"
+                        sortKey="overdueDays"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort, ["overdueDays"])}
+                        align="center"
+                      />
+                      <SortableHeader
+                        label="Status & Remarks"
+                        sortKey="status"
+                        currentSort={badDebtorsSort}
+                        onSort={(k) => handleToggleSort(k, setBadDebtorsSort)}
+                      />
                       <th className="p-4 text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700 font-sans">
-                    {filteredBadDebtors.map((bd) => {
+                    {sortedBadDebtors.map((bd) => {
                       const totalReceived = getBadDebtorTotalReceived(bd);
                       const pendingAmt = getBadDebtorPendingAmount(bd);
                       const displayStatus = bd.status || (pendingAmt <= 0 && bd.invoiceAmount > 0 ? "Paid" : totalReceived > 0 ? "Partial Paid" : "Bad Debt");
@@ -3818,60 +4886,96 @@ export default function PaymentListView({
               </div>
 
               {/* Table */}
-              {(() => {
-                const isNoteCredit = (n: DebitCreditNote) => n.noteType === "Credit Note" || n.type === "credit_note" || (n as any).type === "Credit Note";
-                const filteredNotes = debitCreditNotes.filter((note) => {
-                  if (drCrTypeFilter === "debit_note" && isNoteCredit(note)) return false;
-                  if (drCrTypeFilter === "credit_note" && !isNoteCredit(note)) return false;
-                  if (drCrTypeFilter === "Debit Note" && isNoteCredit(note)) return false;
-                  if (drCrTypeFilter === "Credit Note" && !isNoteCredit(note)) return false;
-                  if (!drCrSearchTerm.trim()) return true;
-                  const term = drCrSearchTerm.toLowerCase().trim();
-                  return (
-                    (note.noteNumber || "").toLowerCase().includes(term) ||
-                    (note.invoiceNumber || "").toLowerCase().includes(term) ||
-                    (note.companyName || "").toLowerCase().includes(term) ||
-                    (note.clientName || "").toLowerCase().includes(term) ||
-                    (note.reason || "").toLowerCase().includes(term)
-                  );
-                });
-
-                if (filteredNotes.length === 0) {
-                  return (
-                    <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center shadow-2xs">
-                      <Calculator size={36} className="mx-auto text-slate-300 mb-3" />
-                      <h3 className="text-sm font-bold text-slate-800">No Debit/Credit Notes Found</h3>
-                      <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                        {drCrSearchTerm
-                          ? "No Dr/Cr notes matched your search criteria."
-                          : "Use the form on the left to record your first Debit or Credit Note."}
-                      </p>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div className="bg-white border border-slate-200/85 rounded-2xl shadow-2xs overflow-hidden">
-                    <div className="overflow-x-auto scrollbar-thin">
-                      <table className="w-full text-left border-collapse min-w-[750px]">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-200/85 text-[10px] font-mono uppercase text-slate-500 font-bold tracking-wider">
-                            <th className="py-3 px-3 w-8 text-center">#</th>
-                            <th className="py-3 px-3">Entry Date</th>
-                            <th className="py-3 px-3">Tally Date</th>
-                            <th className="py-3 px-3">Type</th>
-                            <th className="py-3 px-3">Dr/Cr Number</th>
-                            <th className="py-3 px-3">Invoice / Party</th>
-                            <th className="py-3 px-3 text-right">Amount</th>
-                            <th className="py-3 px-3 text-right">Effected Amount</th>
-                            <th className="py-3 px-3">Reason</th>
-                            <th className="py-3 px-3 text-center">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 text-xs font-sans">
-                          {filteredNotes.map((note, idx) => {
-                            const isCredit = note.noteType === "Credit Note" || note.type === "credit_note" || (note as any).type === "Credit Note";
-                            const eff = note.effectedAmount;
+              {sortedDrCrNotes.length === 0 ? (
+                <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center shadow-2xs">
+                  <Calculator size={36} className="mx-auto text-slate-300 mb-3" />
+                  <h3 className="text-sm font-bold text-slate-800">No Debit/Credit Notes Found</h3>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                    {drCrSearchTerm
+                      ? "No Dr/Cr notes matched your search criteria."
+                      : "Use the form on the left to record your first Debit or Credit Note."}
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-white border border-slate-200/85 rounded-2xl shadow-2xs overflow-hidden">
+                  <div className="overflow-x-auto scrollbar-thin">
+                    <table className="w-full text-left border-collapse min-w-[750px]">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200/85 text-[10px] font-mono uppercase text-slate-500 font-bold tracking-wider">
+                          <SortableHeader
+                            label="#"
+                            sortKey="index"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort)}
+                            paddingClass="py-3 px-3"
+                            align="center"
+                            className="w-8"
+                          />
+                          <SortableHeader
+                            label="Entry Date"
+                            sortKey="entryDate"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort)}
+                            paddingClass="py-3 px-3"
+                          />
+                          <SortableHeader
+                            label="Tally Date"
+                            sortKey="tallyDate"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort)}
+                            paddingClass="py-3 px-3"
+                          />
+                          <SortableHeader
+                            label="Type"
+                            sortKey="type"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort)}
+                            paddingClass="py-3 px-3"
+                          />
+                          <SortableHeader
+                            label="Dr/Cr Number"
+                            sortKey="noteNumber"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort)}
+                            paddingClass="py-3 px-3"
+                          />
+                          <SortableHeader
+                            label="Invoice / Party"
+                            sortKey="invoiceParty"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort)}
+                            paddingClass="py-3 px-3"
+                          />
+                          <SortableHeader
+                            label="Amount"
+                            sortKey="amount"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort, ["amount"])}
+                            paddingClass="py-3 px-3"
+                            align="right"
+                          />
+                          <SortableHeader
+                            label="Effected Amount"
+                            sortKey="effectedAmount"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort, ["effectedAmount"])}
+                            paddingClass="py-3 px-3"
+                            align="right"
+                          />
+                          <SortableHeader
+                            label="Reason"
+                            sortKey="reason"
+                            currentSort={drCrSort}
+                            onSort={(k) => handleToggleSort(k, setDrCrSort)}
+                            paddingClass="py-3 px-3"
+                          />
+                          <th className="py-3 px-3 text-center">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs font-sans">
+                        {sortedDrCrNotes.map((note, idx) => {
+                          const isCredit = note.noteType === "Credit Note" || note.type === "credit_note" || (note as any).type === "Credit Note";
+                          const eff = note.effectedAmount;
 
                             return (
                               <tr key={note.id} className="hover:bg-slate-50/70 transition-colors">
@@ -3951,9 +5055,8 @@ export default function PaymentListView({
                       </table>
                     </div>
                   </div>
-                );
-              })()}
-            </div>
+                )}
+              </div>
           </div>
         </div>
       )}
@@ -4095,7 +5198,7 @@ export default function PaymentListView({
           </div>
 
           {/* Table Container */}
-          {filteredConsolidatedParties.length === 0 ? (
+          {sortedConsolidatedReminderParties.length === 0 ? (
             <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center shadow-2xs">
               <div className="inline-flex p-4 rounded-full bg-emerald-50 text-emerald-600 mb-3">
                 <Layers size={32} />
@@ -4127,21 +5230,89 @@ export default function PaymentListView({
                           )}
                         </button>
                       </th>
-                      <th className="py-3 px-3 w-8 text-center">#</th>
-                      <th className="py-3 px-4">Party / Client Company</th>
-                      <th className="py-3 px-4">Contact Info</th>
-                      <th className="py-3 px-4">Sales Person</th>
-                      <th className="py-3 px-3 text-center">Pending Invoices</th>
-                      <th className="py-3 px-4 text-right">Total Invoice Value</th>
-                      <th className="py-3 px-4 text-right">Payment Received</th>
-                      <th className="py-3 px-4 text-right">Dr/Cr Amount</th>
-                      <th className="py-3 px-4 text-right">Total Pending Outstanding</th>
-                      <th className="py-3 px-3 text-center">Due Status</th>
+                      <SortableHeader
+                        label="#"
+                        sortKey="index"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort)}
+                        paddingClass="py-3 px-3"
+                        align="center"
+                        className="w-8"
+                      />
+                      <SortableHeader
+                        label="Party / Client Company"
+                        sortKey="companyName"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort)}
+                        paddingClass="py-3 px-4"
+                      />
+                      <SortableHeader
+                        label="Contact Info"
+                        sortKey="contactInfo"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort)}
+                        paddingClass="py-3 px-4"
+                      />
+                      <SortableHeader
+                        label="Sales Person"
+                        sortKey="salesPerson"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort)}
+                        paddingClass="py-3 px-4"
+                      />
+                      <SortableHeader
+                        label="Pending Invoices"
+                        sortKey="invoiceCount"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort, ["invoiceCount"])}
+                        paddingClass="py-3 px-3"
+                        align="center"
+                      />
+                      <SortableHeader
+                        label="Total Invoice Value"
+                        sortKey="totalOrderValue"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort, ["totalOrderValue"])}
+                        paddingClass="py-3 px-4"
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Payment Received"
+                        sortKey="totalReceivedAmount"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort, ["totalReceivedAmount"])}
+                        paddingClass="py-3 px-4"
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Dr/Cr Amount"
+                        sortKey="totalDrCrAmount"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort, ["totalDrCrAmount"])}
+                        paddingClass="py-3 px-4"
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Total Pending Outstanding"
+                        sortKey="totalPendingAmount"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort, ["totalPendingAmount"])}
+                        paddingClass="py-3 px-4"
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Due Status"
+                        sortKey="dueStatus"
+                        currentSort={reminderConsolidatedSort}
+                        onSort={(k) => handleToggleSort(k, setReminderConsolidatedSort, ["dueStatus"])}
+                        paddingClass="py-3 px-3"
+                        align="center"
+                      />
                       <th className="py-3 px-4 text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
-                    {filteredConsolidatedParties.map((party, idx) => {
+                    {sortedConsolidatedReminderParties.map((party, idx) => {
                       const isExpanded = !!expandedPartyKeys[party.partyKey];
                       const isSelected = !!selectedConsolidatedPartyKeys[party.partyKey];
                       return (
@@ -4267,41 +5438,90 @@ export default function PaymentListView({
                                     </span>
                                   </div>
 
-                                  {/* Invoices Table */}
+                                   {/* Invoices Table */}
                                   <div className="overflow-x-auto scrollbar-thin border border-slate-200 rounded-lg">
                                     <table className="w-full text-left text-xs min-w-[900px]">
                                       <thead>
                                         <tr className="bg-emerald-50/60 text-slate-700 font-mono font-bold text-[10px] uppercase border-b border-emerald-100">
-                                          <th className="p-2.5">Invoice #</th>
-                                          <th className="p-2.5">PO #</th>
-                                          <th className="p-2.5">Sales Person</th>
-                                          <th className="p-2.5">Actual Dispatch Date</th>
-                                          <th className="p-2.5">Due Date</th>
-                                          <th className="p-2.5 text-right">Invoice Amount</th>
-                                          <th className="p-2.5 text-right">Payment Received</th>
-                                          <th className="p-2.5 text-right">Dr/Cr Amount</th>
-                                          <th className="p-2.5 text-right">Pending Amount</th>
+                                          <SortableHeader
+                                            label="Invoice #"
+                                            sortKey="invoiceNumber"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="PO #"
+                                            sortKey="customerPo"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="Sales Person"
+                                            sortKey="salesPerson"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="Actual Dispatch Date"
+                                            sortKey="actualDispatchDate"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="Due Date"
+                                            sortKey="dueDate"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort)}
+                                            paddingClass="p-2.5"
+                                          />
+                                          <SortableHeader
+                                            label="Invoice Amount"
+                                            sortKey="invoiceAmount"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort, ["invoiceAmount"])}
+                                            paddingClass="p-2.5"
+                                            align="right"
+                                          />
+                                          <SortableHeader
+                                            label="Payment Received"
+                                            sortKey="amountReceived"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort, ["amountReceived"])}
+                                            paddingClass="p-2.5"
+                                            align="right"
+                                          />
+                                          <SortableHeader
+                                            label="Dr/Cr Amount"
+                                            sortKey="drCrAmount"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort, ["drCrAmount"])}
+                                            paddingClass="p-2.5"
+                                            align="right"
+                                          />
+                                          <SortableHeader
+                                            label="Pending Amount"
+                                            sortKey="pendingAmount"
+                                            currentSort={reminderConsolidatedInvoicesSort}
+                                            onSort={(k) => handleToggleSort(k, setReminderConsolidatedInvoicesSort, ["pendingAmount"])}
+                                            paddingClass="p-2.5"
+                                            align="right"
+                                          />
                                           <th className="p-2.5 text-center">Invoice Link</th>
                                         </tr>
                                       </thead>
                                       <tbody className="divide-y divide-slate-100 text-slate-700">
-                                        {party.orders.map((o) => {
+                                        {sortReminderConsolidatedInvoices(party.orders).map((o) => {
                                           const pDet = getPaymentDetailsForOrder(o, paymentDetailsList);
                                           const tot = getOrderTotalInvoiceAmount(o);
                                           const rec = pDet ? pDet.amountReceived : 0;
                                           const drCr = getOrderDrCrEffectedAmount(o, debitCreditNotes);
                                           const pend = pDet ? pDet.pendingAmount : Math.max(0, (tot + drCr) - rec);
                                           const actualDispatchDate = getOrderActualDispatchDate(o);
-                                          const due = o.isBadDebtor && o.badDebtorRecord
-                                            ? {
-                                                dueDateFormatted: formatDate(o.badDebtorRecord.dueDate),
-                                                dueDateObj: o.badDebtorRecord.dueDate ? new Date(o.badDebtorRecord.dueDate) : null,
-                                                daysRemaining: -(o.badDebtorRecord.overdueDays || 0),
-                                                isOverdue: (o.badDebtorRecord.overdueDays || 0) > 0,
-                                                statusLabel: (o.badDebtorRecord.overdueDays || 0) > 0 ? `Overdue by ${o.badDebtorRecord.overdueDays} days` : "Due Today/Soon",
-                                                paymentDaysCount: 0,
-                                              }
-                                            : calculateDueDate(actualDispatchDate, o.payment);
+                                          const due = getOrderDueDateInfo(o);
 
                                           return (
                                             <tr key={o.id} className="hover:bg-slate-50">
@@ -4541,15 +5761,39 @@ export default function PaymentListView({
                 </div>
 
                 {/* Template Variables Helper Tag Pills */}
-                <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200/70 text-[10px] text-slate-600 space-y-1">
-                  <span className="font-bold text-slate-700 font-mono block">Available Variables in Template:</span>
+                <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200/70 text-[10px] text-slate-600 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-700 font-mono block">Available Variables in Email Template (Click to insert):</span>
+                    <span className="text-[9px] text-emerald-600 font-semibold">Click any tag to append</span>
+                  </div>
                   <div className="flex flex-wrap gap-1 font-mono text-[9px]">
-                    <span className="bg-white px-1.5 py-0.5 border border-slate-200 rounded font-bold text-emerald-700">{"{{companyName}}"}</span>
-                    <span className="bg-white px-1.5 py-0.5 border border-slate-200 rounded font-bold text-emerald-700">{"{{clientName}}"}</span>
-                    <span className="bg-white px-1.5 py-0.5 border border-slate-200 rounded font-bold text-emerald-700">{"{{totalPendingAmount}}"}</span>
-                    <span className="bg-white px-1.5 py-0.5 border border-slate-200 rounded font-bold text-emerald-700">{"{{invoiceCount}}"}</span>
-                    <span className="bg-white px-1.5 py-0.5 border border-slate-200 rounded font-bold text-emerald-700">{"{{invoiceTable}}"}</span>
-                    <span className="bg-white px-1.5 py-0.5 border border-slate-200 rounded font-bold text-emerald-700">{"{{todayDate}}"}</span>
+                    {[
+                      { key: "{{invoiceTable}}", label: "Consolidated Invoice Table" },
+                      { key: "{{invoiceNumber}}", label: "Invoice #" },
+                      { key: "{{customerPoNumber}}", label: "Customer PO #" },
+                      { key: "{{dueDate}}", label: "Due Date" },
+                      { key: "{{dueDateStatus}}", label: "Due Date & Overdue" },
+                      { key: "{{invoiceAmount}}", label: "Invoice Amount (₹)" },
+                      { key: "{{pendingAmount}}", label: "Pending Amount (₹)" },
+                      { key: "{{amountReceived}}", label: "Received Amount (₹)" },
+                      { key: "{{companyName}}", label: "Company Name" },
+                      { key: "{{clientName}}", label: "Client Name" },
+                      { key: "{{totalPendingAmount}}", label: "Consolidated Pending (₹)" },
+                      { key: "{{invoiceCount}}", label: "Pending Invoices Count" },
+                      { key: "{{dispatchDate}}", label: "Actual Dispatch Date" },
+                      { key: "{{bankDetailsTable}}", label: "Bank Details Table" },
+                      { key: "{{todayDate}}", label: "Today's Date" },
+                    ].map((v) => (
+                      <button
+                        key={v.key}
+                        type="button"
+                        onClick={() => setConsolidatedBody((prev) => (prev ? `${prev}\n${v.key}` : v.key))}
+                        className="bg-white px-1.5 py-0.5 border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50 rounded font-bold text-emerald-700 transition-colors cursor-pointer"
+                        title={`Insert ${v.label}`}
+                      >
+                        {v.key}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -4558,11 +5802,19 @@ export default function PaymentListView({
               <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-3 text-xs">
                 <div className="border-b border-slate-100 pb-2">
                   <p className="text-[10px] font-mono font-bold text-slate-400 uppercase">To: {consolidatedTo || "N/A"}</p>
-                  <p className="font-bold text-slate-900 text-sm mt-0.5">Subject: {consolidatedSubject}</p>
+                  <p className="font-bold text-slate-900 text-sm mt-0.5">
+                    Subject: {consolidatedEmailParty ? replaceVarsForParty(consolidatedSubject, consolidatedEmailParty) : consolidatedSubject}
+                  </p>
                 </div>
                 <div
                   className="prose max-w-none text-slate-800 leading-relaxed font-sans"
-                  dangerouslySetInnerHTML={{ __html: formatEmailPreviewHtml(consolidatedBody) }}
+                  dangerouslySetInnerHTML={{
+                    __html: formatEmailPreviewHtml(
+                      consolidatedEmailParty
+                        ? replaceVarsForParty(consolidatedBody, consolidatedEmailParty)
+                        : consolidatedBody
+                    ),
+                  }}
                 />
               </div>
             )}
@@ -4699,7 +5951,7 @@ export default function PaymentListView({
                 </button>
                 <span className="text-slate-300">|</span>
                 <span>
-                  <b>{selectedCount}</b> of <b>{reminderOrders.length}</b> orders selected
+                  <b>{selectedCount}</b> of <b>{sortedReminderOrders.length}</b> orders selected
                 </span>
               </div>
               <div>
@@ -4709,7 +5961,7 @@ export default function PaymentListView({
           </div>
 
           {/* Payment Reminder Table */}
-          {reminderOrders.length === 0 ? (
+          {sortedReminderOrders.length === 0 ? (
             <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center">
               <BellRing className="mx-auto h-12 w-12 text-slate-300 mb-3" />
               <p className="text-sm font-bold text-slate-600">No Orders Due Today or Overdue</p>
@@ -4739,41 +5991,91 @@ export default function PaymentListView({
                           )}
                         </button>
                       </th>
-                      <th className="p-4">Client / Company</th>
-                      <th className="p-4">Sales Person</th>
-                      <th className="p-4">Invoice # & PO</th>
-                      <th className="p-4 text-right">Order Amount</th>
-                      <th className="p-4 text-right">Amount Received</th>
-                      <th className="p-4 text-right">Dr/Cr Amount</th>
-                      <th className="p-4 text-right">Pending Amount</th>
-                      <th className="p-4">Actual Dispatch Date</th>
-                      <th className="p-4">Payment Terms / Days</th>
-                      <th className="p-4">Calculated Due Date</th>
-                      <th className="p-4 text-center">Due Status</th>
-                      <th className="p-4">Email Sent Status</th>
+                      <SortableHeader
+                        label="Client / Company"
+                        sortKey="clientCompany"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort)}
+                      />
+                      <SortableHeader
+                        label="Sales Person"
+                        sortKey="salesPerson"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort)}
+                      />
+                      <SortableHeader
+                        label="Invoice # & PO"
+                        sortKey="invoicePo"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort)}
+                      />
+                      <SortableHeader
+                        label="Order Amount"
+                        sortKey="orderAmount"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort, ["orderAmount"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Amount Received"
+                        sortKey="amountReceived"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort, ["amountReceived"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Dr/Cr Amount"
+                        sortKey="drCrAmount"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort, ["drCrAmount"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Pending Amount"
+                        sortKey="pendingAmount"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort, ["pendingAmount"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Actual Dispatch Date"
+                        sortKey="actualDispatchDate"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort)}
+                      />
+                      <SortableHeader
+                        label="Payment Terms / Days"
+                        sortKey="paymentTerms"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort)}
+                      />
+                      <SortableHeader
+                        label="Calculated Due Date"
+                        sortKey="dueDate"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort)}
+                      />
+                      <SortableHeader
+                        label="Due Status"
+                        sortKey="dueStatus"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort, ["dueStatus"])}
+                        align="center"
+                      />
+                      <SortableHeader
+                        label="Email Sent Status"
+                        sortKey="emailStatus"
+                        currentSort={reminderSort}
+                        onSort={(k) => handleToggleSort(k, setReminderSort)}
+                      />
                       <th className="p-4 text-center">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-sans">
-                    {reminderOrders.map((order) => {
+                    {sortedReminderOrders.map((order) => {
                       const isSelected = !!selectedOrderIds[order.id];
                       const dispatchDateStr = getOrderActualDispatchDate(order);
-                      const paymentTermsStr = order.payment;
-                      let dueInfo;
-                      if (order.isBadDebtor && order.badDebtorRecord) {
-                        const bd = order.badDebtorRecord;
-                        const overdueDaysCount = parseInt(bd.overdueDays || "0", 10);
-                        dueInfo = {
-                          dueDateFormatted: formatDate(bd.dueDate),
-                          dueDateObj: bd.dueDate ? new Date(bd.dueDate) : null,
-                          daysRemaining: -overdueDaysCount,
-                          isOverdue: overdueDaysCount > 0,
-                          statusLabel: overdueDaysCount > 0 ? `${overdueDaysCount} Days Overdue` : "Due Today/Soon",
-                          paymentDaysCount: 0,
-                        };
-                      } else {
-                        dueInfo = calculateDueDate(dispatchDateStr, paymentTermsStr);
-                      }
+                      const dueInfo = getOrderDueDateInfo(order);
 
                       const pDetails = getPaymentDetailsForOrder(order, paymentDetailsList);
                       const totalAmt = getOrderTotalInvoiceAmount(order);
@@ -4885,7 +6187,7 @@ export default function PaymentListView({
                             ) : (
                               <>
                                 <span className="font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                                  {paymentTermsStr || "30 Days"}
+                                  {order.paymentCreditPeriod || order.payment || "0 Days"}
                                 </span>
                                 {dueInfo.paymentDaysCount > 0 && (
                                   <span className="block text-[9px] text-slate-400 mt-0.5">
@@ -4948,14 +6250,9 @@ export default function PaymentListView({
                           <td className="p-4 text-center">
                             <button
                               type="button"
-                              onClick={() => {
-                                setSelectedOrderIds({ [order.id]: true });
-                                setTimeout(() => {
-                                  handleSendPaymentReminders();
-                                }, 50);
-                              }}
+                              onClick={() => openPaymentReminderForOrder(order)}
                               className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 hover:text-emerald-900 font-mono uppercase bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg transition-all border border-emerald-200/60 cursor-pointer"
-                              title={`Send payment reminder to ${order.clientName}`}
+                              title={`Preview & send payment reminder to ${order.clientName || order.companyName}`}
                             >
                               <Send size={11} />
                               Remind
@@ -4976,29 +6273,53 @@ export default function PaymentListView({
       {activeSubTab === "fully_paid" && (
         <div className="space-y-4">
           {/* Filters Bar */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 border border-slate-200/85 rounded-xl shadow-xs">
-            <div className="relative flex-1 w-full">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search by client, company, PO number, invoice number, or UTR..."
-                value={fullyPaidSearchTerm}
-                onChange={(e) => setFullyPaidSearchTerm(e.target.value)}
-                className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
-              />
+          <div className="bg-white p-4 border border-slate-200/85 rounded-xl shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="relative flex-1 w-full">
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search by client, company, PO number, invoice number, or UTR..."
+                  value={fullyPaidSearchTerm}
+                  onChange={(e) => setFullyPaidSearchTerm(e.target.value)}
+                  className="w-full text-xs text-slate-700 bg-slate-50/50 border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 transition-all placeholder:text-slate-400"
+                />
+              </div>
+              <div className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
+                Showing <b>{sortedFullyPaidOrders.length}</b> of <b>{fullyPaidBase.length}</b> fully paid records
+              </div>
             </div>
-            <div className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
-              Showing <b>{fullyPaidOrders.length}</b> of <b>{fullyPaidBase.length}</b> fully paid records
-            </div>
+
+            {/* Date Range Filter */}
+            <DateRangeFilterBar
+              dateType={fullyPaidDateType}
+              onDateTypeChange={(val) => setFullyPaidDateType(val as any)}
+              dateTypeOptions={[
+                { label: "Payment Date", value: "payment" },
+                { label: "Actual Dispatch Date", value: "dispatch" },
+                { label: "Invoice Date", value: "invoice" },
+                { label: "Due Date", value: "due" },
+              ]}
+              startDate={fullyPaidStartDate}
+              onStartDateChange={setFullyPaidStartDate}
+              endDate={fullyPaidEndDate}
+              onEndDateChange={setFullyPaidEndDate}
+              onClear={() => {
+                setFullyPaidStartDate("");
+                setFullyPaidEndDate("");
+              }}
+            />
           </div>
 
           {/* Fully Paid Table */}
-          {fullyPaidOrders.length === 0 ? (
+          {sortedFullyPaidOrders.length === 0 ? (
             <div className="bg-white border border-slate-200/85 rounded-2xl p-12 text-center">
               <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-300 mb-3" />
               <p className="text-sm font-bold text-slate-600">No Fully Paid Records Found</p>
               <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                Invoices with 100% payment received or marked as Fully Paid will automatically appear here.
+                {fullyPaidSearchTerm || fullyPaidStartDate || fullyPaidEndDate
+                  ? "No fully paid records matched your search query or date range."
+                  : "Invoices with 100% payment received or marked as Fully Paid will automatically appear here."}
               </p>
             </div>
           ) : (
@@ -5008,20 +6329,70 @@ export default function PaymentListView({
                   <thead>
                     <tr className="bg-emerald-50/50 border-b border-emerald-100 font-mono font-bold text-slate-600 uppercase tracking-wider text-[10px]">
                       <th className="p-4 w-10 text-center"></th>
-                      <th className="p-4">Client / Company</th>
-                      <th className="p-4">Sales Person</th>
-                      <th className="p-4">Invoice # & PO</th>
-                      <th className="p-4 text-right">Order Amount</th>
-                      <th className="p-4 text-right">Payment Received</th>
-                      <th className="p-4 text-center">Payment Status</th>
-                      <th className="p-4 text-center">UTR / Ref ID</th>
-                      <th className="p-4 text-center">Payment Date</th>
-                      <th className="p-4">Invoice File</th>
+                      <SortableHeader
+                        label="Client / Company"
+                        sortKey="clientCompany"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort)}
+                      />
+                      <SortableHeader
+                        label="Sales Person"
+                        sortKey="salesPerson"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort)}
+                      />
+                      <SortableHeader
+                        label="Invoice # & PO"
+                        sortKey="invoicePo"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort)}
+                      />
+                      <SortableHeader
+                        label="Order Amount"
+                        sortKey="orderAmount"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort, ["orderAmount"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Payment Received"
+                        sortKey="paymentReceived"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort, ["paymentReceived"])}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Payment Status"
+                        sortKey="paymentStatus"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort)}
+                        align="center"
+                      />
+                      <SortableHeader
+                        label="UTR / Ref ID"
+                        sortKey="utr"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort)}
+                        align="center"
+                      />
+                      <SortableHeader
+                        label="Payment Date"
+                        sortKey="paymentDate"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort)}
+                        align="center"
+                      />
+                      <SortableHeader
+                        label="Invoice File"
+                        sortKey="invoiceFile"
+                        currentSort={fullyPaidSort}
+                        onSort={(k) => handleToggleSort(k, setFullyPaidSort)}
+                      />
                       <th className="p-4 text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-sans">
-                    {fullyPaidOrders.map((order) => {
+                    {sortedFullyPaidOrders.map((order) => {
                       const isExpanded = !!expandedOrderIds[order.id];
                       const bank = paymentBanks.find((b) => b.id === order.paymentBankId);
                       const paymentRec = getPaymentDetailsForOrder(order, paymentDetailsList);
@@ -5031,11 +6402,7 @@ export default function PaymentListView({
                       const utr = paymentRec?.utrId || "N/A";
                       const pDate = paymentRec?.paymentReceivedDate ? formatDate(new Date(paymentRec.paymentReceivedDate)) : "N/A";
                       const actualDispatchDate = getOrderActualDispatchDate(order);
-
-                      const dueInfo = calculateDueDate(
-                        actualDispatchDate,
-                        order.payment
-                      );
+                      const dueInfo = getOrderDueDateInfo(order);
 
                       return (
                         <React.Fragment key={order.id}>
@@ -5059,10 +6426,9 @@ export default function PaymentListView({
 
                             {/* Client / Company */}
                             <td className="p-4">
-                              <div className="font-bold text-slate-900">{order.clientName}</div>
-                              <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-mono font-bold mt-0.5 border border-slate-200/60">
-                                <Building2 size={10} className="text-slate-400" />
-                                {order.companyName}
+                              <div className="font-bold text-slate-900">{order.companyName}</div>
+                              <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-mono font-bold mt-0.5 border border-slate-200/60">                          
+                                {order.clientName}
                               </span>
                             </td>
 
