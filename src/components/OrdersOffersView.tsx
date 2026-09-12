@@ -22,6 +22,7 @@ import InlineDeleteConfirm from "./InlineDeleteConfirm";
 import DataImportModal, { ImportFieldDefinition } from "./DataImportModal";
 import { formatDate, formatCompactRupees, formatQuantityMT, calculateOrderTotalInvoiceBreakdown, getOrderTotalInvoiceAmount } from "../utils";
 import { EmailSentStatusCell } from "./EmailSentStatusCell";
+import { SearchableCompanySelect, SearchableProductSelect } from "./SearchableCombobox";
 
 const resolveReportingEmails = (creatorUserId: string, assignedToUserId: string, users: User[]) => {
   const creatorUser = users.find(u => u.id === creatorUserId);
@@ -135,7 +136,17 @@ export default function OrdersOffersView({
   };
 
   const isExecutive = activeUser.role === Role.Admin || activeUser.teamName === "Executive";
-  const clientCompanies = Array.from(new Set(clients.map((c) => c.companyName).filter(Boolean)));
+  const clientCompanies = useMemo(() => {
+    return Array.from(
+      new Set(clients.map((c) => c.companyName?.trim()).filter(Boolean) as string[])
+    ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [clients]);
+
+  const sortedProducts = useMemo(() => {
+    return [...products].sort((a, b) =>
+      (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" })
+    );
+  }, [products]);
 
   const availableTaxRates = useMemo(() => {
     if (taxRates && taxRates.length > 0) return taxRates;
@@ -648,6 +659,7 @@ export default function OrdersOffersView({
   // Form states - Edit Order
   const [editClientName, setEditClientName] = useState("");
   const [editCompanyName, setEditCompanyName] = useState("");
+  const [isEditCompanyOpen, setIsEditCompanyOpen] = useState(false);
   const [editLoadedClientId, setEditLoadedClientId] = useState<string | null>(null);
   const [editEmail, setEditEmail] = useState("");
   const [editSendEmail, setEditSendEmail] = useState(false);
@@ -978,7 +990,7 @@ export default function OrdersOffersView({
 
   // Add order item row handlers
   const handleAddProductRow = (isEdit: boolean) => {
-    const defaultProduct = products[0] || { id: "proj-1", name: "Default Product", hsnCode: "" };
+    const defaultProduct = sortedProducts[0] || products[0] || { id: "proj-1", name: "Default Product", hsnCode: "" };
     const newItem = {
       productId: defaultProduct.id,
       productName: defaultProduct.name,
@@ -1599,6 +1611,7 @@ export default function OrdersOffersView({
 
   const handleEditOrderClick = (order: OrderOffer) => {
     setEditingOrder(order);
+    setIsEditCompanyOpen(false);
     setEditClientName(order.clientName);
     setEditCompanyName(order.companyName);
     setEditEmail(order.email);
@@ -3140,11 +3153,11 @@ export default function OrdersOffersView({
                   </div>
 
                   {clientCompanies.length > 0 ? (
-                    <select
+                    <SearchableCompanySelect
                       required
+                      companies={clientCompanies}
                       value={newCompanyName}
-                      onChange={(e) => {
-                        const val = e.target.value;
+                      onChange={(val) => {
                         setNewCompanyName(val);
                         // Autofill with latest contact of that company
                         const match = clients
@@ -3174,13 +3187,13 @@ export default function OrdersOffersView({
                           }
                         }
                       }}
-                      className="w-full text-sm border border-slate-200 bg-slate-50 px-3 py-2 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-semibold"
-                    >
-                      <option value="">-- Select Company --</option>
-                      {clientCompanies.map((comp) => (
-                        <option key={comp} value={comp}>{comp}</option>
-                      ))}
-                    </select>
+                      clients={clients}
+                      onRegisterNewClick={() => {
+                        setClientTeamName(isExecutive ? "" : (activeUser.teamName || ""));
+                        setIsAddClientModalOpen(true);
+                      }}
+                      placeholder="Type to search or select company..."
+                    />
                   ) : (
                     <div className="w-full flex flex-col gap-1.5 p-2 bg-indigo-50 border border-indigo-100 rounded-xl">
                       <span className="text-[11px] text-indigo-800 font-medium">No registered companies in directory.</span>
@@ -3488,18 +3501,13 @@ export default function OrdersOffersView({
                         <div className="grid grid-cols-12 gap-2 items-center">
                           <div className="col-span-5">
                             <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Product *</label>
-                            <select
+                            <SearchableProductSelect
                               required
+                              products={sortedProducts}
                               value={item.productId}
-                              onChange={(e) => handleProductRowChange(index, "productId", e.target.value, false)}
-                              className="w-full text-xs border border-slate-200 bg-slate-50 p-1.5 rounded-md focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 font-semibold"
-                            >
-                              {products.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {p.name}
-                                </option>
-                              ))}
-                            </select>
+                              onChange={(prodId) => handleProductRowChange(index, "productId", prodId, false)}
+                              theme="indigo"
+                            />
                           </div>
 
                           <div className="col-span-2">
@@ -4002,15 +4010,59 @@ export default function OrdersOffersView({
 
             <form onSubmit={handleEditOrderSubmit} className="p-6 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Client Company Name (Read-only on edit for registry integrity) */}
+                {/* Client Company Name (Read-only on edit for registry integrity, with unlock to change) */}
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1 uppercase font-mono">Company Name</label>
-                  <input
-                    type="text"
-                    readOnly
-                    value={editCompanyName}
-                    className="w-full text-sm border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none cursor-not-allowed select-none font-semibold"
-                  />
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase font-mono">Company Name</label>
+                    <button
+                      type="button"
+                      onClick={() => setIsEditCompanyOpen((prev) => !prev)}
+                      className="text-[10.5px] font-bold text-amber-700 hover:text-amber-900 transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      {isEditCompanyOpen ? (
+                        <>
+                          <Lock size={11} /> Keep Original
+                        </>
+                      ) : (
+                        <>
+                          <Unlock size={11} /> Change Company
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {isEditCompanyOpen ? (
+                    <SearchableCompanySelect
+                      companies={clientCompanies}
+                      value={editCompanyName}
+                      onChange={(val) => {
+                        setEditCompanyName(val);
+                        const match = clients
+                          .filter((c) => c.companyName === val)
+                          .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
+                        if (match) {
+                          setEditLoadedClientId(match.id);
+                          setEditClientName(match.fullName || "");
+                          setEditEmail(match.email || "");
+                          setEditPhone(match.phone || "");
+                          setEditBillingAddress(match.address || "");
+                          setEditBillingGstin(match.gst || "");
+                        }
+                      }}
+                      clients={clients}
+                      onRegisterNewClick={() => {
+                        setClientTeamName(isExecutive ? "" : (activeUser.teamName || ""));
+                        setIsAddClientModalOpen(true);
+                      }}
+                      placeholder="Type to search or select company..."
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      readOnly
+                      value={editCompanyName}
+                      className="w-full text-sm border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 rounded-xl focus:ring-1 focus:ring-amber-500 outline-none cursor-not-allowed select-none font-semibold"
+                    />
+                  )}
                 </div>
 
                 {/* Client Name (Editable) */}
@@ -4300,18 +4352,13 @@ export default function OrdersOffersView({
                         <div className="grid grid-cols-12 gap-2 items-center">
                           <div className="col-span-5">
                             <label className="text-[9px] font-bold text-slate-500 uppercase block mb-0.5">Product *</label>
-                            <select
+                            <SearchableProductSelect
                               required
+                              products={sortedProducts}
                               value={item.productId}
-                              onChange={(e) => handleProductRowChange(index, "productId", e.target.value, true)}
-                              className="w-full text-xs border border-slate-200 bg-slate-50 p-1.5 rounded-md focus:ring-1 focus:ring-amber-500 outline-none text-slate-800 font-semibold"
-                            >
-                              {products.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {p.name}
-                                </option>
-                              ))}
-                            </select>
+                              onChange={(prodId) => handleProductRowChange(index, "productId", prodId, true)}
+                              theme="amber"
+                            />
                           </div>
 
                           <div className="col-span-2">
